@@ -1,0 +1,14 @@
+[package]
+name = "proxydm"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+eframe = "0.34"
+egui = "0.34"
+reqwest = { version = "0.13", features = ["blocking", "socks"] }
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+file_icon_provider = "1.0.1"
