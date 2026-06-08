@@ -16,28 +16,15 @@ use std::fs;
 
 impl eframe::App for ProxyDownloadManager {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // ── Register egui context for background-thread focus (idempotent) ──
+        crate::window_focus::register_egui_context(ui.ctx().clone());
+
         // ── WebSocket download request: focus + open New Download dialog ──
         if self.ws_focus.load(Ordering::Relaxed) {
             self.ws_focus.store(false, Ordering::Relaxed);
 
-            // Bring window in front of ALL applications (platform-specific)
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Focus);
-            #[cfg(target_os = "macos")]
-            {
-                let pid = std::process::id();
-                let _ = std::process::Command::new("osascript")
-                    .arg("-e")
-                    .arg(format!(
-                        "tell application \"System Events\" to set frontmost of every process whose unix id is {} to true",
-                        pid
-                    ))
-                    .spawn();
-            }
-            #[cfg(target_os = "windows")]
-            {
-                // On Windows, Focus is handled by winit/eframe.
-                // An additional SetForegroundWindow call can be added if needed.
-            }
+            // Bring window to front (cross-platform, thread-safe)
+            crate::window_focus::bring_window_to_front();
 
             // Read the URL from WebSocket and open the New Download dialog
             let url = {

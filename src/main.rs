@@ -12,6 +12,7 @@ mod logger;
 mod persist;
 mod types;
 mod ui;
+mod window_focus;
 mod ws_server;
 
 use app::ProxyDownloadManager;
@@ -42,10 +43,14 @@ fn main() -> Result<(), eframe::Error> {
     eframe::run_native(
         types::APP_NAME,
         options,
-        Box::new(|_cc| Ok(Box::new(ProxyDownloadManager::new_with_state(
-            shared_state.clone(),
-            ws_focus,
-            ws_url,
-        )))),
+        Box::new(|cc| {
+            // Register the egui context so bring_window_to_front() works from background threads
+            window_focus::register_egui_context(cc.egui_ctx.clone());
+            Ok(Box::new(ProxyDownloadManager::new_with_state(
+                shared_state.clone(),
+                ws_focus,
+                ws_url,
+            )))
+        }),
     )
 }

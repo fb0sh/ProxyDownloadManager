@@ -147,7 +147,12 @@ fn process_message(
         *u = url.clone();
     }
 
-    // Signal the main window: come to front + open New Download dialog
+    // Bring the application window to front immediately.
+    // This works directly from the background thread thanks to the
+    // window_focus module which uses egui::Context + native APIs.
+    crate::window_focus::bring_window_to_front();
+
+    // Also signal the main UI to open the New Download dialog on next frame.
     focus_request.store(true, Ordering::Relaxed);
 
     crate::log_info!("WS: stored URL for UI confirmation: {}", url);
