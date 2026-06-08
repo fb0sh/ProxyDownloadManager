@@ -905,6 +905,8 @@ impl ProxyDownloadManager {
             self.prev_url_for_name = self.new_url.clone();
         }
 
+        let keep_main_hidden = !crate::tray::is_main_visible();
+
         ui.ctx().show_viewport_immediate(
             egui::ViewportId::from_hash_of("new_download_window"),
             egui::ViewportBuilder::default()
@@ -1001,6 +1003,13 @@ impl ProxyDownloadManager {
                 });
             },
         );
+
+        // If ProxyDM is in tray/background mode, keep the invisible root
+        // viewport alive off-screen so future browser events can still repaint.
+        if keep_main_hidden {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(1.0, 1.0)));
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(-10000.0, -10000.0)));
+        }
     }
 
     fn render_detail_windows(&mut self, ui: &mut egui::Ui) {

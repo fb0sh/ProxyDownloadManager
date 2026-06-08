@@ -95,16 +95,26 @@ pub fn poll_events(ctx: &egui::Context) {
 pub fn hide_main_window(ctx: &egui::Context) {
     MAIN_VISIBLE.store(false, Ordering::Relaxed);
     ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-    // Do not use Visible(false): when the root viewport is fully invisible,
-    // eframe may stop repainting it, so browser-triggered child windows cannot
-    // be created. Minimized keeps the app/event loop alive for tray/background use.
-    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+
+    // eframe only creates child viewports (New Download) during a root repaint.
+    // If the root is minimized or Visible(false), some platforms stop repainting
+    // it, so browser-triggered windows are delayed until the user restores the
+    // app. Keep the root alive but move it far off-screen instead.
+    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(1.0, 1.0)));
+    ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(-10000.0, -10000.0)));
+    ctx.request_repaint();
 }
 
 pub fn show_main_window(ctx: &egui::Context) {
     MAIN_VISIBLE.store(true, Ordering::Relaxed);
     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(960.0, 600.0)));
+    if let Some(cmd) = egui::ViewportCommand::center_on_screen(ctx) {
+        ctx.send_viewport_cmd(cmd);
+    }
     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
     ctx.request_repaint();
     crate::window_focus::bring_window_to_front();

@@ -50,14 +50,11 @@ pub fn request_repaint() {
     }
 }
 
-/// Restore the root viewport enough for eframe to render child viewports.
-/// Used by browser-download interception: a minimized root viewport may not
-/// repaint until it is restored, so `show_viewport_immediate` for New Download
-/// would otherwise be delayed until the user manually restores the app.
+/// Request a repaint for browser-triggered child windows without bringing the
+/// main window to the foreground. The main window is kept alive by tray.rs using
+/// an off-screen 1x1 root viewport instead of true minimization.
 pub fn restore_for_child_window() {
     if let Some(ctx) = EGUI_CTX.get() {
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
         ctx.request_repaint();
     }
 }
