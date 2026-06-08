@@ -1152,7 +1152,7 @@ struct ProxyDownloadManager {
     downloads: Vec<DownloadItem>,
     shared: Arc<Mutex<Vec<DownloadItem>>>,
     filter: TreeFilter,
-    selected_id: Option<u64>,
+    selected_ids: HashSet<u64>,
     settings: AppSettings,
     active_downloads: HashMap<u64, ActiveDownload>,
     speed_trackers: HashMap<u64, SpeedTracker>,
@@ -1181,7 +1181,7 @@ struct ProxyDownloadManager {
     show_properties: Option<u64>,
     show_progress: bool,
     closed_detail_windows: HashSet<u64>,
-    pending_delete_id: Option<u64>,
+    pending_delete_ids: Vec<u64>,
     manual_detail_ids: HashSet<u64>,
     detail_actions: Arc<Mutex<Vec<(u64, &'static str)>>>,
 
@@ -1227,7 +1227,7 @@ impl Default for ProxyDownloadManager {
             downloads,
             shared,
             filter: TreeFilter::All,
-            selected_id: None,
+            selected_ids: HashSet::new(),
             settings,
             active_downloads: HashMap::new(),
             speed_trackers: HashMap::new(),
@@ -1253,7 +1253,7 @@ impl Default for ProxyDownloadManager {
             show_properties: None,
             show_progress: false,
             closed_detail_windows: HashSet::new(),
-            pending_delete_id: None,
+            pending_delete_ids: Vec::new(),
             manual_detail_ids: HashSet::new(),
             detail_actions: Arc::new(Mutex::new(Vec::new())),
             next_id,
@@ -1298,9 +1298,8 @@ impl ProxyDownloadManager {
         }
     }
 
-    fn selected_item(&self) -> Option<&DownloadItem> {
-        self.selected_id
-            .and_then(|id| self.downloads.iter().find(|d| d.id == id))
+    fn selected_items(&self) -> Vec<&DownloadItem> {
+        self.downloads.iter().filter(|d| self.selected_ids.contains(&d.id)).collect()
     }
 
     fn set_status(&mut self, msg: String) {
@@ -1446,9 +1445,7 @@ impl ProxyDownloadManager {
         }
         items.retain(|d| d.id != id);
 
-        if self.selected_id == Some(id) {
-            self.selected_id = None;
-        }
+        self.selected_ids.remove(&id);
     }
 
     fn add_new_download(&mut self, url: &str, custom_name: Option<&str>) {
@@ -1527,12 +1524,18 @@ impl eframe::App for ProxyDownloadManager {
         let all_count = self.downloads.len();
         let completed_count = self.downloads.iter().filter(|d| d.status == DownloadStatus::Completed).count();
         let incompleted_count = all_count - completed_count;
-        let can_resume = self.selected_item().map_or(false, |item| {
-            matches!(item.status, DownloadStatus::Paused | DownloadStatus::Failed(_))
-        });
-        let can_stop = self.selected_item().map_or(false, |item| {
-            matches!(item.status, DownloadStatus::Downloading)
-        });
+        let sel_ids = &self.selected_ids;
+        let any_selected = !sel_ids.is_empty();
+        let can_resume = if any_selected {
+            self.downloads.iter().any(|d| sel_ids.contains(&d.id) && matches!(d.status, DownloadStatus::Paused | DownloadStatus::Failed(_)))
+        } else {
+            self.downloads.iter().any(|d| matches!(d.status, DownloadStatus::Paused | DownloadStatus::Failed(_)))
+        };
+        let can_stop = if any_selected {
+            self.downloads.iter().any(|d| sel_ids.contains(&d.id) && matches!(d.status, DownloadStatus::Downloading))
+        } else {
+            self.downloads.iter().any(|d| matches!(d.status, DownloadStatus::Downloading))
+        };
         let has_active = !self.active_downloads.is_empty();
         let status_msg = self.status_message.clone();
         let filter = self.filter.clone();
@@ -1639,19 +1642,34 @@ impl eframe::App for ProxyDownloadManager {
             self.prev_url_for_name.clear();
         }
         if tb_resume {
-            if let Some(id) = self.selected_id {
-                self.resume_download(id);
+            let ids: Vec<u64> = if self.selected_ids.is_empty() {
+                self.downloads.iter().filter(|d| matches!(d.status, DownloadStatus::Paused | DownloadStatus::Failed(_))).map(|d| d.id).collect()
+            } else {
+                self.selected_ids.iter().copied().collect()
+            };
+            for id in &ids { self.resume_download(*id); }
+            // Batch resume from toolbar: no detail window
+            if ids.len() > 1 {
+                for id in &ids { self.closed_detail_windows.insert(*id); }
+            } else if ids.len() == 1 {
+                self.manual_detail_ids.insert(ids[0]);
             }
         }
         if tb_stop {
-            if let Some(id) = self.selected_id {
-                self.stop_download(id);
-            }
+            let ids: Vec<u64> = if self.selected_ids.is_empty() {
+                self.downloads.iter().filter(|d| matches!(d.status, DownloadStatus::Downloading)).map(|d| d.id).collect()
+            } else {
+                self.selected_ids.iter().copied().collect()
+            };
+            for id in ids { self.stop_download(id); }
         }
         if tb_delete {
-            if let Some(id) = self.selected_id {
-                self.pending_delete_id = Some(id);
-            }
+            let ids: Vec<u64> = if self.selected_ids.is_empty() {
+                self.downloads.iter().map(|d| d.id).collect()
+            } else {
+                self.selected_ids.iter().copied().collect()
+            };
+            if !ids.is_empty() { self.pending_delete_ids = ids; }
         }
         if tb_quit {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1666,7 +1684,7 @@ impl eframe::App for ProxyDownloadManager {
         // ── Sidebar (Tree View) ──────────────────────────────────────────────
         egui::Panel::left("sidebar")
             .resizable(false)
-            .default_size(180.0)
+            .default_size(130.0)
             .show_inside(ui, |ui| {
                 ui.add_space(8.0);
                 ui.heading("📂 Downloads");
@@ -1676,7 +1694,7 @@ impl eframe::App for ProxyDownloadManager {
                 if ui
                     .add(egui::Button::new(format!("📁 All ({})", all_count))
                         .selected(filter == TreeFilter::All)
-                        .min_size(Vec2::new(160.0, 28.0)))
+                        .min_size(Vec2::new(110.0, 28.0)))
                     .clicked()
                 {
                     sb_filter = Some(TreeFilter::All);
@@ -1685,7 +1703,7 @@ impl eframe::App for ProxyDownloadManager {
                 if ui
                     .add(egui::Button::new(format!("✅ Completed ({})", completed_count))
                         .selected(filter == TreeFilter::Completed)
-                        .min_size(Vec2::new(160.0, 28.0)))
+                        .min_size(Vec2::new(110.0, 28.0)))
                     .clicked()
                 {
                     sb_filter = Some(TreeFilter::Completed);
@@ -1694,7 +1712,7 @@ impl eframe::App for ProxyDownloadManager {
                 if ui
                     .add(egui::Button::new(format!("⏳ Incomplete ({})", incompleted_count))
                         .selected(filter == TreeFilter::Incompleted)
-                        .min_size(Vec2::new(160.0, 28.0)))
+                        .min_size(Vec2::new(110.0, 28.0)))
                     .clicked()
                 {
                     sb_filter = Some(TreeFilter::Incompleted);
@@ -1724,13 +1742,15 @@ impl eframe::App for ProxyDownloadManager {
         // ── Central Table View ───────────────────────────────────────────────
         let cloned_items: Vec<DownloadItem> = self.downloads.clone();
         let icon_cache = &mut self.icon_cache;
-        let mut selected_id = self.selected_id;
+        let mut selected_ids = self.selected_ids.clone();
         // Context menu action flags (avoid &mut self in closures)
         let mut ctx_resume: Option<u64> = None;
         let mut ctx_stop: Option<u64> = None;
         let mut ctx_delete: Option<u64> = None;
         let mut ctx_show_delete_dialog: Option<u64> = None;
-        let mut ctx_redownload: Option<(String, String)> = None; // (url, filename)
+        let mut ctx_redownload: Option<(String, String)> = None;
+        let mut ctx_toggle_select: Option<u64> = None;
+        let mut ctx_select_all: Option<bool> = None; // (url, filename)
         let mut ctx_double_click: Option<u64> = None;
         let mut ctx_edit: Option<u64> = None;
         let mut ctx_properties: Option<u64> = None;
@@ -1748,8 +1768,20 @@ impl eframe::App for ProxyDownloadManager {
                     TreeFilter::Completed => "Completed Downloads",
                     TreeFilter::Incompleted => "Incomplete Downloads",
                 };
+                let sel_count = self.selected_ids.len();
                 ui.label(RichText::new(label).size(14.0).strong());
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if sel_count > 0 {
+                        let sel_item_count = filtered_items.iter().filter(|d| self.selected_ids.contains(&d.id)).count();
+                        if sel_item_count > 0 {
+                            ui.label(
+                                RichText::new(format!("{} selected", sel_item_count))
+                                    .size(12.0)
+                                    .color(Color32::from_rgb(0, 120, 215)),
+                            );
+                            ui.add_space(8.0);
+                        }
+                    }
                     ui.label(
                         RichText::new(format!("{} items", filtered_items.len()))
                             .size(12.0)
@@ -1765,7 +1797,13 @@ impl eframe::App for ProxyDownloadManager {
                 .inner_margin(Margin::symmetric(8, 2))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.add_sized(Vec2::new(220.0, header_height),
+                        let all_selected = !filtered_items.is_empty() && filtered_items.iter().all(|d| selected_ids.contains(&d.id));
+                        let cb_label = if all_selected { "☑" } else { "☐" };
+                        if ui.add_sized(Vec2::new(28.0, header_height),
+                            egui::Button::new(RichText::new(cb_label).strong().size(11.0))).clicked() {
+                            ctx_select_all = Some(!all_selected);
+                        }
+                        ui.add_sized(Vec2::new(192.0, header_height),
                             egui::Label::new(RichText::new("File Name").strong().size(12.0)));
                         ui.add_sized(Vec2::new(75.0, header_height),
                             egui::Label::new(RichText::new("Size").strong().size(12.0)));
@@ -1801,7 +1839,7 @@ impl eframe::App for ProxyDownloadManager {
                     );
 
                     for (idx, item) in filtered_items.iter().enumerate() {
-                        let is_selected = selected_id == Some(item.id);
+                        let is_selected = selected_ids.contains(&item.id);
                         let bg = if is_selected { row_color_selected } else { row_color_normal };
 
                         let icon_texture = icon_cache
@@ -1816,8 +1854,14 @@ impl eframe::App for ProxyDownloadManager {
                         let response = frame
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
-                                    // File Name (fixed 220px, truncated)
-                                    ui.add_sized(Vec2::new(220.0, row_height), |ui: &mut egui::Ui| {
+                                    // Checkbox
+                                    {
+                                        let cb_label = if is_selected { "☑" } else { "☐" };
+                                        ui.add_sized(Vec2::new(28.0, row_height),
+                                            egui::Label::new(RichText::new(cb_label).size(12.0).color(Color32::BLACK)));
+                                    }
+                                    // File Name (fixed 192px, truncated)
+                                    ui.add_sized(Vec2::new(192.0, row_height), |ui: &mut egui::Ui| {
                                         ui.horizontal(|ui| {
                                             if let Some(tex) = &icon_texture {
                                                 ui.add(egui::Image::new(tex).fit_to_exact_size(Vec2::new(18.0, 18.0)));
@@ -1891,10 +1935,17 @@ impl eframe::App for ProxyDownloadManager {
                         let row_response = ui.interact(row_rect, egui::Id::new(("row", item.id)), egui::Sense::click());
 
                         if row_response.clicked() {
-                            selected_id = Some(item.id);
+                            if selected_ids.contains(&item.id) {
+                                selected_ids.remove(&item.id);
+                            } else {
+                                selected_ids.insert(item.id);
+                            }
                         }
                         if row_response.double_clicked() {
-                            selected_id = Some(item.id);
+                            if !selected_ids.contains(&item.id) {
+                                selected_ids.clear();
+                                selected_ids.insert(item.id);
+                            }
                             ctx_double_click = Some(item.id);
                         }
 
@@ -1965,6 +2016,7 @@ impl eframe::App for ProxyDownloadManager {
         // Handle context menu action flags
         if let Some(id) = ctx_resume {
             self.resume_download(id);
+            self.manual_detail_ids.insert(id);
         }
         if let Some(id) = ctx_stop {
             self.stop_download(id);
@@ -1980,7 +2032,8 @@ impl eframe::App for ProxyDownloadManager {
             self.delete_download(id);
         }
         if let Some(id) = ctx_show_delete_dialog {
-            self.pending_delete_id = Some(id);
+            let ids: Vec<u64> = if self.selected_ids.is_empty() { vec![id] } else { self.selected_ids.iter().copied().collect() };
+            self.pending_delete_ids = ids;
         }
         if let Some(id) = ctx_edit {
             self.edit_item_id = Some(id);
@@ -1993,62 +2046,85 @@ impl eframe::App for ProxyDownloadManager {
             self.show_properties = Some(id);
         }
 
+        if let Some(id) = ctx_toggle_select {
+            if selected_ids.contains(&id) {
+                selected_ids.remove(&id);
+            } else {
+                selected_ids.insert(id);
+            }
+        }
+
+        if let Some(select) = ctx_select_all {
+            for item in &cloned_items {
+                let matches_filter = match filter {
+                    TreeFilter::All => true,
+                    TreeFilter::Completed => matches!(item.status, DownloadStatus::Completed),
+                    TreeFilter::Incompleted => !matches!(item.status, DownloadStatus::Completed),
+                };
+                if matches_filter {
+                    if select {
+                        selected_ids.insert(item.id);
+                    } else {
+                        selected_ids.remove(&item.id);
+                    }
+                }
+            }
+        }
+
         if let Some(id) = ctx_double_click {
             self.manual_detail_ids.insert(id);
         }
 
-        self.selected_id = selected_id;
+        self.selected_ids = selected_ids;
 
         // ── Delete Confirmation Dialog ─────────────────────────────────────────
-        if let Some(del_id) = self.pending_delete_id {
-            if let Some(item) = self.downloads.iter().find(|d| d.id == del_id) {
-                let fname = item.file_name.clone();
-                egui::Window::new("🗑 Confirm Delete")
-                    .id(egui::Id::new("delete_confirm"))
-                    .collapsible(false)
-                    .resizable(false)
-                    .default_size(Vec2::new(380.0, 160.0))
-                    .show(ui.ctx(), |ui| {
-                        ui.add_space(8.0);
-                        ui.label(RichText::new(format!("\"{}\"", fname)).size(14.0).strong());
-                        ui.add_space(4.0);
-                        ui.label("What would you like to do?");
-                        ui.add_space(16.0);
-                        ui.horizontal(|ui| {
-                            if ui.add_sized(Vec2::new(180.0, 30.0),
-                                egui::Button::new(RichText::new("🗑 Delete Record Only").size(13.0)))
-                                .on_hover_text("Remove from list, keep file")
-                                .clicked()
-                            {
-                                self.pending_delete_id = None;
-                                // Remove from list only
-                                let mut items = self.shared.lock().unwrap();
-                                items.retain(|d| d.id != del_id);
-                                if self.selected_id == Some(del_id) {
-                                    self.selected_id = None;
-                                }
+        if !self.pending_delete_ids.is_empty() {
+            let del_count = self.pending_delete_ids.len();
+            let first_name = self.pending_delete_ids.first()
+                .and_then(|id| self.downloads.iter().find(|d| d.id == *id))
+                .map(|d| d.file_name.clone());
+            let display_name = match &first_name {
+                Some(name) if del_count == 1 => format!("\"{}\"", name),
+                Some(name) => format!("\"{}\" and {} more", name, del_count - 1),
+                None => format!("{} items", del_count),
+            };
+            let ids = std::mem::take(&mut self.pending_delete_ids);
+            egui::Window::new("🗑 Confirm Delete")
+                .id(egui::Id::new("delete_confirm"))
+                .collapsible(false)
+                .resizable(false)
+                .default_size(Vec2::new(380.0, 180.0))
+                .show(ui.ctx(), |ui| {
+                    ui.add_space(8.0);
+                    ui.label(RichText::new(display_name).size(14.0).strong());
+                    ui.add_space(4.0);
+                    ui.label("What would you like to do?");
+                    ui.add_space(16.0);
+                    ui.horizontal(|ui| {
+                        if ui.add_sized(Vec2::new(180.0, 30.0),
+                            egui::Button::new(RichText::new("🗑 Delete Record Only").size(13.0)))
+                            .on_hover_text("Remove from list, keep file")
+                            .clicked()
+                        {
+                            let mut items = self.shared.lock().unwrap();
+                            for id in &ids { items.retain(|d| d.id != *id); self.selected_ids.remove(id); }
+                        }
+                        if ui.add_sized(Vec2::new(180.0, 30.0),
+                            egui::Button::new(RichText::new("🗑 Delete File & Record").size(13.0)))
+                            .on_hover_text("Remove from list and delete file")
+                            .clicked()
+                        {
+                            for id in &ids { self.delete_download(*id); }
+                        }
+                    });
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui.add_sized(Vec2::new(120.0, 28.0), egui::Button::new("Cancel")).clicked() {
                             }
-                            if ui.add_sized(Vec2::new(180.0, 30.0),
-                                egui::Button::new(RichText::new("🗑 Delete File & Record").size(13.0)))
-                                .on_hover_text("Remove from list and delete file")
-                                .clicked()
-                            {
-                                self.pending_delete_id = None;
-                                self.delete_download(del_id);
-                            }
-                        });
-                        ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                if ui.add_sized(Vec2::new(120.0, 28.0), egui::Button::new("Cancel")).clicked() {
-                                    self.pending_delete_id = None;
-                                }
-                            });
                         });
                     });
-            } else {
-                self.pending_delete_id = None;
-            }
+                });
         }
 
         // ── Edit Item Dialog ─────────────────────────────────────────────────
@@ -2839,7 +2915,7 @@ impl eframe::App for ProxyDownloadManager {
             match action {
                 "stop" => { self.stop_download(item_id); },
                 "resume" => { self.resume_download(item_id); },
-                "delete" => { self.pending_delete_id = Some(item_id); },
+                "delete" => { self.pending_delete_ids = vec![item_id]; },
                 "close" => { self.manual_detail_ids.remove(&item_id); },
                 _ => {},
             }
