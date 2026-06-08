@@ -59,14 +59,25 @@ pub struct ProxyDownloadManager {
     pub status_message: Option<String>,
     pub status_message_timer: f32,
     pub save_counter: u32,
+    pub ws_focus: Arc<AtomicBool>,
+    pub ws_url: Arc<Mutex<String>>,
 }
 
-impl Default for ProxyDownloadManager {
-    fn default() -> Self {
-        // Ensure ~/.pdm/ exists
-        let _ = fs::create_dir_all(pdm_dir());
+impl ProxyDownloadManager {
+    pub fn new() -> Self {
+        let ws_focus = Arc::new(AtomicBool::new(false));
+        let ws_url = Arc::new(Mutex::new(String::new()));
+        let shared = Arc::new(Mutex::new(Vec::new()));
+        Self::new_with_state(shared, ws_focus, ws_url)
+    }
 
-        // Load settings from ~/.pdm/pdm.toml, or create defaults
+    /// Create app with externally-managed shared state (for WebSocket integration).
+    pub fn new_with_state(
+        shared: Arc<Mutex<Vec<DownloadItem>>>,
+        ws_focus: Arc<AtomicBool>,
+        ws_url: Arc<Mutex<String>>,
+    ) -> Self {
+        let _ = fs::create_dir_all(pdm_dir());
         let set_path = settings_path();
         let settings: AppSettings = if set_path.exists() {
             load_toml(&set_path.to_string_lossy().to_string()).unwrap_or_default()
@@ -76,9 +87,9 @@ impl Default for ProxyDownloadManager {
             s
         };
 
-        // Load downloads from SQLite DB (creates if not exists)
+        // Load persisted downloads into the shared state
         let dl_path = downloads_path().to_string_lossy().to_string();
-        let downloads: Vec<DownloadItem> = load_downloads(&dl_path);
+        let downloads = load_downloads(&dl_path);
         let next_id = downloads.iter().map(|d| d.id).max().unwrap_or(0) + 1;
 
         let downloads: Vec<DownloadItem> = downloads
@@ -91,7 +102,22 @@ impl Default for ProxyDownloadManager {
             })
             .collect();
 
-        let shared = Arc::new(Mutex::new(downloads.clone()));
+        {
+            let mut shared_lock = shared.lock().unwrap();
+            *shared_lock = downloads.clone();
+        }
+
+        Self::new_inner(downloads, shared, settings, next_id, ws_focus, ws_url)
+    }
+
+    fn new_inner(
+        downloads: Vec<DownloadItem>,
+        shared: Arc<Mutex<Vec<DownloadItem>>>,
+        settings: AppSettings,
+        next_id: u64,
+        ws_focus: Arc<AtomicBool>,
+        ws_url: Arc<Mutex<String>>,
+    ) -> Self {
 
         Self {
             downloads,
@@ -132,7 +158,33 @@ impl Default for ProxyDownloadManager {
             status_message: None,
             status_message_timer: 0.0,
             save_counter: 0,
+            ws_focus,
+            ws_url,
         }
+    }
+
+    /// Shared state for WebSocket server and other threads.
+    pub fn shared_state() -> Arc<Mutex<Vec<DownloadItem>>> {
+        Arc::new(Mutex::new(Vec::new()))
+    }
+
+    /// Load settings for non-GUI contexts (e.g. WebSocket server).
+    pub fn load_settings() -> AppSettings {
+        let _ = fs::create_dir_all(pdm_dir());
+        let set_path = settings_path();
+        if set_path.exists() {
+            load_toml(&set_path.to_string_lossy().to_string()).unwrap_or_default()
+        } else {
+            let s = AppSettings::default();
+            save_toml(&set_path.to_string_lossy().to_string(), &s);
+            s
+        }
+    }
+}
+
+impl Default for ProxyDownloadManager {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

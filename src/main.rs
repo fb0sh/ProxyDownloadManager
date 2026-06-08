@@ -12,10 +12,25 @@ mod logger;
 mod persist;
 mod types;
 mod ui;
+mod ws_server;
 
 use app::ProxyDownloadManager;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
 
 fn main() -> Result<(), eframe::Error> {
+    // ── Shared state for WebSocket + UI ──
+    let ws_focus = Arc::new(AtomicBool::new(false));
+    let ws_url = Arc::new(Mutex::new(String::new()));
+    let shared_state = Arc::new(Mutex::new(Vec::new()));
+
+    // ── Start WebSocket server for browser extension ──
+    ws_server::start(
+        shared_state.clone(),
+        ws_focus.clone(),
+        ws_url.clone(),
+    );
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([960.0, 600.0])
@@ -27,6 +42,10 @@ fn main() -> Result<(), eframe::Error> {
     eframe::run_native(
         types::APP_NAME,
         options,
-        Box::new(|_cc| Ok(Box::new(ProxyDownloadManager::default()))),
+        Box::new(|_cc| Ok(Box::new(ProxyDownloadManager::new_with_state(
+            shared_state.clone(),
+            ws_focus,
+            ws_url,
+        )))),
     )
 }

@@ -11,10 +11,51 @@ use crate::icons::IconCache;
 
 use eframe::egui::{self, Align, Color32, CornerRadius, Frame, Layout, Margin, Vec2, RichText, ScrollArea};
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::fs;
 
 impl eframe::App for ProxyDownloadManager {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // ── WebSocket download request: focus + open New Download dialog ──
+        if self.ws_focus.load(Ordering::Relaxed) {
+            self.ws_focus.store(false, Ordering::Relaxed);
+
+            // Bring window in front of ALL applications (platform-specific)
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Focus);
+            #[cfg(target_os = "macos")]
+            {
+                let pid = std::process::id();
+                let _ = std::process::Command::new("osascript")
+                    .arg("-e")
+                    .arg(format!(
+                        "tell application \"System Events\" to set frontmost of every process whose unix id is {} to true",
+                        pid
+                    ))
+                    .spawn();
+            }
+            #[cfg(target_os = "windows")]
+            {
+                // On Windows, Focus is handled by winit/eframe.
+                // An additional SetForegroundWindow call can be added if needed.
+            }
+
+            // Read the URL from WebSocket and open the New Download dialog
+            let url = {
+                let mut u = self.ws_url.lock().unwrap();
+                std::mem::take(&mut *u)
+            };
+            if !url.is_empty() {
+                self.show_new_dialog = true;
+                self.new_url = url;
+                self.new_filename = ProxyDownloadManager::file_name_from_url(&self.new_url);
+                self.new_proxy_name = self.settings.default_proxy.clone();
+                self.new_connections = 0;
+                self.clipboard_checked = true;
+                self.prev_url_for_name = self.new_url.clone();
+                crate::log_info!("Opened New Download dialog for WebSocket URL");
+            }
+        }
+
         // ── Initialize icon cache (once) ──────────────────────────────────────
         if self.icon_cache.is_none() {
             self.icon_cache = Some(IconCache::new(ui.ctx()));
