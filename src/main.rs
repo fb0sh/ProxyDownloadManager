@@ -20,7 +20,7 @@ fn main() -> Result<(), eframe::Error> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([960.0, 600.0])
             .with_min_inner_size([640.0, 400.0])
-            .with_title("Proxy Download Manager"),
+            .with_title(&format!("Proxy Download Manager v{}", env!("CARGO_PKG_VERSION"))),
         ..Default::default()
     };
 

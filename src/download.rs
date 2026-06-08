@@ -9,7 +9,7 @@
 
 use crate::types::*;
 use crate::log_info;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::fs;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -212,7 +212,6 @@ fn part_thread_inner(
 
     let mut file = fs::OpenOptions::new()
         .create(true)
-        .append(part_offset > 0)
         .write(true)
         .open(&part.temp_path)
         .map_err(|e| {
@@ -225,9 +224,33 @@ fn part_thread_inner(
             false
         })?;
 
+    // Truncate to exactly part_offset so we never append atop stale data
+    // from a previous cancelled/interrupted run.
+    let truncate_err = |e: std::io::Error, msg: &str| -> bool {
+        let mut items = state.lock().unwrap();
+        if let Some(item) = items.iter_mut().find(|d| d.id == item_id) {
+            if let Some(p) = item.parts.iter_mut().find(|p| p.index == part.index) {
+                p.status = PartStatus::Failed(format!("{}: {}", msg, e));
+            }
+        }
+        false
+    };
     if part_offset == 0 {
-        let _ = file.set_len(0);
+        file.set_len(0).map_err(|e| truncate_err(e, "set_len"))?;
+    } else {
+        let actual_len = file.metadata()
+            .map_err(|e| truncate_err(e, "metadata"))?
+            .len();
+        if actual_len > part_offset {
+            file.set_len(part_offset)
+                .map_err(|e| truncate_err(e, "set_len"))?;
+            log_info!("Part #{} truncated from {} to {} bytes",
+                part.index, actual_len, part_offset);
+        }
     }
+    // Position cursor at end for appending
+    file.seek(SeekFrom::End(0))
+        .map_err(|e| truncate_err(e, "seek"))?;
 
     let mut response_reader = response;
     let mut local_downloaded: u64 = part_offset;
@@ -585,7 +608,7 @@ pub fn start_multi_part_download(
         loop {
             std::thread::sleep(std::time::Duration::from_millis(500));
 
-            let completed = completed_counter.load(Ordering::Relaxed);
+            let _completed = completed_counter.load(Ordering::Relaxed);
 
             // Defensive: also check if all parts are in terminal state
             let (mut should_proceed, _any_failed, current_dl, current_total) = {
