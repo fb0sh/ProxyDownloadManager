@@ -5,6 +5,7 @@
 - **GUI:** egui 0.34 / eframe 0.34
 - **HTTP:** reqwest 0.13 (blocking + socks)
 - **System Icons:** file_icon_provider 1.0 (macOS NSWorkspace)
+- **Clipboard:** arboard 3.4
 - **Persistence:** serde_json (settings + download state)
 
 ## Architecture
@@ -46,10 +47,13 @@
 | Proxy | 100px | 🔌 proxy-name or `-` for no proxy |
 | Last Try | 120px | Timestamp of last activity |
 
+**Row colors:** Alternating `rgb(48,48,52)` / `rgb(55,55,60)`, selected `rgb(60,90,130)` — optimized for readability.
+
 #### 4. Multi-Thread Downloading
 - **Architecture:** Download coordinator thread → N part threads
-- **Connection count:** Up to 4 parallel connections (min 1MB per part)
+- **Connection count:** Global default (Settings: 8/16/32/64), per-download override in dialog (default = use global)
 - **Flow:** HEAD probe → check Accept-Ranges → split Range → N concurrent part threads
+- **Progress popup:** Shows automatically when downloads are active — overall progress bar, per-part mini bars, merge status
 - **Merging:** All parts complete → merge_temp_part_files → cleanup `.partN` files
 - **Fallback:** Single-thread if server doesn't support Range headers
 - **Resume:** Each part tracks its own `downloaded` offset; completed parts skipped on resume
@@ -83,8 +87,9 @@
 - Settings saved to `proxydm_settings.json`
 
 #### 9. Dialogs
-- **New Download:** URL input, optional filename override, proxy selector
-- **Settings:** Directory, proxy lists
+- **New Download:** URL input (auto-filled from clipboard if URL detected), optional filename, proxy selector, thread count (Global/8/16/32/64)
+- **Settings:** Download directory, max threads (8/16/32/64), Proxy Lists (add/edit/delete), Default Proxy
+- **Download Progress:** Auto-opening window showing overall progress + per-part progress + merge status
 - **About:** App info
 
 #### 10. Persistence
@@ -126,6 +131,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
 file_icon_provider = "1.0.1"  # macOS system file icons
+arboard = "3.4"      # Clipboard access (URL auto-detect)
 ```
 
 ### Build & Run

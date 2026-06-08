@@ -111,6 +111,8 @@ struct AppSettings {
     proxies: Vec<ProxyEntry>,
     #[serde(default)]
     default_proxy: String,
+    #[serde(default = "default_connections")]
+    max_connections: u32,
 }
 
 fn default_proxies() -> Vec<ProxyEntry> { Vec::new() }
@@ -126,6 +128,7 @@ impl Default for AppSettings {
             download_dir: default_dir,
             proxies: Vec::new(),
             default_proxy: String::new(),
+            max_connections: 8,
         }
     }
 }
@@ -903,6 +906,8 @@ struct ProxyDownloadManager {
     new_url: String,
     new_filename: String,
     new_proxy_name: String,
+    new_connections: u32,
+    clipboard_checked: bool,
     // Proxy editor
     show_proxy_editor: bool,
     edit_proxy: Option<ProxyEntry>,
@@ -946,6 +951,8 @@ impl Default for ProxyDownloadManager {
             new_url: String::new(),
             new_filename: String::new(),
             new_proxy_name: String::new(),
+            new_connections: 0,
+            clipboard_checked: false,
             show_proxy_editor: false,
             edit_proxy: None,
             edit_proxy_index: None,
@@ -1007,7 +1014,8 @@ impl ProxyDownloadManager {
             None => return,
         };
 
-        let num_connections: usize = 4;
+        let use_connections = if item.connections > 0 { item.connections } else { self.settings.max_connections };
+        let num_connections: usize = use_connections as usize;
         let mut cancels: Vec<Arc<AtomicBool>> = Vec::with_capacity(num_connections);
         for _ in 0..num_connections {
             cancels.push(Arc::new(AtomicBool::new(false)));
@@ -1153,6 +1161,7 @@ impl ProxyDownloadManager {
         let save_path = save_dir.join(&file_name);
 
         let proxy_name = std::mem::take(&mut self.new_proxy_name);
+        let use_connections = std::mem::replace(&mut self.new_connections, 0);
 
         let item_id = self.next_id;
         self.next_id += 1;
@@ -1168,7 +1177,7 @@ impl ProxyDownloadManager {
                 downloaded: 0,
                 status: DownloadStatus::Queued,
                 parts: Vec::new(),
-                connections: 4,
+                connections: use_connections,
                 proxy_name,
                 last_try: String::new(),
                 created_at: now_str(),
@@ -1302,6 +1311,8 @@ impl eframe::App for ProxyDownloadManager {
             self.new_url.clear();
             self.new_filename.clear();
             self.new_proxy_name = self.settings.default_proxy.clone();
+            self.new_connections = 0;
+            self.clipboard_checked = false;
         }
         if tb_resume {
             if let Some(id) = self.selected_id {
@@ -1447,9 +1458,9 @@ impl eframe::App for ProxyDownloadManager {
                 .auto_shrink([false; 2])
                 .show(ui, |ui| {
                     let row_height = 32.0;
-                    let row_color_normal = Color32::from_rgb(30, 30, 30);
-                    let row_color_alt = Color32::from_rgb(37, 37, 37);
-                    let row_color_selected = Color32::from_rgb(50, 70, 100);
+                    let row_color_normal = Color32::from_rgb(48, 48, 52);
+                    let row_color_alt = Color32::from_rgb(55, 55, 60);
+                    let row_color_selected = Color32::from_rgb(60, 90, 130);
 
                     for (idx, item) in filtered_items.iter().enumerate() {
                         let is_selected = selected_id == Some(item.id);
@@ -1537,25 +1548,40 @@ impl eframe::App for ProxyDownloadManager {
 
         // ── New Download Dialog ──────────────────────────────────────────────
         if self.show_new_dialog {
+            // Auto-detect clipboard URL on first open
+            if !self.clipboard_checked {
+                self.clipboard_checked = true;
+                if self.new_url.trim().is_empty() {
+                    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                        if let Ok(text) = clipboard.get_text() {
+                            let t = text.trim().to_string();
+                            if t.starts_with("http://") || t.starts_with("https://") || t.starts_with("ftp://") {
+                                self.new_url = t;
+                            }
+                        }
+                    }
+                }
+            }
+
             egui::Window::new("New Download")
                 .id(egui::Id::new("new_download_window"))
                 .collapsible(false)
                 .resizable(false)
-                .default_size(Vec2::new(500.0, 200.0))
+                .default_size(Vec2::new(520.0, 310.0))
                 .show(ui.ctx(), |ui| {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("URL:").strong());
-                        let resp = ui.add_sized(Vec2::new(380.0, 24.0),
+                        let resp = ui.add_sized(Vec2::new(400.0, 24.0),
                             egui::TextEdit::singleline(&mut self.new_url).hint_text("https://example.com/file.zip"));
                         resp.request_focus();
                     });
-                    ui.add_space(8.0);
+                    ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("Name:").strong());
-                        ui.add_sized(Vec2::new(380.0, 24.0),
+                        ui.add_sized(Vec2::new(400.0, 24.0),
                             egui::TextEdit::singleline(&mut self.new_filename).hint_text("Optional — auto-detected from URL"));
                     });
-                    ui.add_space(8.0);
+                    ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("Proxy:").strong());
                         let names: Vec<String> = std::iter::once(String::new())
@@ -1580,6 +1606,31 @@ impl eframe::App for ProxyDownloadManager {
                         if sel != current_idx {
                             self.new_proxy_name = if sel == 0 { String::new() } else { names[sel].clone() };
                         }
+                    });
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Threads:").strong());
+                        let conn_options = [("Global (default)", 0u32), ("8", 8), ("16", 16), ("32", 32), ("64", 64)];
+                        let current_idx = conn_options.iter().position(|(_, v)| *v == self.new_connections).unwrap_or(0);
+                        let mut sel = current_idx;
+                        egui::ComboBox::from_id_salt("download_connections")
+                            .selected_text(if self.new_connections == 0 {
+                                format!("Global ({})", self.settings.max_connections)
+                            } else {
+                                self.new_connections.to_string()
+                            })
+                            .show_ui(ui, |ui| {
+                                for (i, (label, _)) in conn_options.iter().enumerate() {
+                                    if ui.selectable_label(sel == i, *label).clicked() {
+                                        sel = i;
+                                    }
+                                }
+                            });
+                        if sel != current_idx {
+                            self.new_connections = conn_options[sel].1;
+                        }
+                        ui.add_space(8.0);
+                        ui.label(RichText::new("(per-file concurrent parts)").size(11.0).color(Color32::GRAY));
                     });
                     ui.add_space(12.0);
                     ui.horizontal(|ui| {
@@ -1607,6 +1658,105 @@ impl eframe::App for ProxyDownloadManager {
                 });
         }
 
+        // ── Download Progress Popup ──────────────────────────────────────────
+        {
+            // Find actively downloading items
+            let active_items: Vec<DownloadItem> = self.downloads.iter()
+                .filter(|d| matches!(d.status, DownloadStatus::Downloading | DownloadStatus::Queued)
+                    && d.total_size > 0)
+                .take(3) // max 3 shown
+                .cloned()
+                .collect();
+
+            if !active_items.is_empty() {
+                egui::Window::new("📥 Download Progress")
+                    .id(egui::Id::new("progress_popup"))
+                    .collapsible(true)
+                    .resizable(true)
+                    .default_size(Vec2::new(450.0, 250.0))
+                    .show(ui.ctx(), |ui| {
+                        ScrollArea::vertical()
+                            .id_salt("progress_list")
+                            .auto_shrink([false; 2])
+                            .show(ui, |ui| {
+                                for item in &active_items {
+                                    // Overall progress for this file
+                                    let overall_pct = if item.total_size > 0 {
+                                        item.downloaded as f64 / item.total_size as f64
+                                    } else { 0.0 };
+
+                                    Frame::NONE
+                                        .fill(Color32::from_rgb(40, 40, 45))
+                                        .corner_radius(CornerRadius::same(4))
+                                        .inner_margin(Margin::symmetric(8, 6))
+                                        .show(ui, |ui| {
+                                            ui.horizontal(|ui| {
+                                                ui.label(RichText::new(&item.file_name).size(14.0).strong());
+                                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                                    ui.label(RichText::new(format!("{:.1}%", overall_pct * 100.0)).size(14.0).strong());
+                                                });
+                                            });
+
+                                            ui.add_space(4.0);
+
+                                            // Overall progress bar
+                                            let overall = overall_pct.clamp(0.0, 1.0) as f32;
+                                            ui.add(egui::ProgressBar::new(overall)
+                                                .desired_width(ui.available_width())
+                                                .text(format!("{:.1} MB / {:.1} MB",
+                                                    item.downloaded as f64 / 1_048_576.0,
+                                                    item.total_size.max(item.downloaded) as f64 / 1_048_576.0))
+                                                .animate(true));
+
+                                            ui.add_space(2.0);
+
+                                            // Part count info
+                                            let part_total = item.parts.len();
+                                            if part_total > 1 {
+                                                let part_done = item.parts.iter().filter(|p| p.status == PartStatus::Completed).count();
+                                                ui.label(RichText::new(format!("Parts: {}/{} completed", part_done, part_total))
+                                                    .size(11.0)
+                                                    .color(Color32::GRAY));
+
+                                                // Per-part mini progress bars
+                                                ui.add_space(2.0);
+                                                for part in &item.parts {
+                                                    let p_range = if part.end > part.start { part.end - part.start + 1 } else { 1 };
+                                                    let p_pct = (part.downloaded as f64 / p_range as f64).clamp(0.0, 1.0) as f32;
+                                                    let status_icon = match &part.status {
+                                                        PartStatus::Completed => "✅",
+                                                        PartStatus::Downloading => "⬇",
+                                                        PartStatus::Pending => "⏳",
+                                                        PartStatus::Failed(_) => "❌",
+                                                    };
+                                                    ui.horizontal(|ui| {
+                                                        ui.label(RichText::new(format!("{} #{}", status_icon, part.index)).size(11.0).color(Color32::LIGHT_GRAY));
+                                                        ui.add_sized(Vec2::new(240.0, 14.0),
+                                                            egui::ProgressBar::new(p_pct)
+                                                                .desired_width(240.0)
+                                                                .text(format!("{:.1}%", p_pct * 100.0)));
+                                                    });
+                                                }
+
+                                                // Check if merging
+                                                let all_done = item.parts.iter().all(|p| p.status == PartStatus::Completed);
+                                                let is_merging = all_done && item.status == DownloadStatus::Downloading;
+                                                if is_merging {
+                                                    ui.add_space(4.0);
+                                                    ui.horizontal(|ui| {
+                                                        ui.label(RichText::new("🔄 Merging parts...").size(13.0).color(Color32::from_rgb(255, 200, 0)));
+                                                        ui.add(egui::Spinner::new());
+                                                    });
+                                                }
+                                            }
+                                        });
+                                    ui.add_space(6.0);
+                                }
+                            });
+                    });
+            }
+        }
+
         // ── Settings Window ──────────────────────────────────────────────────
         if self.show_settings {
             egui::Window::new("⚙ Settings")
@@ -1621,6 +1771,30 @@ impl eframe::App for ProxyDownloadManager {
                         ui.label("Download Directory:");
                         ui.add_sized(Vec2::new(360.0, 24.0),
                             egui::TextEdit::singleline(&mut self.settings.download_dir));
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("Max Threads (per file):");
+                        let conn_options = [("8", 8u32), ("16", 16), ("32", 32), ("64", 64)];
+                        let current_idx = conn_options.iter().position(|(_, v)| *v == self.settings.max_connections).unwrap_or(0);
+                        let mut sel = current_idx;
+                        egui::ComboBox::from_id_salt("global_connections")
+                            .selected_text(self.settings.max_connections.to_string())
+                            .show_ui(ui, |ui| {
+                                for (i, (label, val)) in conn_options.iter().enumerate() {
+                                    if ui.selectable_label(sel == i, *label).clicked() {
+                                        sel = i;
+                                    }
+                                    if i == conn_options.len() - 1 {
+                                        // Last option: custom input
+                                    }
+                                }
+                            });
+                        if sel != current_idx {
+                            self.settings.max_connections = conn_options[sel].1;
+                        }
+                        ui.add_space(8.0);
+                        ui.label(RichText::new("(8-64 concurrent connections)").size(11.0).color(Color32::GRAY));
                     });
 
                     ui.add_space(12.0);
