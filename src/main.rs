@@ -2288,56 +2288,62 @@ impl eframe::App for ProxyDownloadManager {
                     .open(&mut open)
                     .collapsible(true)
                     .resizable(true)
-                    .default_size(Vec2::new(420.0, 260.0))
+                    .default_size(Vec2::new(420.0, 300.0))
                     .show(ui.ctx(), |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(format!("{:.1}%", overall_pct * 100.0)).size(18.0).strong());
-                            if !resume_str.is_empty() {
-                                ui.label(RichText::new(&resume_str).size(11.0).color(Color32::from_rgb(0, 180, 0)));
-                            }
-                        });
-
-                        let overall = overall_pct.clamp(0.0, 1.0) as f32;
-                        ui.add(egui::ProgressBar::new(overall)
+                        // ── Big percentage + progress bar ──
+                        ui.add_space(2.0);
+                        ui.add(egui::ProgressBar::new(overall_pct.clamp(0.0, 1.0) as f32)
                             .desired_width(ui.available_width())
-                            .text(format!("{:.1} MB / {:.1} MB",
+                            .text(format!("{:.1}% — {:.1} MB / {:.1} MB",
+                                overall_pct * 100.0,
                                 item.downloaded as f64 / 1_048_576.0,
                                 item.total_size.max(item.downloaded) as f64 / 1_048_576.0))
                             .animate(true));
 
+                        // ── Two-column info ──
                         ui.add_space(4.0);
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new(format!("Size: {}", format_size(item.total_size))).size(11.0).color(Color32::LIGHT_GRAY));
-                            ui.separator();
-                            ui.label(RichText::new(format!("Speed: {}", spd_str)).size(11.0).color(Color32::LIGHT_GRAY));
-                            ui.separator();
-                            ui.label(RichText::new(format!("ETA: {}", eta_str)).size(11.0).color(Color32::LIGHT_GRAY));
-                            ui.separator();
-                            ui.label(RichText::new(&proxy_str).size(11.0).color(Color32::LIGHT_GRAY));
+                            ui.vertical(|ui| {
+                                ui.label(RichText::new(format!("📦 {}", format_size(item.total_size))).size(12.0).color(Color32::BLACK));
+                                ui.label(RichText::new(format!("⚡ {}", spd_str)).size(12.0).color(Color32::BLACK));
+                            });
+                            ui.add_space(8.0);
+                            ui.vertical(|ui| {
+                                ui.label(RichText::new(format!("⏱ {}", eta_str)).size(12.0).color(Color32::BLACK));
+                                ui.label(RichText::new(proxy_str).size(12.0).color(Color32::BLACK));
+                            });
                         });
 
+                        // ── Resume badge ──
+                        if !resume_str.is_empty() {
+                            ui.label(RichText::new(&resume_str).size(11.0).color(Color32::from_rgb(0, 150, 0)));
+                        }
+
+                        // ── Action buttons ──
                         ui.add_space(4.0);
+                        let btn_size = Vec2::new(100.0, 26.0);
                         ui.horizontal(|ui| {
                             if matches!(item.status, DownloadStatus::Downloading) {
-                                if ui.button("⏹ Stop").clicked() {
+                                if ui.add_sized(btn_size, egui::Button::new("⏹ Stop")).clicked() {
                                     actions.lock().unwrap().push((item_id, "stop"));
                                 }
                             }
                             if matches!(item.status, DownloadStatus::Paused | DownloadStatus::Failed(_)) {
-                                if ui.button("▶ Resume").clicked() {
+                                if ui.add_sized(btn_size, egui::Button::new("▶ Resume")).clicked() {
                                     actions.lock().unwrap().push((item_id, "resume"));
                                 }
                             }
-                            if ui.button("🗑 Delete").clicked() {
+                            if ui.add_sized(btn_size, egui::Button::new("🗑 Delete")).clicked() {
                                 actions.lock().unwrap().push((item_id, "delete"));
                             }
                         });
 
+                        // ── Parts section ──
                         if has_parts {
                             ui.add_space(4.0);
+                            ui.separator();
                             let part_done = parts.iter().filter(|p| p.status == PartStatus::Completed).count();
-                            ui.label(RichText::new(format!("Parts: {}/{}", part_done, parts.len())).size(11.0).color(Color32::GRAY));
-                            ui.add_space(2.0);
+                            ui.label(RichText::new(format!("Parts: {}/{}", part_done, parts.len())).size(12.0).strong());
                             egui::ScrollArea::vertical()
                                 .id_salt(("parts_list", item_id))
                                 .max_height(90.0)
@@ -2354,8 +2360,8 @@ impl eframe::App for ProxyDownloadManager {
                                         };
                                         ui.horizontal(|ui| {
                                             ui.label(RichText::new(format!("{} #{}", icon, part.index)).size(11.0).color(Color32::LIGHT_GRAY));
-                                            ui.add_sized(Vec2::new(240.0, 14.0),
-                                                egui::ProgressBar::new(p_pct).desired_width(240.0).text(format!("{:.1}%", p_pct * 100.0)));
+                                            ui.add_sized(Vec2::new(220.0, 14.0),
+                                                egui::ProgressBar::new(p_pct).desired_width(220.0).text(format!("{:.1}%", p_pct * 100.0)));
                                         });
                                     }
                                 });
