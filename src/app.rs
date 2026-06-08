@@ -54,6 +54,8 @@ pub struct ProxyDownloadManager {
     pub detail_actions: Arc<Mutex<Vec<(u64, &'static str)>>>,
 
     pub next_id: u64,
+    pub last_clipboard_text: String,
+    pub clipboard_poll_counter: u32,
     pub status_message: Option<String>,
     pub status_message_timer: f32,
     pub save_counter: u32,
@@ -125,6 +127,8 @@ impl Default for ProxyDownloadManager {
             manual_detail_ids: HashSet::new(),
             detail_actions: Arc::new(Mutex::new(Vec::new())),
             next_id,
+            last_clipboard_text: String::new(),
+            clipboard_poll_counter: 0,
             status_message: None,
             status_message_timer: 0.0,
             save_counter: 0,
@@ -183,6 +187,9 @@ impl ProxyDownloadManager {
 
     /// Start (or resume) a download by spawning part threads
     pub fn start_download(&mut self, id: u64) {
+        // Keep detail window open after download completes
+        self.manual_detail_ids.insert(id);
+
         let item = match self.shared.lock().unwrap().iter().find(|d| d.id == id) {
             Some(i) => i.clone(),
             None => return,
@@ -253,6 +260,9 @@ impl ProxyDownloadManager {
 
     /// Resume a paused/failed download
     pub fn resume_download(&mut self, id: u64) {
+        // Keep detail window open after download completes
+        self.manual_detail_ids.insert(id);
+
         if self.active_downloads.contains_key(&id) {
             log_info!("Item#{} RESUME skipped — already active", id);
             return;

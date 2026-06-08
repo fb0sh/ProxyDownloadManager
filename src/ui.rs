@@ -35,6 +35,31 @@ impl eframe::App for ProxyDownloadManager {
             }
         }
 
+        // ── Clipboard URL auto-detect ─────────────────────────────────────
+        self.clipboard_poll_counter += 1;
+        if self.clipboard_poll_counter >= 30 && !self.show_new_dialog {
+            self.clipboard_poll_counter = 0;
+            if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                if let Ok(text) = clipboard.get_text() {
+                    let t = text.trim().to_string();
+                    if t != self.last_clipboard_text
+                        && (t.starts_with("http://") || t.starts_with("https://") || t.starts_with("ftp://"))
+                        && looks_like_download_url(&t)
+                    {
+                        crate::log_info!("Auto-detected download URL: {}", t);
+                        self.last_clipboard_text.clone_from(&t);
+                        self.show_new_dialog = true;
+                        self.new_url = t;
+                        self.new_filename = ProxyDownloadManager::file_name_from_url(&self.new_url);
+                        self.new_proxy_name = self.settings.default_proxy.clone();
+                        self.new_connections = 0;
+                        self.clipboard_checked = true;
+                        self.prev_url_for_name.clone_from(&self.new_url);
+                    }
+                }
+            }
+        }
+
         // ── Time-based status message fading ──────────────────────────────────
         if self.status_message.is_some() {
             self.status_message_timer -= ui.input(|i| i.unstable_dt);
@@ -423,7 +448,7 @@ impl ProxyDownloadManager {
                                 let is_merging = item.merge_progress > 0.0;
                                 let merge_pct = (item.merge_progress * 100.0) as u32;
                                 let status_display = if is_merging {
-                                    format!("🔄 Merging ({}%)", merge_pct.min(100))
+                                    format!("Merging ({}%)", merge_pct.min(100))
                                 } else {
                                     let pct = if item.total_size > 0 {
                                         ((item.downloaded as f64 / item.total_size as f64) * 100.0) as u32
@@ -978,7 +1003,7 @@ impl ProxyDownloadManager {
                     let (bar_pct, bar_text) = if item.merge_progress > 0.0 {
                         let mp = item.merge_progress.clamp(0.0, 1.0) as f32;
                         let mpct = (mp * 100.0) as u32;
-                        (mp, format!("🔄 Merging ({}%)", mpct.min(100)))
+                        (mp, format!("Merging ({}%)", mpct.min(100)))
                     } else {
                         let pct = overall_pct.clamp(0.0, 1.0) as f32;
                         (pct, format!("{:.1}% — {:.1} MB / {:.1} MB",
@@ -989,7 +1014,7 @@ impl ProxyDownloadManager {
                     ui.add(egui::ProgressBar::new(bar_pct)
                         .desired_width(ui.available_width())
                         .text(bar_text)
-                        .animate(true));
+                        );
 
                     // ── URL ──
                     ui.add_space(2.0);
@@ -1099,6 +1124,20 @@ impl ProxyDownloadManager {
                                 actions.lock().unwrap().push((item_id, "resume"));
                             }
                         }
+                        if matches!(item.status, DownloadStatus::Completed) {
+                            let sv = item.save_path.clone();
+                            if ui.add_sized(btn_size, egui::Button::new("📂 Open Folder")).clicked() {
+                                let p = sv;
+                                #[cfg(target_os = "macos")]
+                                let _ = std::process::Command::new("open").arg("-R").arg(&p).spawn();
+                                #[cfg(target_os = "windows")]
+                                let _ = std::process::Command::new("explorer").arg("/select,").arg(&p).spawn();
+                                #[cfg(target_os = "linux")]
+                                if let Some(parent) = std::path::Path::new(&p).parent() {
+                                    let _ = std::process::Command::new("xdg-open").arg(parent).spawn();
+                                }
+                            }
+                        }
                         if ui.add_sized(btn_size, egui::Button::new("🗑 Delete")).clicked() {
                             actions.lock().unwrap().push((item_id, "delete"));
                         }
@@ -1137,10 +1176,7 @@ impl ProxyDownloadManager {
 
                         if is_merging {
                             ui.add_space(4.0);
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new("🔄 Merging...").size(12.0).color(Color32::from_rgb(255, 170, 0)));
-                                ui.add(egui::Spinner::new());
-                            });
+                            ui.label(RichText::new("Merging...").size(12.0).color(Color32::from_rgb(255, 170, 0)));
                         }
                     }
                 });
@@ -1495,4 +1531,64 @@ impl ProxyDownloadManager {
                 });
             });
     }
+}
+
+// ─── Download-URL heuristics ─────────────────────────────────────────────────
+
+/// Check whether `url` looks like a downloadable file (archive, image, video,
+/// installer, document, package, etc.) rather than a webpage.
+fn looks_like_download_url(url: &str) -> bool {
+    // Strip query string and fragment before checking path extension
+    let path = url.split(|c| c == '?' || c == '#').next().unwrap_or(url);
+    let path_lower = path.to_lowercase();
+
+    // Multi-part extensions (e.g. .tar.gz, .tar.xz)
+    let multi_extensions = [
+        ".tar.gz", ".tar.xz", ".tar.bz2", ".tar.zst", ".tar.lz",
+        ".tgz", ".txz", ".tbz2", ".tzst",
+    ];
+    for ext in &multi_extensions {
+        if path_lower.ends_with(ext) {
+            return true;
+        }
+    }
+
+    // Single-file extensions for downloadable content
+    let single_extensions = [
+        // Archives
+        ".zip", ".rar", ".7z", ".tar", ".gz", ".xz", ".bz2", ".zst", ".lz", ".lzma",
+        ".z", ".arj", ".cab", ".iso", ".img", ".vhd", ".vmdk",
+        // Installers / executables
+        ".exe", ".msi", ".dmg", ".pkg", ".apk", ".deb", ".rpm",
+        ".AppImage", ".flatpak", ".snap", ".run", ".sh", ".bin",
+        // Documents
+        ".pdf", ".epub", ".mobi", ".djvu", ".chm",
+        // Video
+        ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm",
+        ".m4v", ".ts", ".mts", ".3gp",
+        // Audio
+        ".mp3", ".flac", ".wav", ".aac", ".ogg", ".opus", ".m4a", ".wma",
+        // Images (large/raw formats)
+        ".psd", ".tiff", ".raw", ".cr2", ".nef", ".arw",
+        ".bmp", ".pcx", ".tga",
+        // Disk images / firmware
+        ".ddf", ".hdi", ".sparsebundle",
+        // Fonts
+        ".ttf", ".otf", ".woff", ".woff2",
+        // Code / libraries
+        ".jar", ".war", ".ear", ".nupkg", ".whl", ".gem", ".crate",
+        ".vsix", ".crx", ".xpi",
+        // Virtual machines
+        ".ova", ".ovf", ".vbox",
+        // Other common download formats
+        ".csv", ".json", ".xml", ".sql", ".db", ".sqlite",
+        ".dmp", ".core",
+    ];
+    for ext in &single_extensions {
+        if path_lower.ends_with(ext) {
+            return true;
+        }
+    }
+
+    false
 }
