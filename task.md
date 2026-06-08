@@ -1,141 +1,164 @@
 # Proxy Download Manager — Design Document
 
 ## Tech Stack
-- **Language:** Rust (edition 2024)
+- **Language:** Rust (edition 2021)
 - **GUI:** egui 0.34 / eframe 0.34
-- **HTTP:** reqwest 0.13 (blocking + socks)
+- **HTTP:** reqwest 0.13 (blocking + socks5)
+- **Persistence:** rusqlite 0.32 (SQLite) + toml 0.8
 - **System Icons:** file_icon_provider 1.0 (macOS NSWorkspace)
 - **Clipboard:** arboard 3.4
-- **Persistence:** serde_json (settings + download state)
+- **File dialog:** rfd 0.15
 
-## Architecture
+## Module Architecture
 
-### UI Layout
+```
+main.rs          Entry point, module declarations
+  ├── types.rs   Data types, enums, SpeedTracker, helpers
+  ├── persist.rs SQLite + TOML load/save
+  ├── download.rs Multi-threaded download engine
+  ├── app.rs     ProxyDownloadManager struct + lifecycle
+  ├── icons.rs   System file icon cache (cross-platform)
+  └── ui.rs      egui UI rendering (impl eframe::App)
+```
+
+## UI Layout
 
 ```
 +--------------------------------------------------------------------------------+
 | 📥 New Download | ▶ Resume | ⏹ Stop | 🗑 Delete  |  ←→  | ⚙ Settings | ℹ About | ❌ Quit |
 +-------------------+------------------------------------------------------------+
-| 📂 Downloads      |   File Name  |   Size    |  Status  | Proxy | Last Try |
-| - 📁 All (N)      |  [system     |  12.34 MB | ⬇ 56%   | 🔌 p1 | 2026-06-07 |
-| - ✅ Completed (N)|  icon + name]|           | ✅ Done  |   -   |      -     |
-| - ⏳ Incomplete(N)|              |           | ⏸ Paused |   -  |    ...     |
-|                   |              |           | ❌ Failed |      |            |
-|                   |              |           |           |      |            |
+| 📂 Downloads      |  ☐  File Name  |   Size    |  Status  | Speed | Remain | Resume | Proxy | Last Try |
+| - 📁 All (N)      |  ☑  [icon]name |  12.34 MB | ⬇ 56%   | 2.1MB/s| 12s   | ✅     | 🔌 p1 | 2026-06-07 |
+| - ✅ Completed (N)|  ☐  [icon]name |           | ✅ Done  |  -    |  -    | ✅     |   -   |      -     |
+| - ⏳ Incomplete(N)|  ☐  [icon]name |           | ⏸ Paused |  -    |  -    | ❌     |   -  |    ...     |
+|                   |  ☐  [icon]name |           | ❌ Failed |       |       |        |      |            |
 +-------------------+------------------------------------------------------------+
 ```
 
-### Features Implemented
+## Features Implemented
 
-#### 1. Menubar (Toolbar)
-- **Left group:** 📥 New Download, ▶ Resume, ⏹ Stop, 🗑 Delete
-- **Right group:** ⚙ Settings, ℹ About, ❌ Quit
-- Resume enabled only for Paused/Failed items
-- Stop enabled only for actively Downloading items
+### 1. Toolbar
+- **Left:** 📥 New Download, ▶ Resume, ⏹ Stop, 🗑 Delete
+- **Right:** ⚙ Settings, ℹ About, ❌ Quit
+- Resume enabled for Paused/Failed items; Stop for Downloading items
+- **Batch mode:** when nothing selected, buttons act on ALL matching items
 
-#### 2. Treeview (Sidebar)
-- 📁 All (N) — shows all downloads
-- ✅ Completed (N) — only completed
-- ⏳ Incomplete (N) — everything else
+### 2. Sidebar (Tree View)
+- 📁 All (N), ✅ Completed (N), ⏳ Incomplete (N)
+- Status message display below
 
-#### 3. Table Columns
+### 3. Table
 | Column | Width | Content |
 |--------|-------|---------|
-| File Name | Flexible | System file icon (macOS native via NSWorkspace) + filename |
-| Size | 100px | Formatted size (B/KB/MB/GB) |
-| Status | 180px | Status text + progress bar for active downloads |
-| Proxy | 100px | 🔌 proxy-name or `-` for no proxy |
-| Last Try | 120px | Timestamp of last activity |
+| ☐/☑ | 28px | Multi-select checkbox |
+| File Name | 192px | System file icon + truncated name |
+| Size | 75px | Formatted size |
+| Status | 120px | Status text + % for active |
+| Speed | 80px | EWMA speed |
+| Remain | 80px | ETA |
+| Resume | 55px | ✅/❌ badge |
+| Proxy | 55px | 🔌 proxy-name or `-` |
+| Last Try | 120px | Timestamp |
 
-**Row colors:** Alternating `rgb(48,48,52)` / `rgb(55,55,60)`, selected `rgb(60,90,130)` — optimized for readability.
+### 4. Multi-Thread Downloading
+- **Architecture:** Coordinator thread → HEAD probe → N part threads
+- **Part size:** ~1MB per part, min(connections, total/1MB)
+- **Flow:** HEAD → check Accept-Ranges → split Range → concurrent GETs
+- **Merging:** All parts complete → merge_temp_part_files → cleanup `.partN`
+- **Fallback:** 1 part if server doesn't support Range
+- **Resume:** Each part tracked independently; completed parts skipped
 
-#### 4. Multi-Thread Downloading
-- **Architecture:** Download coordinator thread → N part threads
-- **Connection count:** Global default (Settings: 8/16/32/64), per-download override in dialog (default = use global)
-- **Flow:** HEAD probe → check Accept-Ranges → split Range → N concurrent part threads
-- **Progress popup:** Shows automatically when downloads are active — overall progress bar, per-part mini bars, merge status
-- **Merging:** All parts complete → merge_temp_part_files → cleanup `.partN` files
-- **Fallback:** Single-thread if server doesn't support Range headers
-- **Resume:** Each part tracks its own `downloaded` offset; completed parts skipped on resume
-
-#### 5. Real Download Functionality
-- HTTP/HTTPS with redirect support
-- Chunked 64KB streaming with periodic progress updates (every 256KB)
-- Per-part progress tracked independently, summed for total
+### 5. Real Download Functionality
+- HTTP/HTTPS with redirect support (up to 10)
+- 64KB chunked streaming, progress update every 256KB
 - Graceful error handling: timeouts → Paused; other errors → Failed
-- Background threads (std::thread::spawn) with cancel flags (AtomicBool)
+- Background `std::thread::spawn` with `AtomicBool` cancel flags
 
-#### 6. Proxy Lists
-- Settings window has "Proxy Lists" section
+### 6. Proxy Lists
 - Named proxy entries: name, protocol (HTTP/SOCKS5), host, port, username, password
-- Add / Edit / Delete proxies via popup editor
-- Default proxy selector (combo box)
-- Per-download proxy selection in New Download dialog
-- Proxy column in table shows which proxy each item uses
-- Proxy resolution: item.proxy_name → lookup in settings.proxies → build_client
+- Add / Edit / Delete via popup editor
+- Default proxy selector, per-download override
 
-#### 7. Pause / Resume
-- **Pause:** Sets all cancel flags → part threads stop → per-part progress saved
-- **Resume:** Completed parts skipped, pending parts restart with proper Range headers
-- **Stop:** Same as Pause (marks as Paused for later resume)
-- **Delete:** Cancels all threads, removes main file + all `.partN` temp files
+### 7. Pause / Resume
+- **Pause:** Cancel flags → part threads stop → per-part progress saved
+- **Resume:** Completed parts skipped, pending restart with correct Range
+- **Stop:** Same as Pause
+- **Delete:** Cancel threads, remove main file + all `.partN` files
 
-#### 8. Settings
-- Download Directory (text input)
+### 8. Settings
+- Download Directory (with browse dialog via rfd)
+- Max threads per file (8/16/32/64)
 - Proxy Lists with add/edit/delete
 - Default Proxy selector
-- Settings saved to `proxydm_settings.json`
+- Cache display + clear button
 
-#### 9. Dialogs
-- **New Download:** URL input (auto-filled from clipboard if URL detected), optional filename, proxy selector, thread count (Global/8/16/32/64)
-- **Settings:** Download directory, max threads (8/16/32/64), Proxy Lists (add/edit/delete), Default Proxy
-- **Download Progress:** Auto-opening window showing overall progress + per-part progress + merge status
-- **About:** App info
+### 9. Dialogs
+| Dialog | Content |
+|--------|---------|
+| **New Download** | URL (auto-filled from clipboard), filename, proxy, threads |
+| **Edit Download** | Modify URL, filename, proxy, threads |
+| **Properties** | Full metadata: name, URL, path, size, status, proxy, parts, dates |
+| **Confirm Delete** | Delete record only (keep file) or delete file + record |
+| **Download Progress** | Auto/manual detail window with progress bar, per-part progress, merge status |
+| **About** | App info |
 
-#### 10. Persistence
-- Downloads saved to `proxydm_downloads.json` (auto-save every ~60 frames)
+### 10. Selection & Batch Operations
+- **Multi-select:** Checkbox in each row; click row to toggle
+- **Select all:** Header checkbox to toggle all visible items
+- **Batch Resume:** Resume all selected paused/failed items
+- **Batch Stop:** Stop all selected downloading items
+- **Batch Delete:** Delete all selected items
+- When nothing selected: toolbar buttons act on ALL matching items
+
+### 11. Detail Window Rules
+- **Toolbar Resume (batch, >1 item):** No detail window
+- **Toolbar Resume (single item):** Opens detail window
+- **Context menu ▶ Continue:** Opens detail window
+- **Double-click row:** Opens detail window
+- **Toolbar Stop (any):** No detail window
+
+### 12. Persistence
+- Downloads saved to SQLite (`downloads.db`), auto-save every ~60 frames
 - Incomplete downloads marked as Paused on restart
-- Settings saved to `proxydm_settings.json`
+- Settings saved to TOML (`pdm.toml`)
+- All data in `~/Downloads/.pdm/`
 
-### Data Types
+### 13. Cross-Platform
+| Action | macOS | Windows | Linux |
+|--------|-------|---------|-------|
+| Open file | `open` | `explorer` | `xdg-open` |
+| Show in folder | `open -R` | `explorer /select,` | `xdg-open` parent dir |
+| File icons | NSWorkspace | Fallback (generic) | Fallback (generic) |
+| File dialog | rfd (native) | rfd (native) | rfd (native) |
+
+## Data Types
 
 ```rust
 enum DownloadStatus { Downloading, Paused, Completed, Failed(String), Queued }
 
-struct DownloadPart {
-    index: u32, start: u64, end: u64, downloaded: u64,
-    temp_path: String, status: PartStatus
-}
+struct DownloadPart { index: u32, start, end, downloaded: u64, temp_path, status: PartStatus }
 enum PartStatus { Pending, Downloading, Completed, Failed(String) }
 
 struct DownloadItem {
     id: u64, url, file_name, save_path, total_size, downloaded,
     status, last_try, created_at, parts: Vec<DownloadPart>,
-    connections: u32, proxy_name: String
+    connections: u32, proxy_name: String, resumable: Option<bool>
 }
 
 enum ProxyProtocol { Http, Socks5 }
 struct ProxyEntry { name, protocol, host, port, username, password }
-struct AppSettings { download_dir, proxies: Vec<ProxyEntry>, default_proxy: String }
+struct AppSettings { download_dir, proxies, default_proxy, max_connections }
 ```
 
-### Dependencies
-
-```toml
-[dependencies]
-eframe = "0.34"      # egui framework (native)
-egui = "0.34"         # GUI toolkit
-reqwest = { version = "0.13", features = ["blocking", "socks"] }
-chrono = { version = "0.4", features = ["serde"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-anyhow = "1"
-file_icon_provider = "1.0.1"  # macOS system file icons
-arboard = "3.4"      # Clipboard access (URL auto-detect)
-```
-
-### Build & Run
+## Build & Run
 
 ```bash
 cargo run --release   # macOS arm64 binary: ~14MB
 ```
+
+## Performance
+
+- Binary size: ~14 MB (release, stripped, LTO)
+- Threads: up to 64 per download, configurable globally or per-download
+- Speed tracker: EWMA with α=0.15, updates every 256KB
+- Save interval: every 60 frames (~1 second at 60fps)

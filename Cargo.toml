@@ -2,6 +2,16 @@
 name = "proxydm"
 version = "0.1.0"
 edition = "2021"
+description = "A download manager built with Rust and egui — multi-threaded, pause/resume, proxy support"
+
+[profile.release]
+opt-level = "z"        # Optimize for binary size
+lto = true             # Full link-time optimization
+codegen-units = 1      # Single codegen unit for max optimization
+strip = "symbols"      # Strip debug symbols
+panic = "abort"        # Abort on panic (no unwind tables)
+# Note: panic="abort" disables backtraces on panics.
+# Remove if you need RUST_BACKTRACE=1 debugging.
 
 [dependencies]
 eframe = "0.34"
