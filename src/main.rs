@@ -1777,8 +1777,8 @@ impl eframe::App for ProxyDownloadManager {
 
             ui.add_space(2.0);
 
-            // Table rows
-            ScrollArea::vertical()
+            // Table rows (with horizontal scroll for many columns)
+            ScrollArea::both()
                 .id_salt("download_table")
                 .auto_shrink([false; 2])
                 .show(ui, |ui| {
@@ -2249,168 +2249,140 @@ impl eframe::App for ProxyDownloadManager {
                 });
         }
 
-        // ── Download Details — Separate OS Windows ─────────────────────────
+                // ── Download Details Windows (inside app) ────────────────────────────
         {
-            // Collect items that need detail windows: active + manually opened
-            let mut detail_ids: Vec<(u64, String)> = self.downloads.iter()
-                .filter(|d| matches!(d.status, DownloadStatus::Downloading | DownloadStatus::Queued))
-                .map(|d| (d.id, d.file_name.clone()))
-                .collect();
-            // Add manually opened items (from double-click)
-            for &mid in &self.manual_detail_ids.clone() {
-                if !detail_ids.iter().any(|(id, _)| *id == mid) {
-                    if let Some(item) = self.downloads.iter().find(|d| d.id == mid) {
-                        detail_ids.push((mid, item.file_name.clone()));
+            let mut to_close_manual: Vec<u64> = Vec::new();
+
+            for item in &self.downloads {
+                let is_auto = matches!(item.status, DownloadStatus::Downloading | DownloadStatus::Queued);
+                let is_manual = self.manual_detail_ids.contains(&item.id);
+                if !is_auto && !is_manual { continue; }
+
+                let fname = item.file_name.clone();
+                let overall_pct = if item.total_size > 0 {
+                    item.downloaded as f64 / item.total_size as f64
+                } else { 0.0 };
+                let (spd_str, eta_str) = if let Some(tracker) = self.speed_trackers.get(&item.id) {
+                    (format_speed(tracker.speed()),
+                     tracker.eta(item.total_size.saturating_sub(item.downloaded)))
+                } else { ("-".to_string(), "-".to_string()) };
+                let proxy_str = if item.proxy_name.is_empty() {
+                    "No Proxy".to_string()
+                } else { format!("🔌 {}", item.proxy_name) };
+                let resume_str = match item.resumable {
+                    Some(true) => "✅ Resumable".to_string(),
+                    Some(false) => "❌ Non-Resumable".to_string(),
+                    None => String::new(),
+                };
+                let parts = item.parts.clone();
+                let has_parts = parts.len() > 1;
+                let is_merging = has_parts
+                    && parts.iter().all(|p| p.status == PartStatus::Completed)
+                    && item.status == DownloadStatus::Downloading;
+                let item_id = item.id;
+                let actions = self.detail_actions.clone();
+
+                let mut open = (is_auto && !self.closed_detail_windows.contains(&item.id)) || self.manual_detail_ids.contains(&item.id);
+                egui::Window::new(fname)
+                    .id(egui::Id::new(("detail", item_id)))
+                    .open(&mut open)
+                    .collapsible(true)
+                    .resizable(true)
+                    .default_size(Vec2::new(420.0, 260.0))
+                    .show(ui.ctx(), |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(format!("{:.1}%", overall_pct * 100.0)).size(18.0).strong());
+                            if !resume_str.is_empty() {
+                                ui.label(RichText::new(&resume_str).size(11.0).color(Color32::from_rgb(0, 180, 0)));
+                            }
+                        });
+
+                        let overall = overall_pct.clamp(0.0, 1.0) as f32;
+                        ui.add(egui::ProgressBar::new(overall)
+                            .desired_width(ui.available_width())
+                            .text(format!("{:.1} MB / {:.1} MB",
+                                item.downloaded as f64 / 1_048_576.0,
+                                item.total_size.max(item.downloaded) as f64 / 1_048_576.0))
+                            .animate(true));
+
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(format!("Size: {}", format_size(item.total_size))).size(11.0).color(Color32::LIGHT_GRAY));
+                            ui.separator();
+                            ui.label(RichText::new(format!("Speed: {}", spd_str)).size(11.0).color(Color32::LIGHT_GRAY));
+                            ui.separator();
+                            ui.label(RichText::new(format!("ETA: {}", eta_str)).size(11.0).color(Color32::LIGHT_GRAY));
+                            ui.separator();
+                            ui.label(RichText::new(&proxy_str).size(11.0).color(Color32::LIGHT_GRAY));
+                        });
+
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            if matches!(item.status, DownloadStatus::Downloading) {
+                                if ui.button("⏹ Stop").clicked() {
+                                    actions.lock().unwrap().push((item_id, "stop"));
+                                }
+                            }
+                            if matches!(item.status, DownloadStatus::Paused | DownloadStatus::Failed(_)) {
+                                if ui.button("▶ Resume").clicked() {
+                                    actions.lock().unwrap().push((item_id, "resume"));
+                                }
+                            }
+                            if ui.button("🗑 Delete").clicked() {
+                                actions.lock().unwrap().push((item_id, "delete"));
+                            }
+                        });
+
+                        if has_parts {
+                            ui.add_space(4.0);
+                            let part_done = parts.iter().filter(|p| p.status == PartStatus::Completed).count();
+                            ui.label(RichText::new(format!("Parts: {}/{}", part_done, parts.len())).size(11.0).color(Color32::GRAY));
+                            ui.add_space(2.0);
+                            egui::ScrollArea::vertical()
+                                .id_salt(("parts_list", item_id))
+                                .max_height(90.0)
+                                .auto_shrink([false; 2])
+                                .show(ui, |ui| {
+                                    for part in &parts {
+                                        let p_range = if part.end > part.start { part.end - part.start + 1 } else { 1 };
+                                        let p_pct = (part.downloaded as f64 / p_range as f64).clamp(0.0, 1.0) as f32;
+                                        let icon = match &part.status {
+                                            PartStatus::Completed => "✅",
+                                            PartStatus::Downloading => "⬇",
+                                            PartStatus::Pending => "⏳",
+                                            PartStatus::Failed(_) => "❌",
+                                        };
+                                        ui.horizontal(|ui| {
+                                            ui.label(RichText::new(format!("{} #{}", icon, part.index)).size(11.0).color(Color32::LIGHT_GRAY));
+                                            ui.add_sized(Vec2::new(240.0, 14.0),
+                                                egui::ProgressBar::new(p_pct).desired_width(240.0).text(format!("{:.1}%", p_pct * 100.0)));
+                                        });
+                                    }
+                                });
+
+                            if is_merging {
+                                ui.add_space(4.0);
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new("🔄 Merging parts...").size(13.0).color(Color32::from_rgb(255, 200, 0)));
+                                    ui.add(egui::Spinner::new());
+                                });
+                            }
+                        }
+                    });
+
+                if !open {
+                    if is_manual {
+                        to_close_manual.push(item.id);
                     } else {
-                        self.manual_detail_ids.remove(&mid);
+                        self.closed_detail_windows.insert(item.id);
                     }
                 }
             }
 
-            // Only track closed windows for active downloads (auto-cleanup)
-            let active_set: HashSet<u64> = self.downloads.iter()
-                .filter(|d| matches!(d.status, DownloadStatus::Downloading | DownloadStatus::Queued))
-                .map(|d| d.id)
-                .collect();
-            self.closed_detail_windows.retain(|id| active_set.contains(id));
-
-            // vp_targets: items not yet closed by user
-            let vp_targets: Vec<u64> = detail_ids.iter()
-                .filter(|(id, _)| !self.closed_detail_windows.contains(id))
-                .map(|(id, _)| *id)
-                .collect();
-
-            let mut new_closed: Vec<u64> = Vec::new();
-
-            for id in &vp_targets {
-                if let Some(item) = self.downloads.iter().find(|d| d.id == *id).cloned() {
-                    let fname = item.file_name.clone();
-                    let overall_pct = if item.total_size > 0 {
-                        item.downloaded as f64 / item.total_size as f64
-                    } else { 0.0 };
-                    let (spd_str, eta_str) = if let Some(tracker) = self.speed_trackers.get(&item.id) {
-                        (format_speed(tracker.speed()),
-                         tracker.eta(item.total_size.saturating_sub(item.downloaded)))
-                    } else { ("-".to_string(), "-".to_string()) };
-                    let proxy_str = if item.proxy_name.is_empty() {
-                        "No Proxy".to_string()
-                    } else { format!("🔌 {}", item.proxy_name) };
-                    let resume_str = match item.resumable {
-                        Some(true) => "✅ Resumable".to_string(),
-                        Some(false) => "❌ Non-Resumable".to_string(),
-                        None => String::new(),
-                    };
-                    let parts = item.parts.clone();
-                    let has_parts = parts.len() > 1;
-                    let is_merging = has_parts
-                        && parts.iter().all(|p| p.status == PartStatus::Completed)
-                        && item.status == DownloadStatus::Downloading;
-                    let item_id = item.id;
-                    let actions = self.detail_actions.clone();
-
-                    ui.ctx().show_viewport_immediate(
-                        egui::ViewportId::from_hash_of(("dl_detail", *id)),
-                        egui::ViewportBuilder::default()
-                            .with_title(fname)
-                            .with_inner_size([460.0, 340.0]),
-                        move |ui, _class| {
-                            ui.style_mut().visuals.dark_mode = false;
-                            ui.horizontal(|ui| {
-                                    ui.label(RichText::new(format!("{:.1}%", overall_pct * 100.0)).size(22.0).strong());
-                                    if !resume_str.is_empty() {
-                                        ui.label(RichText::new(&resume_str).size(12.0).color(Color32::from_rgb(0, 180, 0)));
-                                    }
-
-                                });
-
-                                let overall = overall_pct.clamp(0.0, 1.0) as f32;
-                                ui.add(egui::ProgressBar::new(overall)
-                                    .desired_width(ui.available_width())
-                                    .text(format!("{:.1} MB / {:.1} MB",
-                                        item.downloaded as f64 / 1_048_576.0,
-                                        item.total_size.max(item.downloaded) as f64 / 1_048_576.0))
-                                    .animate(true));
-
-                                ui.add_space(6.0);
-                                ui.horizontal(|ui| {
-                                    ui.label(RichText::new(format!("Size: {}", format_size(item.total_size))).size(12.0).color(Color32::LIGHT_GRAY));
-                                    ui.separator();
-                                    ui.label(RichText::new(format!("Speed: {}", spd_str)).size(12.0).color(Color32::LIGHT_GRAY));
-                                    ui.separator();
-                                    ui.label(RichText::new(format!("ETA: {}", eta_str)).size(12.0).color(Color32::LIGHT_GRAY));
-                                    ui.separator();
-                                    ui.label(RichText::new(&proxy_str).size(12.0).color(Color32::LIGHT_GRAY));
-                                });
-
-                                ui.add_space(4.0);
-                                ui.horizontal(|ui| {
-                                    if matches!(item.status, DownloadStatus::Downloading) {
-                                        if ui.button("⏹ Stop").clicked() {
-                                            actions.lock().unwrap().push((item_id, "stop"));
-                                        }
-                                    }
-                                    if matches!(item.status, DownloadStatus::Paused | DownloadStatus::Failed(_)) {
-                                        if ui.button("▶ Resume").clicked() {
-                                            actions.lock().unwrap().push((item_id, "resume"));
-                                        }
-                                    }
-                                    if ui.button("🗑 Delete").clicked() {
-                                        actions.lock().unwrap().push((item_id, "delete"));
-                                    }
-                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                        if ui.button("✕").clicked() {
-                                            actions.lock().unwrap().push((item_id, "close"));
-                                        }
-                                    });
-                                });
-
-                                if has_parts {
-                                    ui.add_space(6.0);
-                                    let part_done = parts.iter().filter(|p| p.status == PartStatus::Completed).count();
-                                    ui.label(RichText::new(format!("Parts: {}/{}", part_done, parts.len())).size(12.0).color(Color32::GRAY));
-                                    ui.add_space(2.0);
-                                    egui::ScrollArea::vertical()
-                                        .id_salt(("parts_list", item_id))
-                                        .max_height(110.0)
-                                        .auto_shrink([false; 2])
-                                        .show(ui, |ui| {
-                                            for part in &parts {
-                                                let p_range = if part.end > part.start { part.end - part.start + 1 } else { 1 };
-                                                let p_pct = (part.downloaded as f64 / p_range as f64).clamp(0.0, 1.0) as f32;
-                                                let icon = match &part.status {
-                                                    PartStatus::Completed => "✅",
-                                                    PartStatus::Downloading => "⬇",
-                                                    PartStatus::Pending => "⏳",
-                                                    PartStatus::Failed(_) => "❌",
-                                                };
-                                                ui.horizontal(|ui| {
-                                                    ui.label(RichText::new(format!("{} #{}", icon, part.index)).size(12.0).color(Color32::LIGHT_GRAY));
-                                                    ui.add_sized(Vec2::new(280.0, 16.0),
-                                                        egui::ProgressBar::new(p_pct).desired_width(280.0).text(format!("{:.1}%", p_pct * 100.0)));
-                                                });
-                                            }
-                                        });
-
-                                    if is_merging {
-                                        ui.add_space(4.0);
-                                        ui.horizontal(|ui| {
-                                            ui.label(RichText::new("🔄 Merging parts...").size(13.0).color(Color32::from_rgb(255, 200, 0)));
-                                            ui.add(egui::Spinner::new());
-                                        });
-                                    }
-                                }
-
-
-
-                            ui.ctx().request_repaint();
-                        },
-                    );
-                }
+            for id in to_close_manual {
+                self.manual_detail_ids.remove(&id);
             }
-
-        }
-
-        // ── Settings Window ──────────────────────────────────────────────────
+        }// ── Settings Window ──────────────────────────────────────────────────
         if self.show_settings {
             egui::Window::new("⚙ Settings")
                 .id(egui::Id::new("settings_window"))
