@@ -18,13 +18,19 @@ impl eframe::App for ProxyDownloadManager {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // ── Register egui context for background-thread focus (idempotent) ──
         crate::window_focus::register_egui_context(ui.ctx().clone());
+        crate::tray::poll_events(ui.ctx());
+        if ui.input(|i| i.viewport().close_requested()) && !crate::tray::quit_requested() {
+            crate::tray::hide_main_window(ui.ctx());
+        }
 
         // ── WebSocket download request: focus + open New Download dialog ──
         if self.ws_focus.load(Ordering::Relaxed) {
             self.ws_focus.store(false, Ordering::Relaxed);
 
-            // Bring window to front (cross-platform, thread-safe)
-            crate::window_focus::bring_window_to_front();
+            // Keep background/tray mode: intercepted downloads should only show
+            // the New Download window, not the main download list.
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Minimized(false));
 
             // Read the URL from WebSocket and open the New Download dialog
             let url = {
@@ -899,11 +905,26 @@ impl ProxyDownloadManager {
             self.prev_url_for_name = self.new_url.clone();
         }
 
-        egui::Window::new("New Download")
-            .id(egui::Id::new("new_download_window"))
-            .collapsible(false).resizable(false)
-            .default_size(Vec2::new(520.0, 310.0))
-            .show(ui.ctx(), |ui| {
+        ui.ctx().show_viewport_immediate(
+            egui::ViewportId::from_hash_of("new_download_window"),
+            egui::ViewportBuilder::default()
+                .with_title("New Download")
+                .with_inner_size([520.0, 310.0])
+                .with_min_inner_size([420.0, 260.0])
+                .with_position(ui.ctx().input(|i| {
+                    let size = Vec2::new(520.0, 310.0);
+                    let monitor = i.viewport().monitor_size.unwrap_or(Vec2::new(1200.0, 800.0));
+                    egui::pos2((monitor.x - size.x).max(0.0) / 2.0, (monitor.y - size.y).max(0.0) / 2.0)
+                }))
+                .with_active(true)
+                .with_resizable(false),
+            |ui, _class| {
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Focus);
+                if ui.input(|i| i.viewport().close_requested()) {
+                    self.show_new_dialog = false;
+                }
+
+                egui::CentralPanel::default().show_inside(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("URL:").strong());
                     ui.add_sized(Vec2::new(400.0, 24.0),
@@ -977,7 +998,9 @@ impl ProxyDownloadManager {
                         }
                     });
                 });
-            });
+                });
+            },
+        );
     }
 
     fn render_detail_windows(&mut self, ui: &mut egui::Ui) {
@@ -1020,12 +1043,19 @@ impl ProxyDownloadManager {
                 .as_mut()
                 .map(|cache| cache.get_icon(&item.file_name, ui.ctx()));
 
-            egui::Window::new(fname)
-                .id(egui::Id::new(("detail", item_id)))
-                .open(&mut open)
-                .collapsible(true).resizable(false)
-                .default_size(Vec2::new(480.0, 360.0))
-                .show(ui.ctx(), |ui| {
+            ui.ctx().show_viewport_immediate(
+                egui::ViewportId::from_hash_of(("detail", item_id)),
+                egui::ViewportBuilder::default()
+                    .with_title(fname)
+                    .with_inner_size([480.0, 360.0])
+                    .with_min_inner_size([420.0, 320.0])
+                    .with_resizable(false),
+                |ui, _class| {
+                    if ui.input(|i| i.viewport().close_requested()) {
+                        open = false;
+                    }
+
+                    egui::CentralPanel::default().show_inside(ui, |ui| {
                     // ── Progress bar ──
                     ui.add_space(2.0);
                     let (bar_pct, bar_text) = if item.merge_progress > 0.0 {
@@ -1154,19 +1184,35 @@ impl ProxyDownloadManager {
                         }
                         if matches!(item.status, DownloadStatus::Completed) {
                             let sv = item.save_path.clone();
-                            if ui.add_sized(btn_size, egui::Button::new("📂 Open Folder")).clicked() {
-                                let p = sv;
+                            if ui.add_sized(btn_size, egui::Button::new("📄 Open")).clicked() {
+                                let p = sv.clone();
+                                #[cfg(target_os = "macos")]
+                                let _ = std::process::Command::new("open").arg(&p).spawn();
+                                #[cfg(target_os = "windows")]
+                                let _ = std::process::Command::new("cmd").args(["/C", "start", "", &p]).spawn();
+                                #[cfg(target_os = "linux")]
+                                let _ = std::process::Command::new("xdg-open").arg(&p).spawn();
+                                open = false;
+                            }
+
+                            let finder_label = if cfg!(target_os = "macos") { "📂 Open in Finder" } else { "📂 Show in Folder" };
+                            if ui.add_sized(Vec2::new(130.0, 26.0), egui::Button::new(finder_label)).clicked() {
+                                let p = sv.clone();
                                 #[cfg(target_os = "macos")]
                                 let _ = std::process::Command::new("open").arg("-R").arg(&p).spawn();
                                 #[cfg(target_os = "windows")]
-                                let _ = std::process::Command::new("explorer").arg("/select,").arg(&p).spawn();
+                                let _ = std::process::Command::new("explorer").arg(format!("/select,{}", p)).spawn();
                                 #[cfg(target_os = "linux")]
                                 if let Some(parent) = std::path::Path::new(&p).parent() {
                                     let _ = std::process::Command::new("xdg-open").arg(parent).spawn();
                                 }
+                                open = false;
                             }
-                        }
-                        if ui.add_sized(btn_size, egui::Button::new("🗑 Delete")).clicked() {
+
+                            if ui.add_sized(btn_size, egui::Button::new("Cancel")).clicked() {
+                                open = false;
+                            }
+                        } else if ui.add_sized(btn_size, egui::Button::new("🗑 Delete")).clicked() {
                             actions.lock().unwrap().push((item_id, "delete"));
                         }
                     });
@@ -1207,7 +1253,9 @@ impl ProxyDownloadManager {
                             ui.label(RichText::new("Merging...").size(12.0).color(Color32::from_rgb(255, 170, 0)));
                         }
                     }
-                });
+                    });
+                },
+            );
 
             if !open {
                 if is_manual { to_close_manual.push(item.id); }
@@ -1348,6 +1396,36 @@ impl ProxyDownloadManager {
                         }
                     });
                 }
+
+                // Startup
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(8.0);
+                ui.label(RichText::new("Startup").strong().size(15.0));
+                ui.separator();
+                ui.horizontal(|ui| {
+                    let mut launch = self.settings.launch_at_startup;
+                    if ui.checkbox(&mut launch, "Launch ProxyDM when I sign in").changed() {
+                        match crate::startup::set_enabled(launch) {
+                            Ok(()) => {
+                                self.settings.launch_at_startup = launch;
+                                self.set_status(if launch {
+                                    "Launch at startup enabled".to_string()
+                                } else {
+                                    "Launch at startup disabled".to_string()
+                                });
+                            }
+                            Err(e) => {
+                                self.set_status(format!("Startup setting failed: {}", e));
+                            }
+                        }
+                    }
+                    let actual = crate::startup::is_enabled();
+                    if actual != self.settings.launch_at_startup {
+                        ui.label(RichText::new(if actual { "Enabled by OS" } else { "Disabled by OS" })
+                            .size(11.0).color(Color32::GRAY));
+                    }
+                });
 
                 // Proxy Lists
                 ui.add_space(4.0);
@@ -1519,6 +1597,7 @@ impl ProxyDownloadManager {
                         if ui.add_sized(Vec2::new(80.0, 28.0), egui::Button::new("Cancel")).clicked() {
                             let set_path = crate::types::settings_path().to_string_lossy().to_string();
                             if let Some(s) = crate::persist::load_toml(&set_path) { self.settings = s; }
+                            self.settings.launch_at_startup = crate::startup::is_enabled();
                             self.cached_cache_size = None;
                             self.show_settings = false;
                         }

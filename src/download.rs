@@ -18,10 +18,15 @@ use std::sync::{Arc, Mutex};
 // ─── HTTP client builder ──────────────────────────────────────────────────────
 
 pub fn build_client(proxy_entry: Option<&ProxyEntry>, user_agent: &str) -> anyhow::Result<reqwest::blocking::Client> {
+    // Use longer timeouts to prevent downloads from stopping when app is in background
+    // Connect timeout: 60s, Read timeout: 600s (10 min) for reliable background downloads
     let mut builder = reqwest::blocking::Client::builder()
         .user_agent(user_agent)
-        .timeout(std::time::Duration::from_secs(30))
-        .redirect(reqwest::redirect::Policy::limited(10));
+        .connect_timeout(std::time::Duration::from_secs(60))
+        .timeout(std::time::Duration::from_secs(600))
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .tcp_keepalive(std::time::Duration::from_secs(60))
+        .pool_idle_timeout(std::time::Duration::from_secs(90));
 
     if let Some(entry) = proxy_entry {
         let proxy_url = if entry.port == 0 {
@@ -168,7 +173,8 @@ fn part_thread_inner(
         } else if range_start > 0 {
             req = req.header("Range", format!("bytes={}-", range_start));
         }
-    let response = match req.timeout(std::time::Duration::from_secs(120)).send() {
+    // Use very long timeout for part downloads (10 min) to prevent background issues
+    let response = match req.timeout(std::time::Duration::from_secs(600)).send() {
         Ok(r) => r,
         Err(e) => {
             log_info!("Part #{} request error (attempt {}): {}", part.index, attempt + 1, e);
@@ -431,7 +437,8 @@ pub fn start_multi_part_download(
         };
 
         // ── Probe server with HEAD request ──
-        let head_req = client.head(&url).timeout(std::time::Duration::from_secs(30));
+        // Use longer timeout for HEAD request to prevent background failures
+        let head_req = client.head(&url).timeout(std::time::Duration::from_secs(120));
         let head_resp = head_req.send();
 
         let (supports_range, total_size) = match head_resp {
@@ -454,9 +461,10 @@ pub fn start_multi_part_download(
             }
             Err(_) => {
                 // HEAD failed — probe with a Range: bytes=0-0 GET
+                // Use longer timeout for fallback probe
                 let get_resp = client.get(&url)
                     .header("Range", "bytes=0-0")
-                    .timeout(std::time::Duration::from_secs(30))
+                    .timeout(std::time::Duration::from_secs(120))
                     .send();
                 match get_resp {
                     Ok(resp) => {

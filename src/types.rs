@@ -151,6 +151,8 @@ pub struct AppSettings {
     pub max_retries: u32,
     #[serde(default = "default_user_agent")]
     pub user_agent: String,
+    #[serde(default)]
+    pub launch_at_startup: bool,
 }
 
 fn default_retries() -> u32 { 10 }
@@ -167,6 +169,7 @@ impl Default for AppSettings {
             max_connections: 8,
             max_retries: 10,
             user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36 Edg/148.0.0.0".to_string(),
+            launch_at_startup: false,
         }
     }
 }

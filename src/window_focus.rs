@@ -44,6 +44,24 @@ pub fn register_egui_context(ctx: egui::Context) {
 ///
 /// **Thread-safe** — may be called from any thread, including background
 /// WebSocket / TCP / HTTP server handlers.
+pub fn request_repaint() {
+    if let Some(ctx) = EGUI_CTX.get() {
+        ctx.request_repaint();
+    }
+}
+
+/// Restore the root viewport enough for eframe to render child viewports.
+/// Used by browser-download interception: a minimized root viewport may not
+/// repaint until it is restored, so `show_viewport_immediate` for New Download
+/// would otherwise be delayed until the user manually restores the app.
+pub fn restore_for_child_window() {
+    if let Some(ctx) = EGUI_CTX.get() {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.request_repaint();
+    }
+}
+
 pub fn bring_window_to_front() {
     // ── Level 1 — egui's built-in viewport command ──────────────────────────
     // This is thread-safe because egui::Context is Send + Sync (internally an

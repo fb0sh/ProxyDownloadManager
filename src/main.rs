@@ -10,6 +10,8 @@ mod download;
 mod icons;
 mod logger;
 mod persist;
+mod startup;
+mod tray;
 mod types;
 mod ui;
 mod window_focus;
@@ -46,6 +48,9 @@ fn main() -> Result<(), eframe::Error> {
         Box::new(|cc| {
             // Register the egui context so bring_window_to_front() works from background threads
             window_focus::register_egui_context(cc.egui_ctx.clone());
+            if let Err(e) = tray::init() {
+                eprintln!("[proxydm-tray] Failed to create tray icon: {}", e);
+            }
             Ok(Box::new(ProxyDownloadManager::new_with_state(
                 shared_state.clone(),
                 ws_focus,

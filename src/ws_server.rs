@@ -147,13 +147,12 @@ fn process_message(
         *u = url.clone();
     }
 
-    // Bring the application window to front immediately.
-    // This works directly from the background thread thanks to the
-    // window_focus module which uses egui::Context + native APIs.
-    crate::window_focus::bring_window_to_front();
-
-    // Also signal the main UI to open the New Download dialog on next frame.
+    // Signal the UI to open only the New Download window. Restore the root
+    // viewport first because minimized eframe roots may not repaint, which
+    // delays child viewport creation until the user restores the app manually.
+    crate::window_focus::restore_for_child_window();
     focus_request.store(true, Ordering::Relaxed);
+    crate::window_focus::request_repaint();
 
     crate::log_info!("WS: stored URL for UI confirmation: {}", url);
 }

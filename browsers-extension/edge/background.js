@@ -2,7 +2,7 @@
 // background.js — Edge extension service worker for ProxyDM
 //
 // Click toolbar icon → toggle extension on/off (icon changes).
-// When on: intercept downloads, WebSocket to proxydm.
+// When enabled: intercept downloads, WebSocket to proxydm, cancel browser download.
 // =============================================================================
 
 const WS_URL = 'ws://127.0.0.1:18999';
@@ -47,7 +47,7 @@ function updateIcon(enabled) {
       128: `icons/icon128${suffix}.png`
     }
   });
-  chrome.action.setTitle({ title: enabled ? 'ProxyDM (click to disable)' : 'ProxyDM (click to enable)' });
+  chrome.action.setTitle({ title: enabled ? 'ProxyDM enabled (click to disable)' : 'ProxyDM disabled (click to enable)' });
 }
 
 // ─── WebSocket ────────────────────────────────────────────────────────────────
@@ -78,6 +78,44 @@ function send(url, referrer, tabTitle) {
   } catch { return false; }
 }
 
+function sendReliable(url, referrer, tabTitle) {
+  return new Promise((resolve) => {
+    const payload = JSON.stringify({ action: 'add', url, referrer: referrer || '', tab_title: tabTitle || '' });
+
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      try { ws.send(payload); resolve(true); } catch { resolve(false); }
+      return;
+    }
+
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+
+    let done = false;
+    const finish = (ok) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve(ok);
+    };
+    const timer = setTimeout(() => finish(false), 2000);
+
+    try {
+      ws = new WebSocket(WS_URL);
+      ws.onopen = () => {
+        try {
+          ws.send(payload);
+          finish(true);
+        } catch {
+          finish(false);
+        }
+      };
+      ws.onclose = () => { ws = null; if (!done) finish(false); else scheduleReconnect(); };
+      ws.onerror = () => { if (!done) finish(false); };
+    } catch {
+      finish(false);
+    }
+  });
+}
+
 // ─── Context menus ────────────────────────────────────────────────────────────
 
 function createContextMenus() {
@@ -92,14 +130,14 @@ function destroyContextMenus() {
   chrome.contextMenus.removeAll();
 }
 
-chrome.contextMenus.onClicked.addListener((info, tab) => {
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   let url = null;
   switch (info.menuItemId) {
     case 'dl-link': url = info.linkUrl || info.srcUrl; break;
     case 'dl-page': url = tab?.url; break;
     case 'dl-sel':  url = extractUrl(info.selectionText); break;
   }
-  if (url) send(url, tab?.url || '', tab?.title || '');
+  if (url && !(await sendReliable(url, tab?.url || '', tab?.title || ''))) notifyNotRunning();
 });
 
 // ─── Download interception ────────────────────────────────────────────────────
@@ -107,11 +145,20 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 chrome.downloads.onCreated.addListener(async (item) => {
   if (!(await isEnabled())) return;
   if (!item.url || item.url.startsWith('blob:')) return;
-  if (looksLikeDownload(item.url)) {
-    chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
-      send(item.url, tab?.url || '', tab?.title || '');
-    });
-  }
+  if (!looksLikeDownload(item.url)) return;
+
+  chrome.tabs.query({ active: true, currentWindow: true }, async ([tab]) => {
+    if (await sendReliable(item.url, tab?.url || '', tab?.title || '')) {
+      chrome.downloads.cancel(item.id, () => {
+        // Browser download is intentionally stopped after ProxyDM accepted it.
+        if (chrome.runtime.lastError) console.debug(chrome.runtime.lastError.message);
+        chrome.downloads.erase({ id: item.id });
+      });
+    } else {
+      // ProxyDM is not running: keep the browser download and tell the user.
+      notifyNotRunning();
+    }
+  });
 });
 
 // ─── Initialization ───────────────────────────────────────────────────────────
@@ -132,12 +179,26 @@ chrome.runtime.onStartup.addListener(async () => {
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'sendUrl') {
-    send(request.url, '', '');
-    sendResponse({ ok: true });
+    sendReliable(request.url, '', '').then((ok) => sendResponse({ ok }));
+    return true;
   }
 });
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function notify(title, message) {
+  if (!chrome.notifications) return;
+  chrome.notifications.create({
+    type: 'basic',
+    iconUrl: 'icons/icon128.png',
+    title,
+    message
+  });
+}
+
+function notifyNotRunning() {
+  notify('ProxyDM is not running', 'Using the browser download instead. Start ProxyDM to capture downloads.');
+}
 
 function looksLikeDownload(url) {
   const path = url.split(/[?#]/)[0].toLowerCase();

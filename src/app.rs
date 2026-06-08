@@ -79,13 +79,14 @@ impl ProxyDownloadManager {
     ) -> Self {
         let _ = fs::create_dir_all(pdm_dir());
         let set_path = settings_path();
-        let settings: AppSettings = if set_path.exists() {
+        let mut settings: AppSettings = if set_path.exists() {
             load_toml(&set_path.to_string_lossy().to_string()).unwrap_or_default()
         } else {
             let s = AppSettings::default();
             save_toml(&set_path.to_string_lossy().to_string(), &s);
             s
         };
+        settings.launch_at_startup = crate::startup::is_enabled();
 
         // Load persisted downloads into the shared state
         let dl_path = downloads_path().to_string_lossy().to_string();
