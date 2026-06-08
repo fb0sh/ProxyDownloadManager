@@ -1172,6 +1172,11 @@ struct ProxyDownloadManager {
     show_proxy_editor: bool,
     edit_proxy: Option<ProxyEntry>,
     edit_proxy_index: Option<usize>,
+    edit_item_id: Option<u64>,
+    edit_url: String,
+    edit_filename: String,
+    edit_proxy_name: String,
+    edit_connections: u32,
     cached_cache_size: Option<u64>,
     show_properties: Option<u64>,
     show_progress: bool,
@@ -1239,6 +1244,11 @@ impl Default for ProxyDownloadManager {
             show_proxy_editor: false,
             edit_proxy: None,
             edit_proxy_index: None,
+            edit_item_id: None,
+            edit_url: String::new(),
+            edit_filename: String::new(),
+            edit_proxy_name: String::new(),
+            edit_connections: 0,
             cached_cache_size: None,
             show_properties: None,
             show_progress: false,
@@ -1722,6 +1732,7 @@ impl eframe::App for ProxyDownloadManager {
         let mut ctx_show_delete_dialog: Option<u64> = None;
         let mut ctx_redownload: Option<(String, String)> = None; // (url, filename)
         let mut ctx_double_click: Option<u64> = None;
+        let mut ctx_edit: Option<u64> = None;
         let mut ctx_properties: Option<u64> = None;
 
         egui::CentralPanel::default().show_inside(ui, |ui| {
@@ -1754,24 +1765,22 @@ impl eframe::App for ProxyDownloadManager {
                 .inner_margin(Margin::symmetric(8, 2))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        let col_fixed: f32 = 90.0 + 140.0 + 90.0 + 90.0 + 80.0 + 70.0 + 80.0;
-                        let avail = ui.available_width() - col_fixed;
-                        ui.add_sized(Vec2::new(avail.max(180.0), header_height),
-                            egui::Label::new(RichText::new("File Name").strong().size(13.0)));
-                        ui.add_sized(Vec2::new(90.0, header_height),
-                            egui::Label::new(RichText::new("Size").strong().size(13.0)));
-                        ui.add_sized(Vec2::new(140.0, header_height),
-                            egui::Label::new(RichText::new("Status").strong().size(13.0)));
-                        ui.add_sized(Vec2::new(90.0, header_height),
-                            egui::Label::new(RichText::new("Speed").strong().size(13.0)));
-                        ui.add_sized(Vec2::new(90.0, header_height),
-                            egui::Label::new(RichText::new("Remain").strong().size(13.0)));
+                        ui.add_sized(Vec2::new(220.0, header_height),
+                            egui::Label::new(RichText::new("File Name").strong().size(12.0)));
+                        ui.add_sized(Vec2::new(75.0, header_height),
+                            egui::Label::new(RichText::new("Size").strong().size(12.0)));
+                        ui.add_sized(Vec2::new(120.0, header_height),
+                            egui::Label::new(RichText::new("Status").strong().size(12.0)));
                         ui.add_sized(Vec2::new(80.0, header_height),
-                            egui::Label::new(RichText::new("Resume").strong().size(13.0)));
-                        ui.add_sized(Vec2::new(70.0, header_height),
-                            egui::Label::new(RichText::new("Proxy").strong().size(13.0)));
+                            egui::Label::new(RichText::new("Speed").strong().size(12.0)));
                         ui.add_sized(Vec2::new(80.0, header_height),
-                            egui::Label::new(RichText::new("Last Try").strong().size(13.0)));
+                            egui::Label::new(RichText::new("Remain").strong().size(12.0)));
+                        ui.add_sized(Vec2::new(55.0, header_height),
+                            egui::Label::new(RichText::new("Resume").strong().size(12.0)));
+                        ui.add_sized(Vec2::new(55.0, header_height),
+                            egui::Label::new(RichText::new("Proxy").strong().size(12.0)));
+                        ui.add_sized(Vec2::new(75.0, header_height),
+                            egui::Label::new(RichText::new("Last Try").strong().size(12.0)));
                     });
                 });
 
@@ -1807,25 +1816,21 @@ impl eframe::App for ProxyDownloadManager {
                         let response = frame
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
-                                    let col_fixed: f32 = 90.0 + 140.0 + 90.0 + 90.0 + 80.0 + 70.0 + 80.0;
-                                    let avail = ui.available_width() - col_fixed;
-                                    let name_width = avail.max(180.0);
-
-                                    // File Name column (with icon)
-                                    ui.add_sized(Vec2::new(name_width, row_height), |ui: &mut egui::Ui| {
+                                    // File Name (fixed 220px, truncated)
+                                    ui.add_sized(Vec2::new(220.0, row_height), |ui: &mut egui::Ui| {
                                         ui.horizontal(|ui| {
                                             if let Some(tex) = &icon_texture {
-                                                ui.add(egui::Image::new(tex).fit_to_exact_size(Vec2::new(20.0, 20.0)));
+                                                ui.add(egui::Image::new(tex).fit_to_exact_size(Vec2::new(18.0, 18.0)));
                                             }
-                                            ui.label(RichText::new(&item.file_name).size(13.0).color(Color32::BLACK));
+                                            ui.add(egui::Label::new(RichText::new(&item.file_name).size(12.0).color(Color32::BLACK)).truncate());
                                         }).response
                                     });
 
-                                    // Size column
-                                    ui.add_sized(Vec2::new(100.0, row_height),
-                                        egui::Label::new(RichText::new(format_size(item.total_size)).size(13.0).color(Color32::BLACK)));
+                                    // Size
+                                    ui.add_sized(Vec2::new(75.0, row_height),
+                                        egui::Label::new(RichText::new(format_size(item.total_size)).size(12.0).color(Color32::BLACK)));
 
-                                    // Status column (with percentage)
+                                    // Status (with %)
                                     let (status_text, status_color) = status_icon_and_text(&item.status);
                                     let pct = if item.total_size > 0 {
                                         ((item.downloaded as f64 / item.total_size as f64) * 100.0) as u32
@@ -1836,21 +1841,8 @@ impl eframe::App for ProxyDownloadManager {
                                         DownloadStatus::Paused if item.downloaded > 0 && item.total_size > 0 => format!("{} ({}%)", status_text, pct.min(100)),
                                         _ => status_text.to_string(),
                                     };
-                                    // Resumable badge
-                                    let resume_badge = match item.resumable {
-                                        Some(true) => Some(RichText::new(" Resumable").size(11.0).color(Color32::from_rgb(0, 180, 0))),
-                                        Some(false) => Some(RichText::new(" Non-Resumable").size(11.0).color(Color32::from_rgb(200, 100, 0))),
-                                        None => None,
-                                    };
-                                    ui.add_sized(Vec2::new(150.0, row_height), |ui: &mut egui::Ui| {
-                                        ui.horizontal(|ui| {
-                                            ui.label(RichText::new(&status_display).size(13.0).color(status_color));
-                                            if let Some(badge) = resume_badge {
-                                                ui.label(badge);
-                                            }
-                                        }).response
-                                    });
-                                    // Progress bar removed — percentage shown inline in status text
+                                    ui.add_sized(Vec2::new(120.0, row_height),
+                                        egui::Label::new(RichText::new(&status_display).size(12.0).color(status_color)));
 
                                     // Speed column
                                     let (speed_str, remain_str) = if matches!(item.status, DownloadStatus::Downloading) {
@@ -1864,10 +1856,10 @@ impl eframe::App for ProxyDownloadManager {
                                     } else {
                                         ("-".to_string(), "-".to_string())
                                     };
-                                    ui.add_sized(Vec2::new(90.0, row_height),
-                                        egui::Label::new(RichText::new(speed_str).size(12.0).color(Color32::BLACK)));
-                                    ui.add_sized(Vec2::new(90.0, row_height),
-                                        egui::Label::new(RichText::new(remain_str).size(12.0).color(Color32::BLACK)));
+                                    ui.add_sized(Vec2::new(80.0, row_height),
+                                        egui::Label::new(RichText::new(speed_str).size(11.0).color(Color32::BLACK)));
+                                    ui.add_sized(Vec2::new(80.0, row_height),
+                                        egui::Label::new(RichText::new(remain_str).size(11.0).color(Color32::BLACK)));
 
                                     // Resume column
                                     let resume_display = match item.resumable {
@@ -1875,8 +1867,8 @@ impl eframe::App for ProxyDownloadManager {
                                         Some(false) => "❌".to_string(),
                                         None => "-".to_string(),
                                     };
-                                    ui.add_sized(Vec2::new(80.0, row_height),
-                                        egui::Label::new(RichText::new(resume_display).size(12.0).color(Color32::BLACK)));
+                                    ui.add_sized(Vec2::new(55.0, row_height),
+                                        egui::Label::new(RichText::new(resume_display).size(11.0).color(Color32::BLACK)));
 
                                     // Proxy column
                                     let proxy_display = if item.proxy_name.is_empty() {
@@ -1884,13 +1876,13 @@ impl eframe::App for ProxyDownloadManager {
                                     } else {
                                         format!("🔌 {}", item.proxy_name)
                                     };
-                                    ui.add_sized(Vec2::new(70.0, row_height),
-                                        egui::Label::new(RichText::new(proxy_display).size(12.0).color(Color32::BLACK)));
+                                    ui.add_sized(Vec2::new(55.0, row_height),
+                                        egui::Label::new(RichText::new(proxy_display).size(11.0).color(Color32::BLACK)));
 
                                     // Last Try column
                                     let last_try_display = if item.last_try.is_empty() { "-".to_string() } else { item.last_try.clone() };
-                                    ui.add_sized(Vec2::new(90.0, row_height),
-                                        egui::Label::new(RichText::new(last_try_display).size(13.0).color(Color32::BLACK)));
+                                    ui.add_sized(Vec2::new(75.0, row_height),
+                                        egui::Label::new(RichText::new(last_try_display).size(11.0).color(Color32::BLACK)));
                                 }).response
                             });
 
@@ -1913,6 +1905,10 @@ impl eframe::App for ProxyDownloadManager {
                             if matches!(item_clone.status, DownloadStatus::Paused | DownloadStatus::Failed(_)) {
                                 if ui.button("▶ Continue").clicked() {
                                     ctx_resume = Some(item_clone.id);
+                                    ui.close();
+                                }
+                                if ui.button("✏️ Edit").clicked() {
+                                    ctx_edit = Some(item_clone.id);
                                     ui.close();
                                 }
                             }
@@ -1986,6 +1982,13 @@ impl eframe::App for ProxyDownloadManager {
         if let Some(id) = ctx_show_delete_dialog {
             self.pending_delete_id = Some(id);
         }
+        if let Some(id) = ctx_edit {
+            self.edit_item_id = Some(id);
+            self.edit_url = self.downloads.iter().find(|d| d.id == id).map(|d| d.url.clone()).unwrap_or_default();
+            self.edit_filename = self.downloads.iter().find(|d| d.id == id).map(|d| d.file_name.clone()).unwrap_or_default();
+            self.edit_proxy_name = self.downloads.iter().find(|d| d.id == id).map(|d| d.proxy_name.clone()).unwrap_or_default();
+            self.edit_connections = self.downloads.iter().find(|d| d.id == id).map(|d| d.connections).unwrap_or(0);
+        }
         if let Some(id) = ctx_properties {
             self.show_properties = Some(id);
         }
@@ -2045,6 +2048,90 @@ impl eframe::App for ProxyDownloadManager {
                     });
             } else {
                 self.pending_delete_id = None;
+            }
+        }
+
+        // ── Edit Item Dialog ─────────────────────────────────────────────────
+        if let Some(edit_id) = self.edit_item_id {
+            if let Some(item) = self.downloads.iter().find(|d| d.id == edit_id) {
+                egui::Window::new("✏️ Edit Download")
+                    .id(egui::Id::new("edit_window"))
+                    .collapsible(false)
+                    .resizable(false)
+                    .default_size(Vec2::new(460.0, 220.0))
+                    .show(ui.ctx(), |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("URL:").strong());
+                            ui.add_sized(Vec2::new(350.0, 24.0),
+                                egui::TextEdit::singleline(&mut self.edit_url).hint_text("URL"));
+                        });
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("Name:").strong());
+                            ui.add_sized(Vec2::new(350.0, 24.0),
+                                egui::TextEdit::singleline(&mut self.edit_filename).hint_text("Filename"));
+                        });
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("Proxy:").strong());
+                            let names: Vec<String> = std::iter::once(String::new())
+                                .chain(self.settings.proxies.iter().map(|p| p.name.clone()))
+                                .collect();
+                            let current_idx = names.iter().position(|n| *n == self.edit_proxy_name).unwrap_or(0);
+                            let mut sel = current_idx;
+                            egui::ComboBox::from_id_salt("edit_proxy")
+                                .selected_text(if self.edit_proxy_name.is_empty() { "No Proxy".to_string() } else { self.edit_proxy_name.clone() })
+                                .show_ui(ui, |ui| {
+                                    for (i, name) in names.iter().enumerate() {
+                                        let display = if name.is_empty() { "No Proxy".to_string() } else { name.clone() };
+                                        if ui.selectable_label(sel == i, &display).clicked() { sel = i; }
+                                    }
+                                });
+                            if sel != current_idx {
+                                self.edit_proxy_name = if sel == 0 { String::new() } else { names[sel].clone() };
+                            }
+                        });
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("Threads:").strong());
+                            let conn_options = [("Global (default)", 0u32), ("8", 8), ("16", 16), ("32", 32), ("64", 64)];
+                            let current_idx = conn_options.iter().position(|(_, v)| *v == self.edit_connections).unwrap_or(0);
+                            let mut sel = current_idx;
+                            egui::ComboBox::from_id_salt("edit_connections")
+                                .selected_text(if self.edit_connections == 0 { "Global (default)".to_string() } else { self.edit_connections.to_string() })
+                                .show_ui(ui, |ui| {
+                                    for (i, (label, _)) in conn_options.iter().enumerate() {
+                                        if ui.selectable_label(sel == i, *label).clicked() { sel = i; }
+                                    }
+                                });
+                            if sel != current_idx {
+                                self.edit_connections = conn_options[sel].1;
+                            }
+                        });
+                        ui.add_space(10.0);
+                        ui.horizontal(|ui| {
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if ui.add_sized(Vec2::new(100.0, 28.0), egui::Button::new("💾 Save")).clicked() {
+                                    let mut items = self.shared.lock().unwrap();
+                                    if let Some(item) = items.iter_mut().find(|d| d.id == edit_id) {
+                                        item.url = std::mem::take(&mut self.edit_url);
+                                        item.file_name = std::mem::take(&mut self.edit_filename);
+                                        item.proxy_name = std::mem::take(&mut self.edit_proxy_name);
+                                        if self.edit_connections > 0 {
+                                            item.connections = std::mem::replace(&mut self.edit_connections, 0);
+                                        }
+                                    }
+                                    self.edit_item_id = None;
+                                }
+                                ui.add_space(8.0);
+                                if ui.add_sized(Vec2::new(80.0, 28.0), egui::Button::new("Cancel")).clicked() {
+                                    self.edit_item_id = None;
+                                }
+                            });
+                        });
+                    });
+            } else {
+                self.edit_item_id = None;
             }
         }
 
@@ -2300,6 +2387,13 @@ impl eframe::App for ProxyDownloadManager {
                                 item.total_size.max(item.downloaded) as f64 / 1_048_576.0))
                             .animate(true));
 
+                        // ── URL (clickable) ──
+                        ui.add_space(2.0);
+                        ui.hyperlink_to(
+                            RichText::new(&item.url).size(11.0).color(Color32::from_rgb(0, 80, 180)),
+                            &item.url,
+                        );
+
                         // ── Two-column info ──
                         ui.add_space(4.0);
                         ui.horizontal(|ui| {
@@ -2466,7 +2560,7 @@ impl eframe::App for ProxyDownloadManager {
                             ui.label("Parts Cache:");
                             let size_str = format_size(cache_size);
                             if cache_size > 0 {
-                                ui.label(RichText::new(&size_str).size(13.0).color(Color32::LIGHT_GRAY));
+                                ui.label(RichText::new(&size_str).size(13.0).color(Color32::BLACK));
                                 if ui.add_sized(Vec2::new(140.0, 28.0), egui::Button::new(format!("🗑 Clear ({})", size_str)))
                                     .on_hover_text("Delete all cached download part files")
                                     .clicked()
@@ -2557,9 +2651,9 @@ impl eframe::App for ProxyDownloadManager {
                                             egui::Label::new(RichText::new(&proxy.name).size(12.0)));
                                         let proto = match proxy.protocol { ProxyProtocol::Http => "HTTP", ProxyProtocol::Socks5 => "SOCKS5" };
                                         ui.add_sized(Vec2::new(60.0, 20.0),
-                                            egui::Label::new(RichText::new(proto).size(12.0).color(Color32::LIGHT_GRAY)));
+                                            egui::Label::new(RichText::new(proto).size(12.0).color(Color32::BLACK)));
                                         ui.add_sized(Vec2::new(130.0, 20.0),
-                                            egui::Label::new(RichText::new(format!("{}:{}", proxy.host, proxy.port)).size(12.0).color(Color32::LIGHT_GRAY)));
+                                            egui::Label::new(RichText::new(format!("{}:{}", proxy.host, proxy.port)).size(12.0).color(Color32::BLACK)));
                                         if ui.add_sized(Vec2::new(40.0, 20.0), egui::Button::new("✏️")).clicked() {
                                             to_edit = Some(i);
                                         }
