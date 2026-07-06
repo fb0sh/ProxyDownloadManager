@@ -109,24 +109,47 @@ impl WsServer {
 
             match msg {
                 Message::Text(text) => {
-                    eprintln!("[ProxyDM WS] Received text: {}", &text[..text.len().min(200)]);
-                    let request = match serde_json::from_str::<PendingDownloadRequest>(&text) {
-                        Ok(req) => req,
-                        Err(_) => {
-                            // Backward compatibility: treat raw text as a plain URL
-                            let filename = text
-                                .rsplit('/')
-                                .next()
-                                .unwrap_or(&text)
-                                .to_string();
+                    eprintln!("[ProxyDM WS] Received: {}", &text[..text.len().min(200)]);
+
+                    // Try parsing as browser extension JSON first:
+                    // { action: "add", url: "...", referrer, tab_title, filename, proxy_name, connections }
+                    #[derive(serde::Deserialize)]
+                    struct Incoming {
+                        #[serde(default)]
+                        action: String,
+                        #[serde(default)]
+                        url: String,
+                        #[serde(default)]
+                        filename: String,
+                        #[serde(default)]
+                        proxy_name: String,
+                        connections: Option<u32>,
+                    }
+
+                    let request = serde_json::from_str::<Incoming>(&text)
+                        .ok()
+                        .filter(|i| !i.url.is_empty())
+                        .map(|i| PendingDownloadRequest {
+                            url: i.url,
+                            filename: i.filename,
+                            proxy_name: i.proxy_name,
+                            connections: i.connections.unwrap_or(1),
+                        })
+                        .or_else(|| {
+                            // Fallback: try direct PendingDownloadRequest
+                            serde_json::from_str::<PendingDownloadRequest>(&text).ok()
+                        })
+                        .unwrap_or_else(|| {
+                            // Last resort: treat raw text as URL
+                            let url = text.clone();
+                            let filename = url.rsplit('/').next().unwrap_or("").to_string();
                             PendingDownloadRequest {
-                                url: text,
+                                url,
                                 filename,
                                 proxy_name: String::new(),
                                 connections: 1,
                             }
-                        }
-                    };
+                        });
 
                     eprintln!("[ProxyDM WS] Sending to request_tx... url={}", request.url);
 
