@@ -10,7 +10,7 @@ const zh: Translations = {
     log: "日志",
     settings: "设置",
     about: "关于",
-    extension: "扩展",
+    extension: "浏览器",
     quit: "退出",
   },
   sidebar: {

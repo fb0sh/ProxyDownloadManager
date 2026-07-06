@@ -8,7 +8,7 @@ const en = {
     log: "Log",
     settings: "Settings",
     about: "About",
-    extension: "Extension",
+    extension: "Browsers",
     quit: "Quit",
   },
   sidebar: {
