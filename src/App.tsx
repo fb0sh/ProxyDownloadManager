@@ -70,7 +70,11 @@ function App() {
       title: t("newDownload.title"),
     });
     win.once("tauri://created", () => {
+      win.setAlwaysOnTop(true);
       win.setFocus();
+      // Turn off always-on-top after a brief moment so the user can interact
+      // with other windows without the dialog blocking them.
+      setTimeout(() => { win.setAlwaysOnTop(false).catch(() => {}); }, 3000);
     });
     win.once("tauri://error", (e) => {
       console.error("Failed to open new download window:", e);
