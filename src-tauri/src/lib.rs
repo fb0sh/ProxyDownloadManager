@@ -96,8 +96,11 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 use tauri::Emitter;
                 while let Some(req) = request_rx.recv().await {
-                    let _ = app_handle.emit("browser-download-url", req.url);
+                    eprintln!("[ProxyDM consumer] Received request_rx: url={}", req.url);
+                    let result = app_handle.emit("browser-download-url", &req.url);
+                    eprintln!("[ProxyDM consumer] emit result: {:?}", result);
                 }
+                eprintln!("[ProxyDM consumer] request_rx stream ended!");
             });
 
             let ev_tx = event_tx;

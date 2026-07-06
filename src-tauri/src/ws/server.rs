@@ -105,6 +105,7 @@ impl WsServer {
 
             match msg {
                 Message::Text(text) => {
+                    eprintln!("[ProxyDM WS] Received text: {}", &text[..text.len().min(200)]);
                     let request = match serde_json::from_str::<PendingDownloadRequest>(&text) {
                         Ok(req) => req,
                         Err(_) => {
@@ -123,33 +124,30 @@ impl WsServer {
                         }
                     };
 
-                    log::info!(
-                        "[WS] Download request: url={} filename={} proxy={} connections={}",
-                        request.url,
-                        request.filename,
-                        request.proxy_name,
-                        request.connections,
-                    );
+                    eprintln!("[ProxyDM WS] Sending to request_tx... url={}", request.url);
 
-                    if request_tx.send(request).is_err() {
-                        log::error!("[WS] request_tx receiver dropped, closing connection");
+                    if let Err(e) = request_tx.send(request) {
+                        eprintln!("[ProxyDM WS] request_tx.send ERROR: {:?}", e);
                         break;
                     }
 
+                    eprintln!("[ProxyDM WS] request_tx.send OK, now event_tx...");
                     let event = Event {
                         kind: EventKind::DownloadQueued,
                         download_id: 0,
                         data: None,
                     };
-                    if event_tx.send(event).is_err() {
-                        log::error!("[WS] event_tx receiver dropped, closing connection");
+                    if let Err(e) = event_tx.send(event) {
+                        eprintln!("[ProxyDM WS] event_tx.send ERROR: {:?}", e);
                         break;
                     }
 
+                    eprintln!("[ProxyDM WS] event_tx OK, sending ack...");
                     if let Err(e) = ws.send(Message::Text(r#"{"status":"ok"}"#.into())) {
-                        log::error!("[WS] Failed to send ack: {}", e);
+                        eprintln!("[ProxyDM WS] ack send ERROR: {:?}", e);
                         break;
                     }
+                    eprintln!("[ProxyDM WS] All done, connection handling complete.");
                 }
                 Message::Close(_) => {
                     log::info!("[WS] Peer requested close from {:?}", peer);
