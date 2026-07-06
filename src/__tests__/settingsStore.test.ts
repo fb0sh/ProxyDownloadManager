@@ -15,6 +15,8 @@ describe("settingsStore", () => {
         global_rate_limit: 0,
         default_proxy: "",
         home_dir: "",
+        language: "en",
+        danger_accept_invalid_certs: true,
       },
     });
   });
@@ -36,6 +38,8 @@ describe("settingsStore", () => {
       global_rate_limit: 0,
       default_proxy: "",
       home_dir: "",
+      language: "en",
+      danger_accept_invalid_certs: true,
     });
     const s = useSettingsStore.getState().settings;
     expect(s.max_connections).toBe(16);

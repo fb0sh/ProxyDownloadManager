@@ -4,9 +4,9 @@ use crate::engine::chunk::{self, ChunkQueue};
 use crate::types::{Task, Event, EventKind, DownloadConfig};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::error::Error;
 use tokio::sync::mpsc;
 use tokio::io::AsyncWriteExt;
-use tokio::fs;
 
 pub struct ConcurrentDownloader {
     pool: Arc<NetworkPool>,
@@ -18,9 +18,8 @@ impl ConcurrentDownloader {
         Self { pool, event_tx }
     }
 
-    pub async fn download(&self, cfg: &DownloadConfig, limiter: Arc<MultiLimiter>) -> Result<(), String> {
-        let cancel = Arc::new(AtomicBool::new(false));
-        let completed_counter = Arc::new(AtomicU64::new(0));
+    pub async fn download(&self, cfg: &DownloadConfig, limiter: Arc<MultiLimiter>, cancel: Arc<AtomicBool>) -> Result<(), String> {
+        let bytes_written = Arc::new(AtomicU64::new(0));
 
         let num_conns = if cfg.connections > 0 {
             cfg.connections.min(32)
@@ -42,6 +41,8 @@ impl ConcurrentDownloader {
             return Err("Resume not yet implemented in concurrent downloader".to_string());
         }
 
+        let num_workers = num_conns.min(tasks.len() as u32).max(1);
+
         let queue = Arc::new(ChunkQueue::new(tasks));
         let file = Arc::new(tokio::sync::Mutex::new(
             create_output_file(&cfg.output_path).await?
@@ -53,13 +54,14 @@ impl ConcurrentDownloader {
         let download_id = cfg.id;
 
         // Spawn periodic progress reporter (not in handles vec — don't block completion)
-        let progress_cancel = cancel.clone();
+        let reporter_stop = Arc::new(AtomicBool::new(false));
+        let progress_cancel = reporter_stop.clone();
         let progress_tx = self.event_tx.clone();
-        let progress_path = cfg.output_path.clone();
+        let progress_bytes = bytes_written.clone();
         let reporter_handle = tokio::spawn(async move {
             loop {
                 if progress_cancel.load(Ordering::Relaxed) { break; }
-                let size = get_file_size(&progress_path).await;
+                let size = progress_bytes.load(Ordering::Relaxed);
                 let _ = progress_tx.send(Event {
                     kind: EventKind::DownloadProgress,
                     download_id,
@@ -69,19 +71,19 @@ impl ConcurrentDownloader {
             }
         });
 
-        let download_id = cfg.id;
-        for _worker_id in 0..num_conns {
+        // Spawn workers — only as many as we have chunks
+        for _worker_id in 0..num_workers {
             let queue = queue.clone();
             let file = file.clone();
             let client = client.clone();
             let cancel = cancel.clone();
             let limiter = limiter.clone();
-            let completed_counter = completed_counter.clone();
             let event_tx = self.event_tx.clone();
             let url = cfg.url.clone();
             let max_retries = cfg.max_retries;
-            let out_path = cfg.output_path.clone();
+            let user_agent = cfg.user_agent.clone();
             let cancel_for_task = cancel.clone();
+            let bytes_written = bytes_written.clone();
 
             let handle = tokio::spawn(async move {
                 let mut retries_left = max_retries;
@@ -96,13 +98,11 @@ impl ConcurrentDownloader {
                     };
 
                     let result = download_task(
-                        &url, &client, &file, &task, &cancel_for_task, &limiter, retries_left,
+                        &url, &client, &file, &task, &cancel_for_task, &limiter, retries_left, &user_agent, &bytes_written,
                     ).await;
 
                     match result {
-                        Ok(_) => {
-                            completed_counter.fetch_add(1, Ordering::SeqCst);
-                        }
+                        Ok(_) => {}
                         Err(e) => {
                             if retries_left > 0 {
                                 retries_left -= 1;
@@ -128,7 +128,7 @@ impl ConcurrentDownloader {
         }
 
         // Stop the reporter
-        cancel.store(true, Ordering::Relaxed);
+        reporter_stop.store(true, Ordering::Relaxed);
         let _ = reporter_handle.await;
 
         // Sync file to ensure all writes are visible to metadata
@@ -137,8 +137,8 @@ impl ConcurrentDownloader {
             let _ = f.flush().await;
         }
 
-        // Verify completeness
-        let downloaded = get_file_size(&cfg.output_path).await;
+        // Verify completeness (cancel only set by user, not by reporter cleanup)
+        let downloaded = bytes_written.load(Ordering::Relaxed);
         if downloaded < cfg.total_size && !cancel.load(Ordering::Relaxed) {
             return Err(format!("Download incomplete: {}/{} bytes", downloaded, cfg.total_size));
         }
@@ -166,14 +166,6 @@ async fn create_output_file(path: &str) -> Result<tokio::fs::File, String> {
         .map_err(|e| format!("Failed to create output file: {}", e))
 }
 
-async fn get_file_size(path: &str) -> u64 {
-    let pdm_path = format!("{}.pdm", path);
-    tokio::fs::metadata(&pdm_path)
-        .await
-        .map(|m| m.len())
-        .unwrap_or(0)
-}
-
 async fn finalize_file(output_path: &str, save_path: &str) -> Result<(), String> {
     let pdm_path = format!("{}.pdm", output_path);
     tokio::fs::rename(&pdm_path, save_path)
@@ -189,6 +181,8 @@ async fn download_task(
     cancel: &AtomicBool,
     limiter: &MultiLimiter,
     _max_retries: u32, // used by worker loop, not here
+    user_agent: &str,
+    bytes_written: &AtomicU64,
 ) -> Result<(), String> {
     let range_end = if task.length == 0 {
         String::new()
@@ -196,12 +190,24 @@ async fn download_task(
         format!("{}", task.offset + task.length - 1)
     };
     let range_header = format!("bytes={}-{}", task.offset, range_end);
-    let resp = client
+    let mut req = client
         .get(url)
-        .header("Range", &range_header)
+        .header("Range", &range_header);
+    if !user_agent.is_empty() {
+        req = req.header("User-Agent", user_agent);
+    }
+    let resp = req
         .send()
         .await
-        .map_err(|e| format!("Request failed: {}", e))?;
+        .map_err(|e| {
+            let mut msg = format!("Request failed: {}", e);
+            let mut src = std::error::Error::source(&e);
+            while let Some(s) = src {
+                msg.push_str(&format!(": {}", s));
+                src = s.source();
+            }
+            msg
+        })?;
 
     let status = resp.status();
     if status != reqwest::StatusCode::PARTIAL_CONTENT && status != reqwest::StatusCode::OK {
@@ -214,10 +220,22 @@ async fn download_task(
     let mut stream = std::pin::pin!(stream);
     let mut written = task.offset;
 
-    while let Some(chunk_result) = stream.next().await {
-        if cancel.load(Ordering::Relaxed) {
-            return Err("Cancelled".to_string());
-        }
+    loop {
+        // Timeout on stream reads so cancel can be detected promptly
+        let chunk_result = tokio::time::timeout(
+            std::time::Duration::from_secs(3), stream.next()
+        ).await;
+        let chunk_result = match chunk_result {
+            Ok(Some(c)) => c,
+            Ok(None) => break,
+            Err(_elapsed) => {
+                // Timeout — check cancel, then retry
+                if cancel.load(Ordering::Relaxed) {
+                    return Err("Cancelled".to_string());
+                }
+                continue;
+            }
+        };
         let chunk = chunk_result.map_err(|e| format!("Stream error: {}", e))?;
         limiter.wait_n(chunk.len() as u64);
 
@@ -230,6 +248,7 @@ async fn download_task(
         // Drop lock so other workers can write
         drop(f);
         written += chunk.len() as u64;
+        bytes_written.fetch_add(chunk.len() as u64, Ordering::Relaxed);
     }
 
     Ok(())

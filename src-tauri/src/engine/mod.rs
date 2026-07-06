@@ -25,18 +25,7 @@ pub async fn run_download(
 
     if cfg.supports_range {
         let downloader = concurrent::ConcurrentDownloader::new(pool.clone(), event_tx.clone());
-        match downloader.download(&cfg, limiter.clone()).await {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                let _ = event_tx.send(Event {
-                    kind: crate::types::EventKind::DownloadErrored,
-                    download_id: cfg.id,
-                    data: Some(format!("Concurrent failed, degrading: {}", e)),
-                });
-                let downloader = single::SingleDownloader::new(pool, event_tx.clone());
-                downloader.download(&cfg, limiter, cancel).await
-            }
-        }
+        downloader.download(&cfg, limiter, cancel).await
     } else {
         let downloader = single::SingleDownloader::new(pool, event_tx.clone());
         downloader.download(&cfg, limiter, cancel).await

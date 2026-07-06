@@ -13,8 +13,20 @@ pub fn load() -> Settings {
         save(&settings).ok();
         return settings;
     }
-    let content = std::fs::read_to_string(&path).unwrap_or_default();
-    toml::from_str(&content).unwrap_or_default()
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[ProxyDM] Failed to read config at {:?}: {}", path, e);
+            return Settings::default();
+        }
+    };
+    match toml::from_str(&content) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[ProxyDM] Failed to parse config at {:?}: {}. Using defaults.", path, e);
+            Settings::default()
+        }
+    }
 }
 
 pub fn save(settings: &Settings) -> Result<(), String> {

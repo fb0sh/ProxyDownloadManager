@@ -3,11 +3,12 @@ import { Text, Checkbox } from "@primer/react";
 import { FileIcon, DownloadIcon, CheckIcon, PauseIcon, AlertIcon } from "@primer/octicons-react";
 import { invoke } from "@tauri-apps/api/core";
 import { formatBytes } from "../types";
+import { t } from "../i18n";
 import type { DownloadItem } from "../types";
 
 function formatSpeed(bytesPerSec: number): string {
   if (bytesPerSec <= 0) return "";
-  return formatBytes(bytesPerSec) + "/s";
+  return formatBytes(bytesPerSec) + t("downloadRow.speed");
 }
 
 interface DownloadRowProps {
@@ -26,7 +27,6 @@ export default function DownloadRow({ item, selected, onToggleSelect, onStop, on
   const prevRef = useRef({ downloaded: 0, time: 0 });
   const [speed, setSpeed] = useState("");
 
-  // Compute speed from downloaded delta
   useEffect(() => {
     if (item.status !== "downloading") { setSpeed(""); return; }
     const now = Date.now();
@@ -64,12 +64,11 @@ export default function DownloadRow({ item, selected, onToggleSelect, onStop, on
 
   const handleOpenFolder = async () => {
     setMenuPos(null);
-    // Try reveal first, fallback to open parent directory
     try {
       await invoke("plugin:opener|reveal_item_in_dir", { path: item.save_path });
     } catch {
       try {
-        const parent = item.save_path.substring(0, item.save_path.lastIndexOf("/"));
+        const parent = item.save_path.replace(/[/\\][^/\\]*$/, "");
         await invoke("plugin:opener|open_path", { path: parent || "." });
       } catch (e) {
         console.error("open folder failed:", e);
@@ -163,7 +162,7 @@ export default function DownloadRow({ item, selected, onToggleSelect, onStop, on
                 fontSize: 10,
                 color: "var(--fgColor-muted, #656d76)",
               }}>
-                {Math.round(progress)}%
+                {Math.round(progress)}{t("progress.percent")}
               </span>
             )}
           </div>
@@ -202,7 +201,7 @@ export default function DownloadRow({ item, selected, onToggleSelect, onStop, on
             minWidth: 160,
           }}
         >
-          {item.status === "downloading" && menuItem("Stop", () => { setMenuPos(null); onStop(item.id); })}
+          {item.status === "downloading" && menuItem(t("toolbar.stop"), () => { setMenuPos(null); onStop(item.id); })}
           <div
             onClick={() => { setMenuPos(null); onDelete([item.id]); }}
             style={{
@@ -214,28 +213,28 @@ export default function DownloadRow({ item, selected, onToggleSelect, onStop, on
             onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bgColor-subtle, #f6f8fa)")}
             onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
           >
-            Delete
+            {t("toolbar.delete")}
           </div>
           <div style={{ borderTop: "1px solid var(--borderColor-muted, #d8dee4)", margin: "4px 0" }} />
           <div onClick={() => { setMenuPos(null); onRedownload(item); }} style={{ padding: "6px 16px", cursor: "pointer", fontSize: 13 }}
             onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bgColor-subtle, #f6f8fa)")}
             onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
-            Redownload
+            {t("toolbar.redownload")}
           </div>
           <div onClick={handleOpen} style={{ padding: "6px 16px", cursor: "pointer", fontSize: 13 }}
             onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bgColor-subtle, #f6f8fa)")}
             onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
-            Open
+            {t("downloadRow.open")}
           </div>
           <div onClick={handleOpenFolder} style={{ padding: "6px 16px", cursor: "pointer", fontSize: 13 }}
             onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bgColor-subtle, #f6f8fa)")}
             onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
-            Open in Folder
+            {t("downloadRow.openFolder")}
           </div>
           <div onClick={() => { setMenuPos(null); onProperties(item.id); }} style={{ padding: "6px 16px", cursor: "pointer", fontSize: 13 }}
             onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bgColor-subtle, #f6f8fa)")}
             onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
-            Details
+            {t("downloadRow.details")}
           </div>
         </div>
       )}

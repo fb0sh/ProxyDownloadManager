@@ -12,9 +12,9 @@
   "app": {
     "windows": [
       {
-        "title": "proxydownloadmanager",
-        "width": 800,
-        "height": 600
+        "title": "ProxyDownloadManager",
+        "width": 1020,
+        "height": 587
       }
     ],
     "security": {

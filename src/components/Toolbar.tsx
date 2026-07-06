@@ -1,5 +1,6 @@
 import { Button } from "@primer/react";
 import { PlusIcon, TriangleRightIcon, StopIcon, TrashIcon, GearIcon, QuestionIcon, NoteIcon } from "@primer/octicons-react";
+import { t } from "../i18n";
 
 interface ToolbarProps {
   onNewDownload: () => void;
@@ -24,46 +25,46 @@ export default function Toolbar({
     <div
       style={{
         display: "flex",
-        padding: 8,
-        gap: 8,
-        borderBottom: "1px solid var(--borderColor-default, #d0d7de)",
+        padding: "4px 8px",
+        gap: 4,
+        borderBottom: "1px solid var(--borderColor-muted, #d8dee4)",
         backgroundColor: "var(--bgColor-subtle, #f6f8fa)",
         alignItems: "center",
       }}
     >
       <Button onClick={onNewDownload} leadingVisual={PlusIcon} size="small" variant="primary">
-        New
+        {t("toolbar.new")}
       </Button>
       {hasSelection && (
         <>
           <Button onClick={onResumeSelected} leadingVisual={TriangleRightIcon} size="small">
-            Resume
+            {t("toolbar.resume")}
           </Button>
           <Button onClick={onPauseSelected} leadingVisual={StopIcon} size="small">
-            Stop
+            {t("toolbar.stop")}
           </Button>
           <Button onClick={onDeleteSelected} leadingVisual={TrashIcon} size="small" variant="danger">
-            Delete
+            {t("toolbar.delete")}
           </Button>
         </>
       )}
       {hasRedownloadable && (
         <Button onClick={onRedownloadSelected} size="small">
-          Redownload
+          {t("toolbar.redownload")}
         </Button>
       )}
       <div style={{ flex: 1 }} />
       <Button onClick={onLog} leadingVisual={NoteIcon} size="small">
-        Log
+        {t("toolbar.log")}
       </Button>
       <Button onClick={onSettings} leadingVisual={GearIcon} size="small">
-        Settings
+        {t("toolbar.settings")}
       </Button>
       <Button onClick={onAbout} leadingVisual={QuestionIcon} size="small">
-        About
+        {t("toolbar.about")}
       </Button>
       <Button onClick={onQuit} size="small">
-        Quit
+        {t("toolbar.quit")}
       </Button>
     </div>
   );

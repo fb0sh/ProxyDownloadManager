@@ -128,6 +128,7 @@ pub struct DownloadConfig {
     pub rate_limit_bps: u64,
     pub connections: u32,
     pub max_retries: u32,
+    pub user_agent: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -164,6 +165,9 @@ pub struct Settings {
     pub global_rate_limit: u64,
     pub default_proxy: String,
     pub home_dir: String,
+    pub language: String,
+    #[serde(default)]
+    pub danger_accept_invalid_certs: bool,
 }
 
 impl Default for Settings {
@@ -176,12 +180,14 @@ impl Default for Settings {
                 .to_string(),
             max_connections: 8,
             max_retries: 10,
-            user_agent: "ProxyDM/0.1.0".to_string(),
+            user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36 Edg/149.0.0.0".to_string(),
             launch_at_startup: false,
             proxies: std::collections::HashMap::new(),
             global_rate_limit: 0,
             default_proxy: String::new(),
             home_dir: home.join(".ProxyDM").to_string_lossy().to_string(),
+            language: String::from("en"),
+            danger_accept_invalid_certs: true,
         }
     }
 }

@@ -56,6 +56,8 @@ export interface Settings {
   global_rate_limit: number;
   default_proxy: string;
   home_dir: string;
+  language: string;
+  danger_accept_invalid_certs: boolean;
 }
 
 export interface PendingDownloadRequest {

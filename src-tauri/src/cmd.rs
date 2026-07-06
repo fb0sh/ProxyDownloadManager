@@ -6,11 +6,13 @@ use crate::log::Logger;
 use tauri::State;
 use std::sync::Arc;
 use std::sync::Mutex;
+use tauri::Emitter;
 
 pub struct AppState {
     pub db: Db,
     pub worker_pool: WorkerPool,
     pub logger: Mutex<Logger>,
+    pub app_handle: tauri::AppHandle,
 }
 
 impl AppState {
@@ -28,6 +30,18 @@ impl AppState {
         if let Ok(l) = self.logger.lock() {
             l.info(&log_msg);
         }
+
+        // Notify frontend on error
+        if matches!(event.kind, EventKind::DownloadErrored) {
+            let msg = event.data.clone().unwrap_or_default();
+            let url = url_info.trim_start_matches(" url=").to_string();
+            let _ = self.app_handle.emit("download-error", serde_json::json!({
+                "id": event.download_id,
+                "url": url,
+                "message": msg,
+            }));
+        }
+
         match event.kind {
             EventKind::DownloadCompleted => {
                 if let Ok(mut items) = self.db.list_downloads() {
@@ -90,6 +104,29 @@ fn now_str() -> String {
     format!("{}", secs)
 }
 
+/// Return a unique file path in `dir` for `filename`.
+/// If `dir/filename` exists, try `dir/name.1.ext`, `dir/name.2.ext`, etc.
+fn unique_filename(dir: &str, filename: &str) -> String {
+    let dir = dir.trim_end_matches('/');
+    let candidate = format!("{}/{}", dir, filename);
+    if !std::path::Path::new(&candidate).exists() {
+        return candidate;
+    }
+    // Split into stem and extension
+    let (stem, ext) = match filename.rfind('.') {
+        Some(dot) => (&filename[..dot], &filename[dot..]),
+        None => (filename, ""),
+    };
+    let mut n = 1;
+    loop {
+        let candidate = format!("{}/{}.{}{}", dir, stem, n, ext);
+        if !std::path::Path::new(&candidate).exists() {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
 #[tauri::command]
 pub async fn redownload_download(
     state: State<'_, Arc<AppState>>,
@@ -113,8 +150,8 @@ pub async fn redownload_download(
 
     let pool = state.worker_pool.pool_ref();
     let headers = std::collections::HashMap::new();
-    let proxy_url_str = resolve_proxy_url(&existing.proxy_name);
-    let proxy_opt = proxy_url_str.as_deref();
+    let proxy_url = resolve_proxy_url(&existing.proxy_name).unwrap_or_default();
+    let proxy_opt = if proxy_url.is_empty() { None } else { Some(proxy_url.as_str()) };
     let settings = config::load();
     let user_agents = vec![
         settings.user_agent.clone(),
@@ -148,12 +185,13 @@ pub async fn redownload_download(
         file_name: existing.file_name,
         is_resume: false,
         headers: std::collections::HashMap::new(),
-        proxy_name: existing.proxy_name,
+        proxy_name: proxy_url,
         total_size: file_size,
         supports_range,
         rate_limit_bps: 0,
         connections: existing.connections,
         max_retries: 3,
+        user_agent: settings.user_agent.clone(),
     };
 
     state.worker_pool.add_with_id(cfg, id).await
@@ -228,7 +266,7 @@ pub async fn start_download(
     } else {
         save_path
     };
-    let full_path = format!("{}/{}", save_dir.trim_end_matches('/'), file_name);
+    let full_path = unique_filename(&save_dir, &file_name);
 
     let cfg = DownloadConfig {
         url: url.clone(),
@@ -238,12 +276,13 @@ pub async fn start_download(
         file_name: file_name.clone(),
         is_resume: false,
         headers: std::collections::HashMap::new(),
-        proxy_name: proxy_name.clone(),
+        proxy_name: proxy_url_str.clone().unwrap_or_default(),
         total_size: file_size,
         supports_range,
         rate_limit_bps: 0,
         connections,
         max_retries: 3,
+        user_agent: settings.user_agent.clone(),
     };
 
     let id = state.worker_pool.add(cfg).await?;
@@ -274,8 +313,10 @@ pub async fn pause_download(state: State<'_, Arc<AppState>>, id: u64) -> Result<
     state.worker_pool.cancel(id).await;
     if let Ok(mut items) = state.db.list_downloads() {
         if let Some(item) = items.iter_mut().find(|i| i.id == id) {
-            item.status = DownloadStatus::Paused;
-            let _ = state.db.update_download(item);
+            if matches!(item.status, DownloadStatus::Downloading) {
+                item.status = DownloadStatus::Paused;
+                let _ = state.db.update_download(item);
+            }
         }
     }
     Ok(())
@@ -284,6 +325,16 @@ pub async fn pause_download(state: State<'_, Arc<AppState>>, id: u64) -> Result<
 #[tauri::command]
 pub async fn resume_download(state: State<'_, Arc<AppState>>, id: u64) -> Result<(), String> {
     if let Ok(Some(saved_state)) = crate::state::gob::load_state(id) {
+        // Update DB status to Downloading before spawn
+        if let Ok(mut items) = state.db.list_downloads() {
+            if let Some(item) = items.iter_mut().find(|i| i.id == id) {
+                item.status = DownloadStatus::Downloading;
+                item.last_try = now_str();
+                let _ = state.db.update_download(item);
+            }
+        }
+
+        let proxy_url = resolve_proxy_url(&saved_state.proxy_name).unwrap_or_default();
         let cfg = DownloadConfig {
             url: saved_state.url,
             output_path: saved_state.save_path.clone(),
@@ -292,14 +343,18 @@ pub async fn resume_download(state: State<'_, Arc<AppState>>, id: u64) -> Result
             file_name: saved_state.file_name,
             is_resume: true,
             headers: std::collections::HashMap::new(),
-            proxy_name: saved_state.proxy_name,
+            proxy_name: proxy_url,
             total_size: saved_state.total_size,
             supports_range: true,
             rate_limit_bps: 0,
             connections: saved_state.workers,
             max_retries: 3,
+            user_agent: config::load().user_agent,
         };
-        state.worker_pool.add(cfg).await?;
+        state.worker_pool.add_with_id(cfg, id).await?;
+    } else {
+        // No saved state — fall back to redownload
+        return redownload_download(state, id).await.map(|_| ());
     }
     Ok(())
 }
@@ -348,8 +403,14 @@ pub fn get_settings() -> Result<Settings, String> {
 }
 
 #[tauri::command]
-pub fn save_settings(settings: Settings) -> Result<(), String> {
-    crate::config::save(&settings)
+pub fn save_settings(state: State<'_, Arc<AppState>>, settings: Settings) -> Result<(), String> {
+    let old = crate::config::load();
+    let tls_changed = old.danger_accept_invalid_certs != settings.danger_accept_invalid_certs;
+    crate::config::save(&settings)?;
+    if tls_changed {
+        state.worker_pool.clear_clients();
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -365,4 +426,42 @@ pub fn read_logs(max_lines: Option<usize>) -> Result<Vec<String>, String> {
 #[tauri::command]
 pub fn file_exists(path: String) -> bool {
     std::path::Path::new(&path).exists()
+}
+
+#[tauri::command]
+pub async fn test_proxy(
+    state: State<'_, Arc<AppState>>,
+    proxy_name: String,
+) -> Result<serde_json::Value, String> {
+    let proxy_url = resolve_proxy_url(&proxy_name);
+    let settings = crate::config::load();
+    let pool = crate::network::pool::NetworkPool::new(settings.danger_accept_invalid_certs);
+    let client = pool.get_client(proxy_url.as_deref());
+
+    let start = std::time::Instant::now();
+    match client
+        .get("https://www.google.com")
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+    {
+        Ok(resp) => {
+            let latency_ms = start.elapsed().as_millis() as u64;
+            let ok = resp.status().is_success();
+            let status = resp.status().as_u16();
+            Ok(serde_json::json!({
+                "ok": ok,
+                "latency_ms": latency_ms,
+                "status": status,
+            }))
+        }
+        Err(e) => {
+            let latency_ms = start.elapsed().as_millis() as u64;
+            Ok(serde_json::json!({
+                "ok": false,
+                "latency_ms": latency_ms,
+                "error": format!("{}", e),
+            }))
+        }
+    }
 }

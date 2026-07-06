@@ -1,5 +1,6 @@
 use crate::network::pool::NetworkPool;
 use std::collections::HashMap;
+use std::error::Error;
 
 pub struct ProbeResult {
     pub supports_range: bool,
@@ -18,6 +19,7 @@ pub async fn probe(
     let client = pool.get_client(proxy);
 
     // Try each UA, return first success
+    let mut first_err: Option<String> = None;
     for ua in user_agents.iter().chain(std::iter::once(&String::new())) {
         // Try Range first to detect 206 support
         let mut range_req = client.get(url);
@@ -33,7 +35,19 @@ pub async fn probe(
         let resp = range_req.send().await;
         let resp = match resp {
             Ok(r) => r,
-            Err(_) => continue, // try next UA on network error
+            Err(e) => {
+                if first_err.is_none() {
+                    // Capture full error chain: Display + source
+                    let mut msg = format!("{}", e);
+                    let mut src = e.source();
+                    while let Some(s) = src {
+                        msg.push_str(&format!(": {}", s));
+                        src = s.source();
+                    }
+                    first_err = Some(msg);
+                }
+                continue; // try next UA on network error
+            }
         };
         let status = resp.status();
 
@@ -103,5 +117,8 @@ pub async fn probe(
         });
     }
 
-    Err("All probe attempts failed".to_string())
+    Err(match first_err {
+        Some(e) => format!("All probe attempts failed (first error: {})", e),
+        None => "All probe attempts failed".to_string(),
+    })
 }

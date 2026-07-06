@@ -3,6 +3,7 @@ use crate::network::limiter::MultiLimiter;
 use crate::types::{Event, EventKind, DownloadConfig};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::error::Error;
 use tokio::sync::mpsc;
 use tokio::io::AsyncWriteExt;
 
@@ -17,12 +18,24 @@ impl SingleDownloader {
     }
 
     pub async fn download(&self, cfg: &DownloadConfig, limiter: Arc<MultiLimiter>, cancel: Arc<AtomicBool>) -> Result<(), String> {
-        let resp = self.pool
+        let mut req = self.pool
             .get_client(if cfg.proxy_name.is_empty() { None } else { Some(&cfg.proxy_name) })
-            .get(&cfg.url)
+            .get(&cfg.url);
+        if !cfg.user_agent.is_empty() {
+            req = req.header("User-Agent", &cfg.user_agent);
+        }
+        let resp = req
             .send()
             .await
-            .map_err(|e| format!("Download request failed: {}", e))?;
+            .map_err(|e| {
+                let mut msg = format!("Download request failed: {}", e);
+                let mut src = std::error::Error::source(&e);
+                while let Some(s) = src {
+                    msg.push_str(&format!(": {}", s));
+                    src = s.source();
+                }
+                msg
+            })?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -53,18 +66,29 @@ impl SingleDownloader {
         let mut total = 0u64;
         let buf_size = 32 * 1024; // 32KB buffer
 
-        while let Some(chunk_result) = stream.next().await {
-            if cancel.load(Ordering::Relaxed) {
-                file.flush().await.ok();
-                return Err("Cancelled".to_string());
-            }
-            let chunk = chunk_result.map_err(|e| format!("Stream error: {}", e))?;
+        loop {
+            // Timeout on stream reads so cancel can be detected promptly
+            let chunk_result = tokio::time::timeout(
+                std::time::Duration::from_secs(3), stream.next()
+            ).await;
+            let chunk = match chunk_result {
+                Ok(Some(c)) => c,
+                Ok(None) => break,
+                Err(_elapsed) => {
+                    if cancel.load(Ordering::Relaxed) {
+                        file.flush().await.ok();
+                        return Err("Cancelled".to_string());
+                    }
+                    continue;
+                }
+            };
+            let chunk = chunk.map_err(|e| format!("Stream error: {}", e))?;
             limiter.wait_n(chunk.len() as u64);
             file.write_all(&chunk).await.map_err(|e| format!("Write error: {}", e))?;
             total += chunk.len() as u64;
 
-            // Periodic progress
-            if total % (buf_size * 32) == 0 {
+            // Periodic progress — report every 128KB
+            if total % (buf_size * 4) == 0 || total == 0 {
                 let _ = self.event_tx.send(Event {
                     kind: EventKind::DownloadProgress,
                     download_id: cfg.id,
@@ -74,6 +98,13 @@ impl SingleDownloader {
         }
 
         file.flush().await.map_err(|e| format!("Flush error: {}", e))?;
+
+        // Final progress update so UI reaches 100%
+        let _ = self.event_tx.send(Event {
+            kind: EventKind::DownloadProgress,
+            download_id: cfg.id,
+            data: Some(total.to_string()),
+        });
 
         let _ = self.event_tx.send(Event {
             kind: EventKind::DownloadCompleted,

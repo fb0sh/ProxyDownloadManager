@@ -1,6 +1,7 @@
 import { Text } from "@primer/react";
 import { useDownloads } from "../query/downloadQueries";
 import DownloadRow from "./DownloadRow";
+import { t } from "../i18n";
 import type { DownloadItem } from "../types";
 
 interface DownloadTableProps {
@@ -25,17 +26,17 @@ export default function DownloadTable({ selectedIds, onSelectChange, filter, onS
 
   if (isLoading) {
     return (
-      <div style={{ display: "flex", justifyContent: "center", padding: 24 }}>
-        <Text style={{ color: "var(--fgColor-muted, #656d76)" }}>Loading...</Text>
+      <div style={{ display: "flex", justifyContent: "center", padding: 16 }}>
+        <Text size="small" style={{ color: "var(--fgColor-muted, #656d76)" }}>{t("downloadTable.loading")}</Text>
       </div>
     );
   }
 
   if (filtered.length === 0) {
     return (
-      <div style={{ display: "flex", justifyContent: "center", padding: 24 }}>
-        <Text style={{ color: "var(--fgColor-muted, #656d76)" }}>
-          {downloads.length === 0 ? 'No downloads yet. Click "New" to start one.' : "No matching downloads."}
+      <div style={{ display: "flex", justifyContent: "center", padding: 16 }}>
+        <Text size="small" style={{ color: "var(--fgColor-muted, #656d76)" }}>
+          {downloads.length === 0 ? t("downloadTable.empty") : t("downloadTable.noMatch")}
         </Text>
       </div>
     );

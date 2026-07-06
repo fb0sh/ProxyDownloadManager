@@ -15,5 +15,6 @@ export function useTauriCommands() {
     saveSettings: (settings: Settings) => invoke<void>("save_settings", { settings }),
     cancelDownload: (id: number) => invoke<void>("cancel_download", { id }),
     redownloadDownload: (id: number) => invoke<number>("redownload_download", { id }),
+    testProxy: (proxyName: string) => invoke<{ok: boolean; latency_ms: number; status?: number; error?: string}>("test_proxy", { proxyName }),
   };
 }

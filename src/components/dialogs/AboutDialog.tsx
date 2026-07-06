@@ -1,5 +1,6 @@
 import { Text } from "@primer/react";
 import { Dialog } from "@primer/react/experimental";
+import { t } from "../../i18n";
 
 interface AboutDialogProps {
   onClose: () => void;
@@ -7,7 +8,7 @@ interface AboutDialogProps {
 
 export default function AboutDialog({ onClose }: AboutDialogProps) {
   return (
-    <Dialog title="About ProxyDM" onClose={onClose}>
+    <Dialog title={t("about.title")} onClose={onClose}>
       <div style={{ padding: 16, textAlign: "center" }}>
         <Text weight="semibold" size="large" style={{ display: "block", marginBottom: 8 }}>
           ProxyDM

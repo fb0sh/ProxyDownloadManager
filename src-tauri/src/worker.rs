@@ -16,10 +16,10 @@ pub struct WorkerPool {
 }
 
 impl WorkerPool {
-    pub fn new(max_workers: u32, event_tx: mpsc::UnboundedSender<Event>) -> Self {
+    pub fn new(max_workers: u32, event_tx: mpsc::UnboundedSender<Event>, danger_accept_invalid_certs: bool) -> Self {
         Self {
             semaphore: Arc::new(Semaphore::new(max_workers as usize)),
-            pool: Arc::new(NetworkPool::new()),
+            pool: Arc::new(NetworkPool::new(danger_accept_invalid_certs)),
             event_tx,
             active: Arc::new(Mutex::new(HashMap::new())),
             next_id: AtomicU64::new(1),
@@ -60,11 +60,15 @@ impl WorkerPool {
             let result = engine::run_download(cfg, pool, event_tx.clone(), limiter, cancel.clone()).await;
 
             if let Err(e) = &result {
-                let _ = event_tx.send(Event {
-                    kind: crate::types::EventKind::DownloadErrored,
-                    download_id: id,
-                    data: Some(e.clone()),
-                });
+                // Don't emit DownloadErrored for user-requested cancellation — pause_download
+                // already sets DB status to Paused. Emitting an error event would race with it.
+                if e != "Cancelled" {
+                    let _ = event_tx.send(Event {
+                        kind: crate::types::EventKind::DownloadErrored,
+                        download_id: id,
+                        data: Some(e.clone()),
+                    });
+                }
             }
 
             // Cleanup
@@ -89,5 +93,9 @@ impl WorkerPool {
 
     pub fn pool_ref(&self) -> Arc<NetworkPool> {
         self.pool.clone()
+    }
+
+    pub fn clear_clients(&self) {
+        self.pool.clear();
     }
 }

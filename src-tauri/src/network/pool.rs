@@ -5,12 +5,14 @@ use std::time::Duration;
 
 pub struct NetworkPool {
     clients: Mutex<HashMap<String, reqwest::Client>>,
+    danger_accept_invalid_certs: bool,
 }
 
 impl NetworkPool {
-    pub fn new() -> Self {
+    pub fn new(danger_accept_invalid_certs: bool) -> Self {
         Self {
             clients: Mutex::new(HashMap::new()),
+            danger_accept_invalid_certs,
         }
     }
 
@@ -26,7 +28,7 @@ impl NetworkPool {
             .timeout(Duration::from_secs(120))
             .connect_timeout(Duration::from_secs(30))
             .https_only(false)
-            .danger_accept_invalid_certs(false);
+            .danger_accept_invalid_certs(self.danger_accept_invalid_certs);
 
         if let Some(proxy_str) = proxy_url {
             if let Ok(proxy) = Proxy::all(proxy_str) {
@@ -37,5 +39,10 @@ impl NetworkPool {
         let client = builder.build().expect("Failed to build reqwest Client");
         map.insert(key, client.clone());
         client
+    }
+
+    /// Clear cached clients so next get_client() rebuilds with current settings
+    pub fn clear(&self) {
+        self.clients.lock().unwrap().clear();
     }
 }

@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Button, Text } from "@primer/react";
 import { Dialog } from "@primer/react/experimental";
 import { invoke } from "@tauri-apps/api/core";
+import { t } from "../../i18n";
 
 interface LogDialogProps {
   onClose: () => void;
@@ -25,7 +26,7 @@ export default function LogDialog({ onClose }: LogDialogProps) {
   useEffect(() => { loadLogs(); }, []);
 
   return (
-    <Dialog title="Log" onClose={onClose} width="xlarge">
+    <Dialog title={t("log.title")} onClose={onClose} width="xlarge">
       <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
         {/* Toolbar */}
         <div style={{
@@ -36,10 +37,10 @@ export default function LogDialog({ onClose }: LogDialogProps) {
           borderBottom: "1px solid var(--borderColor-muted, #d8dee4)",
         }}>
           <Text size="small" style={{ color: "var(--fgColor-muted, #656d76)" }}>
-            {logs.length} entries
+            {logs.length} {t("log.entries")}
           </Text>
           <Button size="small" onClick={loadLogs} disabled={loading}>
-            {loading ? "Loading..." : "Refresh"}
+            {loading ? t("log.loading") : t("log.refresh")}
           </Button>
         </div>
 
@@ -59,7 +60,7 @@ export default function LogDialog({ onClose }: LogDialogProps) {
           }}>
             {logs.length === 0 ? (
               <Text size="small" style={{ color: "var(--fgColor-muted, #656d76)" }}>
-                No log entries.
+                {t("log.noEntries")}
               </Text>
             ) : (
               logs.map((line, i) => {

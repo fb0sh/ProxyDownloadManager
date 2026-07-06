@@ -1,9 +1,9 @@
 import { useState, useCallback, useEffect } from "react";
 import { TextInput, Button, FormControl, Select } from "@primer/react";
 import { Dialog } from "@primer/react/experimental";
-import { invoke } from "@tauri-apps/api/core";
-import { useStartDownload, useDownloads, useRedownloadDownload } from "../../query/downloadQueries";
+import { useStartDownload } from "../../query/downloadQueries";
 import { useSettingsStore } from "../../stores/settingsStore";
+import { t } from "../../i18n";
 
 function extractFilename(url: string): string {
   try {
@@ -51,19 +51,22 @@ const sectionBody: React.CSSProperties = {
 export default function NewDownloadDialog({ initialUrl = "", onClose }: NewDownloadDialogProps) {
   const settings = useSettingsStore((s) => s.settings);
   const proxies = settings.proxies;
-  const { data: downloads = [] } = useDownloads();
-  const redownload = useRedownloadDownload();
   const [url, setUrl] = useState(initialUrl);
   const [filename, setFilename] = useState("");
   const [autoFilled, setAutoFilled] = useState(false);
-  const [proxyName, setProxyName] = useState("");
+  const [proxyName, setProxyName] = useState(settings.default_proxy);
   const [connections, setConnections] = useState(settings.max_connections);
   const [savePath, setSavePath] = useState(settings.download_dir);
   const startDownload = useStartDownload();
 
   const handleUrlChange = useCallback((value: string) => {
     setUrl(value);
-    if (!autoFilled) {
+    if (autoFilled) {
+      // Keep auto-filling — filename follows URL
+      const fn = extractFilename(value);
+      if (fn) setFilename(fn);
+    } else {
+      // User hasn't manually set filename yet — auto-fill once
       const fn = extractFilename(value);
       if (fn) {
         setFilename(fn);
@@ -87,39 +90,20 @@ export default function NewDownloadDialog({ initialUrl = "", onClose }: NewDownl
   const handleSubmit = async () => {
     if (!url) return;
 
-    // Check if URL already exists in downloads
-    const existing = downloads.find((d) => d.url === url);
-    if (existing) {
-      try {
-        const fileOnDisk = await invoke<boolean>("file_exists", { path: existing.save_path });
-        if (fileOnDisk) {
-          alert(`"${existing.file_name}" already exists.\n\n${existing.save_path}`);
-          return;
-        }
-        // File missing — auto redownload
-        await redownload.mutateAsync(existing.id);
-        onClose();
-        return;
-      } catch (err) {
-        console.error("Duplicate check failed:", err);
-      }
-    }
-
     try {
       await startDownload.mutateAsync({ url, filename, proxyName, connections, savePath });
       onClose();
     } catch (err) {
       console.error("Download failed:", err);
-      alert("Download failed: " + (err instanceof Error ? err.message : String(err)));
+      alert(t("downloadError.failed") + ": " + (err instanceof Error ? err.message : String(err)));
     }
   };
 
   return (
-    <Dialog title="New Download" onClose={onClose} width="large">
+    <Dialog title={t("newDownload.title")} onClose={onClose} width="large">
       <div style={{ display: "flex", flexDirection: "column", gap: 16, padding: 16 }}>
-        {/* URL — prominent standalone */}
         <FormControl required>
-          <FormControl.Label>URL</FormControl.Label>
+          <FormControl.Label>{t("newDownload.url")}</FormControl.Label>
           <TextInput
             value={url}
             onChange={(e) => handleUrlChange(e.target.value)}
@@ -128,21 +112,20 @@ export default function NewDownloadDialog({ initialUrl = "", onClose }: NewDownl
           />
         </FormControl>
 
-        {/* Section: File */}
         <div style={sectionCard}>
-          <div style={sectionHeader}>File</div>
+          <div style={sectionHeader}>{t("newDownload.file")}</div>
           <div style={sectionBody}>
             <FormControl>
-              <FormControl.Label>Filename</FormControl.Label>
+              <FormControl.Label>{t("newDownload.filename")}</FormControl.Label>
               <TextInput
                 value={filename}
                 onChange={(e) => handleFilenameChange(e.target.value)}
-                placeholder="Auto-detect from URL"
+                placeholder={t("newDownload.autoDetect")}
                 block
               />
             </FormControl>
             <FormControl>
-              <FormControl.Label>Save to</FormControl.Label>
+              <FormControl.Label>{t("newDownload.saveTo")}</FormControl.Label>
               <TextInput
                 value={savePath}
                 onChange={(e) => setSavePath(e.target.value)}
@@ -152,21 +135,20 @@ export default function NewDownloadDialog({ initialUrl = "", onClose }: NewDownl
           </div>
         </div>
 
-        {/* Section: Network */}
         <div style={sectionCard}>
-          <div style={sectionHeader}>Network</div>
+          <div style={sectionHeader}>{t("newDownload.network")}</div>
           <div style={sectionBody}>
             <FormControl>
-              <FormControl.Label>Proxy</FormControl.Label>
+              <FormControl.Label>{t("newDownload.proxy")}</FormControl.Label>
               <Select value={proxyName} onChange={(e) => setProxyName(e.target.value)}>
-                <Select.Option value="">No proxy</Select.Option>
+                <Select.Option value="">{t("newDownload.noProxy")}</Select.Option>
                 {Object.keys(proxies).map((name) => (
                   <Select.Option key={name} value={name}>{name}</Select.Option>
                 ))}
               </Select>
             </FormControl>
             <FormControl>
-              <FormControl.Label>Connections</FormControl.Label>
+              <FormControl.Label>{t("newDownload.connections")}</FormControl.Label>
               <TextInput
                 type="number"
                 value={String(connections)}
@@ -179,11 +161,10 @@ export default function NewDownloadDialog({ initialUrl = "", onClose }: NewDownl
           </div>
         </div>
 
-        {/* Actions */}
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, paddingTop: 8 }}>
-          <Button onClick={onClose}>Cancel</Button>
+          <Button onClick={onClose}>{t("newDownload.cancel")}</Button>
           <Button variant="primary" onClick={handleSubmit} disabled={!url || startDownload.isPending}>
-            {startDownload.isPending ? "Starting..." : "Download"}
+            {startDownload.isPending ? t("newDownload.starting") : t("newDownload.download")}
           </Button>
         </div>
       </div>

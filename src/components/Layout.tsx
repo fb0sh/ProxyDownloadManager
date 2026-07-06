@@ -48,9 +48,9 @@ export default function Layout({
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
         <div
           style={{
-            width: 200,
+            width: 180,
             flexShrink: 0,
-            borderRight: "1px solid var(--borderColor-default, #d0d7de)",
+            borderRight: "1px solid var(--borderColor-muted, #d8dee4)",
           }}
         >
           <Sidebar filter={filter} onFilterChange={onFilterChange} />

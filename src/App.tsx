@@ -10,6 +10,8 @@ import { useClipboardDetection } from "./hooks/useClipboard";
 import { usePauseDownload, useResumeDownload, useDownloads, useSettings, useRedownloadDownload } from "./query/downloadQueries";
 import { useSettingsStore } from "./stores/settingsStore";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { setLanguage, t } from "./i18n";
 import type { DownloadItem } from "./types";
 
 type Dialog =
@@ -35,8 +37,20 @@ function App() {
 
   // Sync loaded settings to zustand store for cross-component access
   useEffect(() => {
-    if (loadedSettings) setSettings(loadedSettings);
+    if (loadedSettings) {
+      setSettings(loadedSettings);
+      setLanguage(loadedSettings.language || "en");
+    }
   }, [loadedSettings, setSettings]);
+
+  // Listen for download errors from backend
+  useEffect(() => {
+    const unlisten = listen<{id: number; url: string; message: string}>("download-error", (event) => {
+      const { url, message } = event.payload;
+      alert(`${t("downloadError.failed")}: ${url}\n\n${message}`);
+    });
+    return () => { unlisten.then(f => f()); };
+  }, []);
 
   const onUrlDetected = useCallback((url: string) => {
     setDialog({ type: "new-download", url });

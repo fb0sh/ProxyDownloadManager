@@ -208,7 +208,8 @@ fn parse_status(s: &str) -> DownloadStatus {
         "paused" => DownloadStatus::Paused,
         "completed" => DownloadStatus::Completed,
         s if s.starts_with("failed") => {
-            DownloadStatus::Failed(s[7..].trim_start_matches(':').to_string())
+            let msg = s.strip_prefix("failed:").unwrap_or("");
+            DownloadStatus::Failed(msg.to_string())
         }
         _ => DownloadStatus::Queued,
     }
