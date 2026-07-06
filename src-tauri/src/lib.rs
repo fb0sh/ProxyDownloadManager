@@ -9,6 +9,7 @@ mod worker;
 mod ws;
 mod cmd;
 mod tray;
+mod icons;
 
 use crate::cmd::AppState;
 use crate::log::Logger;
@@ -20,15 +21,31 @@ use tokio::sync::mpsc;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-    let (request_tx, _request_rx) = mpsc::unbounded_channel();
+    let (request_tx, mut request_rx) = mpsc::unbounded_channel::<crate::types::PendingDownloadRequest>();
 
     let logger = Mutex::new(Logger::new().expect("Failed to initialize logger"));
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            let _ = app.get_webview_window("main")
+                       .expect("no main window")
+                       .show();
+            let _ = app.get_webview_window("main")
+                       .expect("no main window")
+                       .set_focus();
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
             let _ = crate::tray::build_tray(app.handle());
+
+            let icon_cache = crate::icons::IconCache::new();
+            app.manage(icon_cache);
 
             let db = crate::state::db::Db::new().expect("Failed to initialize database");
             let settings = crate::config::load();
@@ -43,16 +60,43 @@ pub fn run() {
             let ev_state = state.clone();
             app.manage(state);
 
-            // Set window title with version
+            // Hide from Dock (macOS menu-bar only app)
+            #[cfg(target_os = "macos")]
+            {
+                use objc2::msg_send;
+                use objc2::runtime::Object;
+                let cls = objc2::class!(NSApplication);
+                let ns_app: *mut Object = unsafe { msg_send![cls, sharedApplication] };
+                // NSApplicationActivationPolicyAccessory = 1 (no Dock icon)
+                let _: () = unsafe { msg_send![ns_app, setActivationPolicy: 1i64] };
+            }
+
+            // Set window title and intercept close → hide to tray
             let handle = app.handle();
             if let Some(window) = handle.get_webview_window("main") {
                 let _ = window.set_title(&format!("ProxyDownloadManager {}", handle.package_info().version));
+                let win = window.clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = win.hide();
+                    }
+                });
             }
 
             // Spawn event handler: listens for download events, updates DB
             tauri::async_runtime::spawn(async move {
                 while let Some(event) = event_rx.recv().await {
                     ev_state.handle_event(event).await;
+                }
+            });
+
+            // Forward WebSocket download requests to main window
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                use tauri::Emitter;
+                while let Some(req) = request_rx.recv().await {
+                    let _ = app_handle.emit("browser-download-url", req.url);
                 }
             });
 
@@ -81,6 +125,7 @@ pub fn run() {
             cmd::read_logs,
             cmd::file_exists,
             cmd::test_proxy,
+            cmd::get_file_icon,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

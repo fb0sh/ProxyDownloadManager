@@ -19,6 +19,9 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-single-instance = "2"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-autostart = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
@@ -36,4 +39,6 @@ lazy_static = "1.5"
 url = "2"
 log = "0.4"
 tungstenite = "0.24"
+file_icon_provider = "1"
+base64 = "0.22"
 

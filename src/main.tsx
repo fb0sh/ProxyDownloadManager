@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import App from "./App";
+import NewDownloadWindow from "./NewDownloadWindow";
 
 import "@primer/primitives/dist/css/functional/themes/light.css";
 import { BaseStyles, ThemeProvider } from "@primer/react";
@@ -16,6 +17,22 @@ const queryClient = new QueryClient({
 });
 
 function RootLayout() {
+  // If opened as a child window for New Download, render standalone view
+  const params = new URLSearchParams(window.location.search);
+  const view = params.get("view");
+
+  if (view === "new-download") {
+    return (
+      <QueryClientProvider client={queryClient}>
+        <ThemeProvider>
+          <BaseStyles>
+            <NewDownloadWindow />
+          </BaseStyles>
+        </ThemeProvider>
+      </QueryClientProvider>
+    );
+  }
+
   return (
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>

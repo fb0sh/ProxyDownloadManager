@@ -1,6 +1,5 @@
 import { useState, useCallback, useEffect } from "react";
 import Layout from "./components/Layout";
-import NewDownloadDialog from "./components/dialogs/NewDownloadDialog";
 import DeleteDialog from "./components/dialogs/DeleteDialog";
 import SettingsDialog from "./components/dialogs/SettingsDialog";
 import PropertiesDialog from "./components/dialogs/PropertiesDialog";
@@ -11,11 +10,11 @@ import { usePauseDownload, useResumeDownload, useDownloads, useSettings, useRedo
 import { useSettingsStore } from "./stores/settingsStore";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { setLanguage, t } from "./i18n";
 import type { DownloadItem } from "./types";
 
 type Dialog =
-  | { type: "new-download"; url?: string }
   | { type: "delete"; ids: number[] }
   | { type: "settings" }
   | { type: "properties"; id: number }
@@ -52,11 +51,40 @@ function App() {
     return () => { unlisten.then(f => f()); };
   }, []);
 
-  const onUrlDetected = useCallback((url: string) => {
-    setDialog({ type: "new-download", url });
+  const openNewDownloadWindow = useCallback(async (url?: string) => {
+    // Don't re-open if already exists
+    const existing = await WebviewWindow.getByLabel("new-download");
+    if (existing) { existing.setFocus(); return; }
+
+    const base = window.location.origin + window.location.pathname.replace(/\/+$/, "");
+    const params = new URLSearchParams();
+    params.set("view", "new-download");
+    if (url) params.set("url", url);
+
+    const win = new WebviewWindow("new-download", {
+      url: `${base}?${params.toString()}`,
+      width: 600,
+      height: 490,
+      title: t("newDownload.title"),
+    });
+    win.once("tauri://error", (e) => {
+      console.error("Failed to open new download window:", e);
+    });
   }, []);
 
+  const onUrlDetected = useCallback((url: string) => {
+    openNewDownloadWindow(url);
+  }, [openNewDownloadWindow]);
+
   useClipboardDetection(onUrlDetected);
+
+  // Listen for browser extension download URLs → open New Download window
+  useEffect(() => {
+    const unlisten = listen<string>("browser-download-url", (event) => {
+      onUrlDetected(event.payload);
+    });
+    return () => { unlisten.then(f => f()); };
+  }, [onUrlDetected]);
 
   const handleQuit = async () => {
     try {
@@ -112,7 +140,7 @@ function App() {
   return (
     <>
       <Layout
-        onNewDownload={() => setDialog({ type: "new-download" })}
+        onNewDownload={() => openNewDownloadWindow()}
         onLog={() => setDialog({ type: "log" })}
         onSettings={() => setDialog({ type: "settings" })}
         onAbout={() => setDialog({ type: "about" })}
@@ -132,12 +160,6 @@ function App() {
         onFilterChange={setFilter}
       />
 
-      {dialog?.type === "new-download" && (
-        <NewDownloadDialog
-          initialUrl={dialog.url ?? ""}
-          onClose={() => setDialog(null)}
-        />
-      )}
       {dialog?.type === "delete" && (
         <DeleteDialog
           ids={dialog.ids}

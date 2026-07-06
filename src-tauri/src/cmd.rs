@@ -3,6 +3,7 @@ use crate::state::db::Db;
 use crate::worker::WorkerPool;
 use crate::config;
 use crate::log::Logger;
+use crate::icons::{IconCache, IconData};
 use tauri::State;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -429,8 +430,16 @@ pub fn file_exists(path: String) -> bool {
 }
 
 #[tauri::command]
+pub fn get_file_icon(
+    icon_cache: State<'_, IconCache>,
+    file_name: String,
+) -> IconData {
+    icon_cache.get(&file_name)
+}
+
+#[tauri::command]
 pub async fn test_proxy(
-    state: State<'_, Arc<AppState>>,
+    _state: State<'_, Arc<AppState>>,
     proxy_name: String,
 ) -> Result<serde_json::Value, String> {
     let proxy_url = resolve_proxy_url(&proxy_name);

@@ -11,8 +11,15 @@ pub fn build_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::err
     let quit = MenuItem::with_id(app, "quit", "Quit", true, Some("CmdOrCtrl+Q"))?;
     let menu = Menu::with_items(app, &[&show, &quit])?;
 
+    // Dedicated tray icon (monochrome download arrow, 32x32)
+    let tray_icon = tauri::image::Image::new(
+        include_bytes!("../icons/tray-icon.rgba"),
+        32,
+        32,
+    );
     TrayIconBuilder::new()
-        .icon(app.default_window_icon().unwrap().clone())
+        .icon(tray_icon)
+        .icon_as_template(true)
         .menu(&menu)
         .on_menu_event(|app, event| {
             match event.id.as_ref() {

@@ -5,6 +5,7 @@ import { useSettings } from "../../query/downloadQueries";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { t, setLanguage } from "../../i18n";
+import { enable as autostartEnable, disable as autostartDisable } from "@tauri-apps/plugin-autostart";
 import type { Settings } from "../../types";
 
 const THREAD_OPTIONS = [4, 8, 16, 32, 64];
@@ -94,6 +95,16 @@ export default function SettingsDialog({ onClose }: SettingsDialogProps) {
     if (settings) {
       setLanguage(settings.language);
       await saveSettings(settings);
+      // Sync autostart across platforms (macOS LaunchAgent / Windows Registry / Linux .desktop)
+      try {
+        if (settings.launch_at_startup) {
+          await autostartEnable();
+        } else {
+          await autostartDisable();
+        }
+      } catch (e) {
+        console.error("Autostart toggle failed:", e);
+      }
       onClose();
     }
   };

@@ -25,8 +25,8 @@ export default function Toolbar({
     <div
       style={{
         display: "flex",
-        padding: "4px 8px",
-        gap: 4,
+        padding: "2px 6px",
+        gap: 2,
         borderBottom: "1px solid var(--borderColor-muted, #d8dee4)",
         backgroundColor: "var(--bgColor-subtle, #f6f8fa)",
         alignItems: "center",
