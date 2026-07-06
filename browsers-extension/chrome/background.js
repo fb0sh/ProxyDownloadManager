@@ -142,12 +142,18 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 // ─── Download interception ────────────────────────────────────────────────────
 
 chrome.downloads.onCreated.addListener(async (item) => {
-  if (!(await isEnabled())) return;
+  if (!(await isEnabled())) {
+    console.log('[ProxyDM] disabled, letting browser handle:', item.url);
+    return;
+  }
   if (!item.url || item.url.startsWith('blob:')) return;
-  if (!looksLikeDownload(item.url)) return;
+
+  console.log('[ProxyDM] download intercepted:', item.url, 'file:', item.filename);
 
   chrome.tabs.query({ active: true, currentWindow: true }, async ([tab]) => {
-    if (await sendReliable(item.url, tab?.url || '', tab?.title || '')) {
+    const ok = await sendReliable(item.url, tab?.url || '', tab?.title || '');
+    console.log('[ProxyDM] sent to app:', ok);
+    if (ok) {
       chrome.downloads.cancel(item.id, () => {
         if (chrome.runtime.lastError) console.debug(chrome.runtime.lastError.message);
         chrome.downloads.erase({ id: item.id });
