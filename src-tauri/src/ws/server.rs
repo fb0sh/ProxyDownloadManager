@@ -46,6 +46,10 @@ impl WsServer {
 
                 match stream {
                     Ok(stream) => {
+                        // Set the accepted stream to BLOCKING mode.
+                        // The listener is non-blocking for the accept loop,
+                        // but connection handling needs blocking I/O.
+                        let _ = stream.set_nonblocking(false);
                         let et = event_tx.clone();
                         let rt = request_tx.clone();
                         thread::spawn(move || {
