@@ -69,32 +69,26 @@ function App() {
       height: 490,
       title: t("newDownload.title"),
     });
+    win.once("tauri://created", () => {
+      win.setFocus();
+    });
     win.once("tauri://error", (e) => {
       console.error("Failed to open new download window:", e);
     });
   }, []);
 
-  const onUrlDetected = useCallback(async (url: string) => {
-    console.log("[ProxyDM FE] onUrlDetected called with:", url);
-    try {
-      await openNewDownloadWindow(url);
-      console.log("[ProxyDM FE] openNewDownloadWindow completed");
-    } catch (e) {
-      console.error("[ProxyDM FE] openNewDownloadWindow error:", e);
-    }
+  const onUrlDetected = useCallback((url: string) => {
+    openNewDownloadWindow(url);
   }, [openNewDownloadWindow]);
 
   useClipboardDetection(onUrlDetected);
 
   // Listen for browser extension download URLs → open New Download window
   useEffect(() => {
-    console.log("[ProxyDM FE] Setting up browser-download-url listener...");
     const unlisten = listen<string>("browser-download-url", (event) => {
-      console.log("[ProxyDM FE] Received browser-download-url:", event.payload);
       onUrlDetected(event.payload);
-      console.log("[ProxyDM FE] After onUrlDetected");
     });
-    return () => { unlisten.then(f => { console.log("[ProxyDM FE] Cleanup listener"); f(); }); };
+    return () => { unlisten.then(f => f()); };
   }, [onUrlDetected]);
 
   const handleQuit = async () => {
