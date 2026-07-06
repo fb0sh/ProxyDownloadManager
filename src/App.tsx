@@ -74,18 +74,27 @@ function App() {
     });
   }, []);
 
-  const onUrlDetected = useCallback((url: string) => {
-    openNewDownloadWindow(url);
+  const onUrlDetected = useCallback(async (url: string) => {
+    console.log("[ProxyDM FE] onUrlDetected called with:", url);
+    try {
+      await openNewDownloadWindow(url);
+      console.log("[ProxyDM FE] openNewDownloadWindow completed");
+    } catch (e) {
+      console.error("[ProxyDM FE] openNewDownloadWindow error:", e);
+    }
   }, [openNewDownloadWindow]);
 
   useClipboardDetection(onUrlDetected);
 
   // Listen for browser extension download URLs → open New Download window
   useEffect(() => {
+    console.log("[ProxyDM FE] Setting up browser-download-url listener...");
     const unlisten = listen<string>("browser-download-url", (event) => {
+      console.log("[ProxyDM FE] Received browser-download-url:", event.payload);
       onUrlDetected(event.payload);
+      console.log("[ProxyDM FE] After onUrlDetected");
     });
-    return () => { unlisten.then(f => f()); };
+    return () => { unlisten.then(f => { console.log("[ProxyDM FE] Cleanup listener"); f(); }); };
   }, [onUrlDetected]);
 
   const handleQuit = async () => {
