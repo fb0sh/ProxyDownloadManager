@@ -1,0 +1,39 @@
+import { create } from "zustand";
+import type { Settings } from "../types";
+
+interface SettingsStore {
+  settings: Settings;
+  setSettings: (settings: Settings) => void;
+  updateProxy: (name: string, protocol: string, host: string, port: number) => void;
+  removeProxy: (name: string) => void;
+}
+
+export const useSettingsStore = create<SettingsStore>((set) => ({
+  settings: {
+    download_dir: "",
+    max_connections: 8,
+    max_retries: 10,
+    user_agent: "ProxyDM/0.1.0",
+    launch_at_startup: false,
+    proxies: {},
+    global_rate_limit: 0,
+    default_proxy: "",
+    home_dir: "",
+  },
+  setSettings: (settings) => set({ settings }),
+  updateProxy: (name, protocol, host, port) =>
+    set((state) => ({
+      settings: {
+        ...state.settings,
+        proxies: {
+          ...state.settings.proxies,
+          [name]: { protocol: protocol as "http" | "socks5", host, port },
+        },
+      },
+    })),
+  removeProxy: (name) =>
+    set((state) => {
+      const { [name]: _, ...rest } = state.settings.proxies;
+      return { settings: { ...state.settings, proxies: rest } };
+    }),
+}));

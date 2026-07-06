@@ -1,0 +1,90 @@
+export interface DownloadItem {
+  id: number;
+  url: string;
+  file_name: string;
+  save_path: string;
+  total_size: number;
+  downloaded: number;
+  status: DownloadStatus;
+  parts: DownloadPart[];
+  proxy_name: string;
+  connections: number;
+  resumable: boolean | null;
+  merge_progress: number;
+  created_at: string;
+  last_try: string;
+}
+
+export interface DownloadPart {
+  index: number;
+  start: number;
+  end: number;
+  downloaded: number;
+  temp_path: string;
+  status: PartStatus;
+  retries: number;
+}
+
+export type DownloadStatus =
+  | "downloading"
+  | "paused"
+  | "completed"
+  | "failed"
+  | "queued";
+
+export type PartStatus =
+  | "pending"
+  | "downloading"
+  | "completed"
+  | "failed";
+
+export type ProxyProtocol = "http" | "socks5";
+
+export interface ProxyConfig {
+  protocol: ProxyProtocol;
+  host: string;
+  port: number;
+}
+
+export interface Settings {
+  download_dir: string;
+  max_connections: number;
+  max_retries: number;
+  user_agent: string;
+  launch_at_startup: boolean;
+  proxies: Record<string, ProxyConfig>;
+  global_rate_limit: number;
+  default_proxy: string;
+  home_dir: string;
+}
+
+export interface PendingDownloadRequest {
+  url: string;
+  filename: string;
+  proxy_name: string;
+  connections: number;
+}
+
+export interface Event {
+  kind: EventKind;
+  download_id: number;
+  data?: string;
+}
+
+export type EventKind =
+  | "DownloadStarted"
+  | "DownloadProgress"
+  | "DownloadCompleted"
+  | "DownloadPaused"
+  | "DownloadResumed"
+  | "DownloadErrored"
+  | "DownloadRemoved"
+  | "DownloadQueued";
+
+export function formatBytes(bytes: number): string {
+  if (bytes === 0) return "0 B";
+  const k = 1024;
+  const sizes = ["B", "KB", "MB", "GB", "TB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
+}
