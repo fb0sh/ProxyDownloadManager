@@ -1,9 +1,10 @@
 import { Button } from "@primer/react";
-import { PlusIcon, TriangleRightIcon, StopIcon, TrashIcon, GearIcon, QuestionIcon, NoteIcon } from "@primer/octicons-react";
+import { PlusIcon, TriangleRightIcon, StopIcon, TrashIcon, GearIcon, QuestionIcon, NoteIcon, BrowserIcon } from "@primer/octicons-react";
 import { t } from "../i18n";
 
 interface ToolbarProps {
   onNewDownload: () => void;
+  onExtension: () => void;
   onSettings: () => void;
   onAbout: () => void;
   onQuit: () => void;
@@ -17,7 +18,7 @@ interface ToolbarProps {
 }
 
 export default function Toolbar({
-  onNewDownload, onSettings, onAbout, onQuit, onLog,
+  onNewDownload, onExtension, onSettings, onAbout, onQuit, onLog,
   onResumeSelected, onPauseSelected, onDeleteSelected, onRedownloadSelected,
   hasSelection, hasRedownloadable,
 }: ToolbarProps) {
@@ -59,6 +60,9 @@ export default function Toolbar({
       </Button>
       <Button onClick={onSettings} leadingVisual={GearIcon} size="small">
         {t("toolbar.settings")}
+      </Button>
+      <Button onClick={onExtension} leadingVisual={BrowserIcon} size="small">
+        {t("toolbar.extension")}
       </Button>
       <Button onClick={onAbout} leadingVisual={QuestionIcon} size="small">
         {t("toolbar.about")}

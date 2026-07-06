@@ -5,6 +5,7 @@ import SettingsDialog from "./components/dialogs/SettingsDialog";
 import PropertiesDialog from "./components/dialogs/PropertiesDialog";
 import AboutDialog from "./components/dialogs/AboutDialog";
 import LogDialog from "./components/dialogs/LogDialog";
+import ExtensionDialog from "./components/dialogs/ExtensionDialog";
 import { useClipboardDetection } from "./hooks/useClipboard";
 import { usePauseDownload, useResumeDownload, useDownloads, useSettings, useRedownloadDownload } from "./query/downloadQueries";
 import { useSettingsStore } from "./stores/settingsStore";
@@ -19,6 +20,7 @@ type Dialog =
   | { type: "settings" }
   | { type: "properties"; id: number }
   | { type: "about" }
+  | { type: "extension" }
   | { type: "log" }
   | null;
 
@@ -141,6 +143,7 @@ function App() {
     <>
       <Layout
         onNewDownload={() => openNewDownloadWindow()}
+        onExtension={() => setDialog({ type: "extension" })}
         onLog={() => setDialog({ type: "log" })}
         onSettings={() => setDialog({ type: "settings" })}
         onAbout={() => setDialog({ type: "about" })}
@@ -177,6 +180,9 @@ function App() {
       )}
       {dialog?.type === "about" && (
         <AboutDialog onClose={() => setDialog(null)} />
+      )}
+      {dialog?.type === "extension" && (
+        <ExtensionDialog onClose={() => setDialog(null)} />
       )}
       {dialog?.type === "log" && (
         <LogDialog onClose={() => setDialog(null)} />

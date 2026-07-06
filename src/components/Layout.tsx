@@ -7,6 +7,7 @@ import { t } from "../i18n";
 
 interface LayoutProps {
   onNewDownload: () => void;
+  onExtension: () => void;
   onSettings: () => void;
   onAbout: () => void;
   onQuit: () => void;
@@ -27,7 +28,7 @@ interface LayoutProps {
 }
 
 export default function Layout({
-  onNewDownload, onSettings, onAbout, onQuit, onLog,
+  onNewDownload, onExtension, onSettings, onAbout, onQuit, onLog,
   onResumeSelected, onPauseSelected, onDeleteSelected,
   onStop, onDelete, onProperties, onRedownload, onRedownloadItem,
   selectedIds, onSelectChange, hasSelection,
@@ -47,6 +48,7 @@ export default function Layout({
     <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
       <Toolbar
         onNewDownload={onNewDownload}
+        onExtension={onExtension}
         onSettings={onSettings}
         onAbout={onAbout}
         onQuit={onQuit}
