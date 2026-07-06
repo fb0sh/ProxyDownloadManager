@@ -48,6 +48,12 @@ function updateIcon(enabled) {
     }
   });
   chrome.action.setTitle({ title: enabled ? 'ProxyDM enabled (click to disable)' : 'ProxyDM disabled (click to enable)' });
+  if (enabled) {
+    chrome.action.setBadgeText({ text: '' });
+  } else {
+    chrome.action.setBadgeText({ text: '✕' });
+    chrome.action.setBadgeBackgroundColor({ color: '#cf222e' });
+  }
 }
 
 // ─── WebSocket ────────────────────────────────────────────────────────────────
