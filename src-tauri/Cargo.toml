@@ -1,16 +1,11 @@
 [package]
 name = "proxydownloadmanager"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "Proxy Download Manager - Multi-threaded download manager with proxy support"
+authors = ["fb0sh"]
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [lib]
-# The `_lib` suffix may seem redundant but it is necessary
-# to make the lib name unique and wouldn't conflict with the bin name.
-# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "proxydownloadmanager_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
@@ -32,13 +27,18 @@ objc2-app-kit = "0.3.2"
 toml = "0.8"
 dirs = "6"
 rusqlite = { version = "0.31", features = ["bundled"] }
-reqwest = { version = "0.12", features = ["socks", "stream"] }
-tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["socks", "stream", "json", "rustls-tls"] }
+tokio = { version = "1", features = ["rt", "macros", "sync", "net", "io-util", "time", "signal"] }
 futures-util = "0.3"
-lazy_static = "1.5"
 url = "2"
 log = "0.4"
 tungstenite = "0.24"
 file_icon_provider = "1"
 base64 = "0.22"
 
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
