@@ -150,9 +150,23 @@ function App() {
     }
   };
 
-  const handleResumeSelected = () => {
+  const openDownloadProgressWindow = useCallback(async (id: number) => {
+    const base = window.location.origin + window.location.pathname.replace(/\/+$/, "");
+    const win = new WebviewWindow(`progress-${id}`, {
+      url: `${base}?view=new-download&downloadId=${id}`,
+      width: 520,
+      height: 480,
+      title: "Downloading...",
+    });
+    win.once("tauri://error", (e) => console.error("Failed to open progress window:", e));
+  }, []);
+
+  const handleResumeSelected = async () => {
     for (const id of selectedIds) {
-      resumeDownload.mutate(id);
+      try {
+        await resumeDownload.mutateAsync(id);
+        openDownloadProgressWindow(id);
+      } catch (e) { console.error("Resume failed:", e); }
     }
   };
 
