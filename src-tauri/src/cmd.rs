@@ -51,6 +51,8 @@ impl AppState {
                         let _ = self.db.update_download(item);
                     }
                 }
+                // Notify frontend to pop up download-complete window
+                let _ = self.app_handle.emit("download-completed", event.download_id);
             }
             EventKind::DownloadErrored => {
                 if let Ok(mut items) = self.db.list_downloads() {

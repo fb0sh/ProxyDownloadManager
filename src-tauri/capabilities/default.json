@@ -8,6 +8,7 @@
     "core:window:allow-close",
     "dialog:default",
     "opener:default",
+    "core:event:default",
     "clipboard-manager:allow-read-text",
     "autostart:allow-enable",
     "autostart:allow-disable",

@@ -2,7 +2,6 @@ import { useState, useCallback, useEffect } from "react";
 import Layout from "./components/Layout";
 import DeleteDialog from "./components/dialogs/DeleteDialog";
 import SettingsDialog from "./components/dialogs/SettingsDialog";
-import PropertiesDialog from "./components/dialogs/PropertiesDialog";
 import AboutDialog from "./components/dialogs/AboutDialog";
 import LogDialog from "./components/dialogs/LogDialog";
 import ExtensionDialog from "./components/dialogs/ExtensionDialog";
@@ -19,7 +18,6 @@ import type { DownloadItem } from "./types";
 type Dialog =
   | { type: "delete"; ids: number[] }
   | { type: "settings" }
-  | { type: "properties"; id: number }
   | { type: "about" }
   | { type: "extension" }
   | { type: "log" }
@@ -107,6 +105,37 @@ function App() {
     return () => { unlisten.then(f => f()); };
   }, [queryClient]);
 
+  const openDownloadDetailsWindow = useCallback(async (id: number) => {
+    const existing = await WebviewWindow.getByLabel("download-details");
+    if (existing) { existing.setFocus(); return; }
+
+    const base = window.location.origin + window.location.pathname.replace(/\/+$/, "");
+    const win = new WebviewWindow("download-details", {
+      url: `${base}?view=download-details&id=${id}`,
+      width: 520,
+      height: 560,
+      title: t("properties.title"),
+    });
+    win.once("tauri://created", async () => {
+      await win.setAlwaysOnTop(true).catch(() => {});
+      await win.setFocus().catch(() => {});
+    });
+    win.once("tauri://error", (e) => console.error("Failed to open details:", e));
+  }, []);
+
+  // Listen for download completed → open details window
+  useEffect(() => {
+    const unlisten = listen<number>("download-completed", (event) => {
+      openDownloadDetailsWindow(event.payload);
+    });
+    return () => { unlisten.then(f => f()); };
+  }, [openDownloadDetailsWindow]);
+
+  // Update existing Properties dialog to open as separate window
+  const handleProperties = useCallback((id: number) => {
+    openDownloadDetailsWindow(id);
+  }, [openDownloadDetailsWindow]);
+
   const handleQuit = async () => {
     try {
       await invoke("exit_app");
@@ -137,10 +166,6 @@ function App() {
 
   const handleDelete = (ids: number[]) => {
     setDialog({ type: "delete", ids });
-  };
-
-  const handleProperties = (id: number) => {
-    setDialog({ type: "properties", id });
   };
 
   const handleRedownload = async (item: DownloadItem) => {
@@ -190,12 +215,6 @@ function App() {
       )}
       {dialog?.type === "settings" && (
         <SettingsDialog onClose={() => setDialog(null)} />
-      )}
-      {dialog?.type === "properties" && (
-        <PropertiesDialog
-          id={dialog.id}
-          onClose={() => setDialog(null)}
-        />
       )}
       {dialog?.type === "about" && (
         <AboutDialog onClose={() => setDialog(null)} />

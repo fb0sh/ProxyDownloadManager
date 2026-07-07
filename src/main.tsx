@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import App from "./App";
 import NewDownloadWindow from "./NewDownloadWindow";
+import DownloadDetailsWindow from "./DownloadDetailsWindow";
 
 import "@primer/primitives/dist/css/functional/themes/light.css";
 import { BaseStyles, ThemeProvider } from "@primer/react";
@@ -27,6 +28,18 @@ function RootLayout() {
         <ThemeProvider>
           <BaseStyles>
             <NewDownloadWindow />
+          </BaseStyles>
+        </ThemeProvider>
+      </QueryClientProvider>
+    );
+  }
+
+  if (view === "download-details") {
+    return (
+      <QueryClientProvider client={queryClient}>
+        <ThemeProvider>
+          <BaseStyles>
+            <DownloadDetailsWindow />
           </BaseStyles>
         </ThemeProvider>
       </QueryClientProvider>
