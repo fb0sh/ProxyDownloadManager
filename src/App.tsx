@@ -69,11 +69,17 @@ function App() {
       height: 490,
       title: t("newDownload.title"),
     });
-    win.once("tauri://created", () => {
-      win.setAlwaysOnTop(true);
-      win.setFocus();
-      // Turn off always-on-top after a brief moment so the user can interact
-      // with other windows without the dialog blocking them.
+    win.once("tauri://created", async () => {
+      // Aggressively bring window to front across all platforms
+      await win.show().catch(() => {});
+      await win.unminimize().catch(() => {});
+      await win.center().catch(() => {});
+      await win.setAlwaysOnTop(true).catch(() => {});
+      await win.setFocus().catch(() => {});
+      // macOS: bounce dock icon to get user's attention
+      const { UserAttentionType } = await import("@tauri-apps/api/window");
+      await win.requestUserAttention(UserAttentionType.Critical).catch(() => {});
+      // Release always-on-top after the user has seen it
       setTimeout(() => { win.setAlwaysOnTop(false).catch(() => {}); }, 3000);
     });
     win.once("tauri://error", (e) => {
