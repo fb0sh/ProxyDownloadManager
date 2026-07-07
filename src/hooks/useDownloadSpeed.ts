@@ -10,8 +10,11 @@ export interface SpeedInfo {
 
 type SpeedMap = Map<number, SpeedInfo>;
 
+const WINDOW_SIZE = 5; // rolling average over last 5 samples
+
 export function useDownloadSpeed(downloads: DownloadItem[]): SpeedMap {
-  const refs = useRef<Map<number, { downloaded: number; time: number }>>(new Map());
+  // Store last N (downloaded, timestamp) pairs per download
+  const samplesRef = useRef<Map<number, Array<{ downloaded: number; time: number }>>>(new Map());
   const [speeds, setSpeeds] = useState<SpeedMap>(() => new Map());
 
   useEffect(() => {
@@ -19,27 +22,39 @@ export function useDownloadSpeed(downloads: DownloadItem[]): SpeedMap {
 
     for (const item of downloads) {
       if (item.status !== "downloading") {
-        refs.current.delete(item.id);
+        samplesRef.current.delete(item.id);
         continue;
       }
 
+      // Get or create sample buffer
+      if (!samplesRef.current.has(item.id)) {
+        samplesRef.current.set(item.id, []);
+      }
+      const samples = samplesRef.current.get(item.id)!;
       const now = Date.now();
-      const prev = refs.current.get(item.id);
 
-      if (prev && prev.time > 0 && prev.downloaded > 0) {
-        const dt = (now - prev.time) / 1000;
-        if (dt > 0) {
-          const bps = Math.round((item.downloaded - prev.downloaded) / dt);
-          if (bps > 0) {
-            next.set(item.id, {
-              display: formatBytes(bps) + t("downloadRow.speed"),
-              bps,
-            });
-          }
-        }
+      // Add current sample
+      samples.push({ downloaded: item.downloaded, time: now });
+      // Keep only last WINDOW_SIZE samples
+      if (samples.length > WINDOW_SIZE) {
+        samples.shift();
       }
 
-      refs.current.set(item.id, { downloaded: item.downloaded, time: now });
+      // Need at least 2 samples to compute speed
+      if (samples.length >= 2) {
+        const first = samples[0];
+        const last = samples[samples.length - 1];
+        const dt = (last.time - first.time) / 1000;
+        const dBytes = last.downloaded - first.downloaded;
+
+        if (dt > 0 && dBytes > 0) {
+          const bps = Math.round(dBytes / dt);
+          next.set(item.id, {
+            display: formatBytes(bps) + t("downloadRow.speed"),
+            bps,
+          });
+        }
+      }
     }
 
     setSpeeds(next);
