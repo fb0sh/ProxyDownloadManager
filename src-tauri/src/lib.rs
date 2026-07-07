@@ -97,8 +97,11 @@ pub fn run() {
                 use tauri::Emitter;
                 while let Some(req) = request_rx.recv().await {
                     eprintln!("[ProxyDM consumer] Received request_rx: url={}", req.url);
-                    // Activate the app before emitting so the window can steal
-                    // focus from the browser on macOS.
+
+                    // Activate app before emitting so the new window can
+                    // steal focus from the browser.
+                    // macOS needs NSApp activation (strict focus policy).
+                    // Windows/Linux handle this via the normal window creation path.
                     #[cfg(target_os = "macos")]
                     {
                         use objc2::msg_send;
@@ -107,6 +110,7 @@ pub fn run() {
                         let ns_app: *mut Object = unsafe { msg_send![cls, sharedApplication] };
                         let _: () = unsafe { msg_send![ns_app, activateIgnoringOtherApps: true] };
                     }
+
                     let result = app_handle.emit("browser-download-url", &req.url);
                     eprintln!("[ProxyDM consumer] emit result: {:?}", result);
                 }
