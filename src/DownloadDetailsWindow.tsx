@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { Text, Label, Button } from "@primer/react";
 import { invoke } from "@tauri-apps/api/core";
+import { openPath } from "@tauri-apps/plugin-opener";
 import { formatBytes } from "./types";
 import type { DownloadItem } from "./types";
 
@@ -55,7 +56,7 @@ export default function DownloadDetailsWindow() {
   useEffect(() => {
     const p = new URLSearchParams(window.location.search);
     const id = p.get("id");
-    if (id) invoke<DownloadItem[]>(`list_downloads`)
+    if (id) invoke<DownloadItem[]>("list_downloads")
       .then((items) => { setItem(items.find((d) => d.id === Number(id)) ?? null); setLoading(false); })
       .catch(() => setLoading(false));
     else setLoading(false);
@@ -63,14 +64,17 @@ export default function DownloadDetailsWindow() {
 
   const openFile = async () => {
     if (!item) return;
-    try { await invoke(`plugin:opener|open_path`, { path: item.save_path }); }
+    try { await openPath(item.save_path); }
     catch (e) { console.error(e); }
   };
   const openFolder = async () => {
     if (!item) return;
-    try { await invoke(`plugin:opener|reveal_item_in_dir`, { paths: [item.save_path] }); }
+    try {
+      const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
+      await revealItemInDir(item.save_path);
+    }
     catch {
-      try { await invoke(`plugin:opener|open_path`, { path: item.save_path.replace(/[/\\][^/\\]*$/, "") || "." }); }
+      try { await openPath(item.save_path.replace(/[/\\][^/\\]*$/, "") || "."); }
       catch (e) { console.error(e); }
     }
   };

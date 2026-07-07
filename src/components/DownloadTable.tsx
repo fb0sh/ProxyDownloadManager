@@ -1,7 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { Text, Checkbox } from "@primer/react";
 import { DataTable, Table } from "@primer/react/experimental";
-import { invoke } from "@tauri-apps/api/core";
 import { useDownloads } from "../query/downloadQueries";
 import { useDownloadSpeed, computeETA } from "../hooks/useDownloadSpeed";
 import { useFileIcons, iconFor } from "../hooks/useFileIcons";
@@ -87,17 +86,24 @@ export default function DownloadTable({
 
   const handleOpen = async (path: string) => {
     closeMenu();
-    try { await invoke("plugin:opener|open_path", { path }); }
+    try {
+      const { openPath } = await import("@tauri-apps/plugin-opener");
+      await openPath(path);
+    }
     catch (e) { console.error("open failed:", e); }
   };
 
   const handleOpenFolder = async (path: string) => {
     closeMenu();
-    try { await invoke("plugin:opener|reveal_item_in_dir", { paths: [path] }); }
+    try {
+      const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
+      await revealItemInDir(path);
+    }
     catch {
       try {
+        const { openPath } = await import("@tauri-apps/plugin-opener");
         const parent = path.replace(/[/\\][^/\\]*$/, "");
-        await invoke("plugin:opener|open_path", { path: parent || "." });
+        await openPath(parent || ".");
       } catch (e) { console.error("open folder failed:", e); }
     }
   };
