@@ -159,9 +159,14 @@ impl ConcurrentDownloader {
         // Sync file to ensure all writes are visible
         let _ = file.sync_all();
 
-        // Verify completeness (cancel only set by user, not by reporter cleanup)
+        // If user canceled, don't finalize or emit completed
+        if cancel.load(Ordering::Relaxed) {
+            return Err("Cancelled".to_string());
+        }
+
+        // Verify completeness
         let downloaded = bytes_written.load(Ordering::Relaxed);
-        if downloaded < cfg.total_size && !cancel.load(Ordering::Relaxed) {
+        if downloaded < cfg.total_size {
             return Err(format!("Download incomplete: {}/{} bytes", downloaded, cfg.total_size));
         }
 
