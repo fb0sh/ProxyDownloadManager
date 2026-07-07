@@ -8,6 +8,7 @@ import ExtensionDialog from "./components/dialogs/ExtensionDialog";
 import { useClipboardDetection } from "./hooks/useClipboard";
 import { usePauseDownload, useResumeDownload, useDownloads, useSettings, useRedownloadDownload } from "./query/downloadQueries";
 import { useQueryClient } from "@tanstack/react-query";
+import type { PluginListener } from "@tauri-apps/api/core";
 import { useSettingsStore } from "./stores/settingsStore";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -42,15 +43,6 @@ function App() {
       setLanguage(loadedSettings.language || "en");
     }
   }, [loadedSettings, setSettings]);
-
-  // Listen for download errors from backend
-  useEffect(() => {
-    const unlisten = listen<{id: number; url: string; message: string}>("download-error", (event) => {
-      const { url, message } = event.payload;
-      alert(`${t("downloadError.failed")}: ${url}\n\n${message}`);
-    });
-    return () => { unlisten.then(f => f()); };
-  }, []);
 
   const openNewDownloadWindow = useCallback(async (url?: string) => {
     // Don't re-open if already exists
@@ -123,7 +115,20 @@ function App() {
     win.once("tauri://error", (e) => console.error("Failed to open details:", e));
   }, []);
 
-  async function sendDownloadNotification(id: number, title: string) {
+  // Listen for notification clicks → open download details
+  useEffect(() => {
+    let unreg: PluginListener | null = null;
+    (async () => {
+      const mod = await import("@tauri-apps/plugin-notification");
+      unreg = await mod.onAction((notification) => {
+        const id = (notification as any)?.extra?.downloadId;
+        if (id) openDownloadDetailsWindow(Number(id));
+      });
+    })();
+    return () => { if (unreg) { unreg.unregister(); } };
+  }, [openDownloadDetailsWindow]);
+
+  async function sendDownloadNotification(id: number, title: string, body?: string) {
     try {
       const { sendNotification, isPermissionGranted, requestPermission } =
         await import("@tauri-apps/plugin-notification");
@@ -136,7 +141,12 @@ function App() {
         const items = await invoke("list_downloads");
         const itemsArr = items as Array<{ file_name: string; id: number }>;
         const item = itemsArr.find((d) => d.id === id);
-        sendNotification({ title, body: item?.file_name ?? `Download #${id}` });
+        sendNotification({
+          title,
+          body: body ?? item?.file_name ?? `Download #${id}`,
+          autoCancel: true,
+          extra: { downloadId: id },
+        });
       }
     } catch {}
   }
@@ -158,6 +168,15 @@ function App() {
     return () => { unlisten.then(f => f()); };
   }, [openDownloadDetailsWindow]);
 
+  // Listen for download errors → system notification (not blocking alert)
+  useEffect(() => {
+    const unlisten = listen<{id: number; url: string; message: string}>("download-error", (event) => {
+      const { id, message } = event.payload;
+      sendDownloadNotification(id, t("downloadError.failed"), message.slice(0, 100));
+    });
+    return () => { unlisten.then(f => f()); };
+  }, []);
+
   // Update existing Properties dialog to open as separate window
   const handleProperties = useCallback((id: number) => {
     openDownloadDetailsWindow(id);
@@ -177,22 +196,10 @@ function App() {
     }
   };
 
-  const openDownloadProgressWindow = useCallback(async (id: number) => {
-    const base = window.location.origin + window.location.pathname.replace(/\/+$/, "");
-    const win = new WebviewWindow(`progress-${id}`, {
-      url: `${base}?view=new-download&downloadId=${id}`,
-      width: 520,
-      height: 480,
-      title: "Downloading...",
-    });
-    win.once("tauri://error", (e) => console.error("Failed to open progress window:", e));
-  }, []);
-
   const handleResumeSelected = async () => {
     for (const id of selectedIds) {
       try {
         await resumeDownload.mutateAsync(id);
-        openDownloadProgressWindow(id);
       } catch (e) { console.error("Resume failed:", e); }
     }
   };
