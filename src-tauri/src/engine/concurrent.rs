@@ -2,7 +2,6 @@ use crate::network::pool::NetworkPool;
 use crate::network::limiter::MultiLimiter;
 use crate::engine::chunk::{self, ChunkQueue};
 use crate::types::{Task, Event, EventKind, DownloadConfig};
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::error::Error;
@@ -44,13 +43,6 @@ impl ConcurrentDownloader {
 
         let num_workers = num_conns.min(tasks.len() as u32).max(1);
 
-        // Per-chunk progress trackers (keyed by task offset)
-        let mut chunk_map = HashMap::new();
-        for task in &tasks {
-            chunk_map.insert(task.offset, Arc::new(AtomicU64::new(0)));
-        }
-        let chunk_progress = Arc::new(chunk_map);
-
         let queue = Arc::new(ChunkQueue::new(tasks));
         let file = Arc::new(tokio::sync::Mutex::new(
             create_output_file(&cfg.output_path).await?
@@ -66,28 +58,14 @@ impl ConcurrentDownloader {
         let progress_cancel = reporter_stop.clone();
         let progress_tx = self.event_tx.clone();
         let progress_bytes = bytes_written.clone();
-        let progress_chunks = chunk_progress.clone();
         let reporter_handle = tokio::spawn(async move {
             loop {
                 if progress_cancel.load(Ordering::Relaxed) { break; }
-                let total = progress_bytes.load(Ordering::Relaxed);
-                // Build per-chunk progress JSON
-                let mut parts_map = serde_json::Map::new();
-                for (offset, counter) in progress_chunks.iter() {
-                    let downloaded = counter.load(Ordering::Relaxed);
-                    parts_map.insert(
-                        offset.to_string(),
-                        serde_json::Value::Number(downloaded.into()),
-                    );
-                }
-                let payload = serde_json::json!({
-                    "total": total,
-                    "parts": parts_map,
-                });
+                let size = progress_bytes.load(Ordering::Relaxed);
                 let _ = progress_tx.send(Event {
                     kind: EventKind::DownloadProgress,
                     download_id,
-                    data: Some(payload.to_string()),
+                    data: Some(format!("{}", size)),
                 });
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
@@ -106,7 +84,6 @@ impl ConcurrentDownloader {
             let user_agent = cfg.user_agent.clone();
             let cancel_for_task = cancel.clone();
             let bytes_written = bytes_written.clone();
-            let chunk_progress = chunk_progress.clone();
 
             let handle = tokio::spawn(async move {
                 let mut retries_left = max_retries;
@@ -121,7 +98,7 @@ impl ConcurrentDownloader {
                     };
 
                     let result = download_task(
-                        &url, &client, &file, &task, &cancel_for_task, &limiter, retries_left, &user_agent, &bytes_written, &chunk_progress,
+                        &url, &client, &file, &task, &cancel_for_task, &limiter, retries_left, &user_agent, &bytes_written,
                     ).await;
 
                     match result {
@@ -196,8 +173,6 @@ async fn finalize_file(output_path: &str, save_path: &str) -> Result<(), String>
         .map_err(|e| format!("Failed to rename file: {}", e))
 }
 
-type ChunkProgressMap = Arc<HashMap<u64, Arc<AtomicU64>>>;
-
 async fn download_task(
     url: &str,
     client: &reqwest::Client,
@@ -208,7 +183,6 @@ async fn download_task(
     _max_retries: u32, // used by worker loop, not here
     user_agent: &str,
     bytes_written: &AtomicU64,
-    chunk_progress: &ChunkProgressMap,
 ) -> Result<(), String> {
     let range_end = if task.length == 0 {
         String::new()
@@ -275,10 +249,6 @@ async fn download_task(
         drop(f);
         written += chunk.len() as u64;
         bytes_written.fetch_add(chunk.len() as u64, Ordering::Relaxed);
-        // Update per-chunk progress
-        if let Some(counter) = chunk_progress.get(&task.offset) {
-            counter.fetch_add(chunk.len() as u64, Ordering::Relaxed);
-        }
     }
 
     Ok(())

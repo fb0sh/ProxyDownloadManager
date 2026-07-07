@@ -82,36 +82,16 @@ impl AppState {
                 if let Ok(mut items) = self.db.list_downloads() {
                     if let Some(item) = items.iter_mut().find(|i| i.id == event.download_id) {
                         if let Some(data) = &event.data {
-                            // Try JSON format: {"total": N, "parts": {"offset": bytes, ...}}
-                            if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
-                                if let Some(total) = json.get("total").and_then(|v| v.as_u64()) {
-                                    item.downloaded = total;
-                                }
-                                if let Some(parts_obj) = json.get("parts").and_then(|v| v.as_object()) {
-                                    for part in item.parts.iter_mut() {
-                                        let key = part.start.to_string();
-                                        if let Some(bytes) = parts_obj.get(&key).and_then(|v| v.as_u64()) {
-                                            part.downloaded = bytes;
-                                            if bytes == 0 && matches!(part.status, PartStatus::Pending) {
-                                                part.status = PartStatus::Downloading;
-                                            } else if bytes > 0 && bytes < (part.end - part.start) {
-                                                part.status = PartStatus::Downloading;
-                                            } else if bytes >= (part.end - part.start) {
-                                                part.status = PartStatus::Completed;
-                                            }
-                                        }
-                                    }
-                                }
-                            } else if let Ok(downloaded) = data.parse::<u64>() {
-                                // Legacy: plain number = total bytes
+                            if let Ok(downloaded) = data.parse::<u64>() {
                                 item.downloaded = downloaded;
+                                // Mark pending parts as downloading on first progress
                                 for part in item.parts.iter_mut() {
                                     if matches!(part.status, PartStatus::Pending) {
                                         part.status = PartStatus::Downloading;
                                     }
                                 }
+                                let _ = self.db.update_download(item);
                             }
-                            let _ = self.db.update_download(item);
                         }
                     }
                 }

@@ -123,10 +123,29 @@ function App() {
     win.once("tauri://error", (e) => console.error("Failed to open details:", e));
   }, []);
 
-  // Listen for download completed → open details window
+  // Listen for download completed → notification + details window
   useEffect(() => {
-    const unlisten = listen<number>("download-completed", (event) => {
-      openDownloadDetailsWindow(event.payload);
+    const unlisten = listen<number>("download-completed", async (event) => {
+      const id = event.payload;
+      // Send system notification
+      try {
+        const { sendNotification, isPermissionGranted, requestPermission } =
+          await import("@tauri-apps/plugin-notification");
+        let ok = await isPermissionGranted();
+        if (!ok) {
+          const perm = await requestPermission();
+          ok = perm === "granted";
+        }
+        if (ok) {
+          const items = await invoke("list_downloads");
+          const itemsArr = items as Array<{ file_name: string; id: number }>;
+          const item = itemsArr.find((d) => d.id === id);
+          sendNotification({ title: "Download Complete", body: item?.file_name ?? `Download #${id}` });
+        }
+      } catch (e) {
+        console.error("Notification failed:", e);
+      }
+      openDownloadDetailsWindow(id);
     });
     return () => { unlisten.then(f => f()); };
   }, [openDownloadDetailsWindow]);
