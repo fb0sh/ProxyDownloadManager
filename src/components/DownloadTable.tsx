@@ -93,7 +93,7 @@ export default function DownloadTable({
 
   const handleOpenFolder = async (path: string) => {
     closeMenu();
-    try { await invoke("plugin:opener|reveal_item_in_dir", { path }); }
+    try { await invoke("plugin:opener|reveal_item_in_dir", { paths: [path] }); }
     catch {
       try {
         const parent = path.replace(/[/\\][^/\\]*$/, "");

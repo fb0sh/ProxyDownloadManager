@@ -68,7 +68,7 @@ export default function DownloadDetailsWindow() {
   };
   const openFolder = async () => {
     if (!item) return;
-    try { await invoke(`plugin:opener|reveal_item_in_dir`, { path: item.save_path }); }
+    try { await invoke(`plugin:opener|reveal_item_in_dir`, { paths: [item.save_path] }); }
     catch {
       try { await invoke(`plugin:opener|open_path`, { path: item.save_path.replace(/[/\\][^/\\]*$/, "") || "." }); }
       catch (e) { console.error(e); }
