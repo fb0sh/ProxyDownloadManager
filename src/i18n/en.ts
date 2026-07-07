@@ -123,6 +123,15 @@ const en = {
   },
   about: {
     title: "About",
+    version: "Version",
+    checkUpdate: "Check for Updates",
+    checking: "Checking...",
+    upToDate: "You're up to date!",
+    newVersion: "New version available",
+    downloadUpdate: "Download",
+    releasePage: "View Release Page",
+    noProxy: "No proxy",
+    updateCheckFailed: "Failed to check for updates",
   },
   progress: {
     percent: "%",

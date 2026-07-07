@@ -84,6 +84,20 @@ export type EventKind =
   | "DownloadRemoved"
   | "DownloadQueued";
 
+export interface AssetInfo {
+  name: string;
+  url: string;
+  recommended: boolean;
+}
+
+export interface UpdateInfo {
+  latest_version: string;
+  current_version: string;
+  has_update: boolean;
+  release_url: string;
+  assets: AssetInfo[];
+}
+
 export function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
   const k = 1024;

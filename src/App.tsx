@@ -296,7 +296,10 @@ function App() {
         <SettingsDialog onClose={() => setDialog(null)} />
       )}
       {dialog?.type === "about" && (
-        <AboutDialog onClose={() => setDialog(null)} />
+        <AboutDialog
+          onClose={() => setDialog(null)}
+          onDownloadUpdate={(url) => openNewDownloadWindow(url)}
+        />
       )}
       {dialog?.type === "extension" && (
         <ExtensionDialog onClose={() => setDialog(null)} />

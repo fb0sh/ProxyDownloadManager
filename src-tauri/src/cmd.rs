@@ -637,6 +637,121 @@ pub fn get_extensions_dir(app: tauri::AppHandle) -> Result<String, String> {
     resolve_extensions_dir(&app)
 }
 
+#[derive(serde::Serialize)]
+pub struct AssetInfo {
+    pub name: String,
+    pub url: String,
+    pub recommended: bool,
+}
+
+#[derive(serde::Serialize)]
+pub struct UpdateInfo {
+    pub latest_version: String,
+    pub current_version: String,
+    pub has_update: bool,
+    pub release_url: String,
+    pub assets: Vec<AssetInfo>,
+}
+
+#[derive(serde::Deserialize)]
+struct GithubRelease {
+    tag_name: String,
+    html_url: String,
+    assets: Vec<GithubAsset>,
+}
+
+#[derive(serde::Deserialize)]
+struct GithubAsset {
+    name: String,
+    browser_download_url: String,
+}
+
+/// Check for updates by querying the GitHub releases API.
+/// An optional proxy_name can be used for the check.
+#[tauri::command]
+pub async fn check_update(
+    proxy_name: String,
+) -> Result<UpdateInfo, String> {
+    let proxy_url = resolve_proxy_url(&proxy_name);
+    let settings = crate::config::load();
+    let pool = crate::network::pool::NetworkPool::new(settings.danger_accept_invalid_certs);
+    let client = pool.get_client(proxy_url.as_deref());
+
+    let resp = client
+        .get("https://api.github.com/repos/fb0sh/ProxyDownloadManager/releases/latest")
+        .header("User-Agent", "ProxyDM/0.3.0")
+        .header("Accept", "application/vnd.github.v3+json")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to check update: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("GitHub API responded with status {}", resp.status()));
+    }
+
+    let release: GithubRelease = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse release info: {}", e))?;
+
+    let current_version = format!("v{}", env!("CARGO_PKG_VERSION"));
+    let latest_version = release.tag_name.clone();
+    let has_update = compare_versions(&latest_version, &current_version) > 0;
+
+    let platform_suffix = current_platform_suffix();
+    let assets: Vec<AssetInfo> = release.assets.into_iter().map(|a| {
+        let recommended = a.name.ends_with(platform_suffix);
+        AssetInfo {
+            name: a.name,
+            url: a.browser_download_url,
+            recommended,
+        }
+    }).collect();
+
+    Ok(UpdateInfo {
+        latest_version,
+        current_version,
+        has_update,
+        release_url: release.html_url,
+        assets,
+    })
+}
+
+fn current_platform_suffix() -> &'static str {
+    #[cfg(target_os = "macos")]
+    { return ".dmg"; }
+    #[cfg(target_os = "windows")]
+    { return ".exe"; }
+    #[cfg(target_os = "linux")]
+    {
+        if std::path::Path::new("/usr/bin/apt").exists()
+            || std::path::Path::new("/usr/bin/apt-get").exists()
+        {
+            return ".deb";
+        }
+        if std::path::Path::new("/usr/bin/rpm").exists() {
+            return ".rpm";
+        }
+        ".AppImage"
+    }
+}
+
+/// Simple semver comparison. Returns > 0 if a > b, < 0 if a < b, 0 if equal.
+fn compare_versions(a: &str, b: &str) -> i32 {
+    let a = a.strip_prefix('v').unwrap_or(a);
+    let b = b.strip_prefix('v').unwrap_or(b);
+    let a_parts: Vec<u32> = a.split('.').filter_map(|s| s.parse().ok()).collect();
+    let b_parts: Vec<u32> = b.split('.').filter_map(|s| s.parse().ok()).collect();
+    let max_len = a_parts.len().max(b_parts.len());
+    for i in 0..max_len {
+        let a_val = a_parts.get(i).copied().unwrap_or(0);
+        let b_val = b_parts.get(i).copied().unwrap_or(0);
+        if a_val > b_val { return 1; }
+        if a_val < b_val { return -1; }
+    }
+    0
+}
+
 fn resolve_extensions_dir(app: &tauri::AppHandle) -> Result<String, String> {
     // Production: extensions are bundled via bundle.resources into the resource dir
     if let Ok(resource_dir) = app.path().resource_dir() {

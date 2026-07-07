@@ -125,6 +125,15 @@ const zh: Translations = {
   },
   about: {
     title: "关于",
+    version: "版本",
+    checkUpdate: "检查更新",
+    checking: "检查中...",
+    upToDate: "已是最新版本！",
+    newVersion: "新版本可用",
+    downloadUpdate: "下载",
+    releasePage: "查看发布页面",
+    noProxy: "无代理",
+    updateCheckFailed: "检查更新失败",
   },
   progress: {
     percent: "%",
