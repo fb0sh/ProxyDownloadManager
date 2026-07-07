@@ -390,6 +390,8 @@ pub async fn start_download(
 #[tauri::command]
 pub async fn pause_download(state: State<'_, Arc<AppState>>, id: u64) -> Result<(), String> {
     state.worker_pool.cancel(id).await;
+    // Flush runtime progress to DB so saved state has latest downloaded value
+    state.runtime.flush_to_db(&state.db);
     if let Ok(Some(mut item)) = state.db.get_by_id(id) {
         if matches!(item.status, DownloadStatus::Downloading) {
             // Save state for resume: one single task for the remaining bytes

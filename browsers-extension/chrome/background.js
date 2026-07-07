@@ -201,6 +201,12 @@ function notify(title, message) {
 
 function notifyNotRunning() {
   notify('ProxyDM is not running', 'Using the browser download instead. Start ProxyDM to capture downloads.');
+  // Show a warning badge until the extension is enabled again
+  chrome.action.setBadgeText({ text: '!' });
+  chrome.action.setBadgeBackgroundColor({ color: '#cf222e' });
+  setTimeout(() => {
+    chrome.action.setBadgeText({ text: '' });
+  }, 10000);
 }
 
 function looksLikeDownload(url) {
