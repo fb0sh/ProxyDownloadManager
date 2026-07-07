@@ -146,12 +146,13 @@ chrome.downloads.onCreated.addListener(async (item) => {
     console.log('[ProxyDM] disabled, letting browser handle:', item.url);
     return;
   }
-  if (!item.url || item.url.startsWith('blob:')) return;
+  const downloadUrl = getDownloadUrl(item);
+  if (!downloadUrl || downloadUrl.startsWith('blob:')) return;
 
-  console.log('[ProxyDM] download intercepted:', item.url, 'file:', item.filename);
+  console.log('[ProxyDM] download intercepted:', downloadUrl, 'file:', item.filename);
 
   chrome.tabs.query({ active: true, currentWindow: true }, async ([tab]) => {
-    const ok = await sendReliable(item.url, tab?.url || '', tab?.title || '');
+    const ok = await sendReliable(downloadUrl, tab?.url || '', tab?.title || '');
     console.log('[ProxyDM] sent to app:', ok);
     if (ok) {
       chrome.downloads.cancel(item.id, () => {
@@ -207,6 +208,10 @@ function notifyNotRunning() {
   setTimeout(() => {
     chrome.action.setBadgeText({ text: '' });
   }, 10000);
+}
+
+function getDownloadUrl(item) {
+  return item.finalUrl || item.url || '';
 }
 
 function looksLikeDownload(url) {
