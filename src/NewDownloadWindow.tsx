@@ -1,11 +1,9 @@
 import { useState, useCallback, useEffect } from "react";
-import { Text, TextInput, Button, FormControl, Select, Label, ProgressBar } from "@primer/react";
+import { TextInput, Button, FormControl, Select } from "@primer/react";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { useStartDownload, useSettings, useDownload } from "./query/downloadQueries";
+import { useStartDownload, useSettings } from "./query/downloadQueries";
 import { useSettingsStore } from "./stores/settingsStore";
-import { formatBytes } from "./types";
 import { setLanguage, t } from "./i18n";
-import type { DownloadPart } from "./types";
 
 const DOWNLOAD_EXTENSIONS = [
   ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar", ".iso",
@@ -63,57 +61,12 @@ const sectionBody: React.CSSProperties = {
   padding: "12px 16px", display: "flex", flexDirection: "column", gap: 12,
 };
 
-/** Live thread progress display (reused for both new downloads and resume). */
-function ThreadList({ parts }: { parts: DownloadPart[] }) {
-  return (
-    <div style={sectionCard}>
-      <div style={sectionHeader}>Threads ({parts.length})</div>
-      <div style={{ ...sectionBody, gap: 6 }}>
-        {parts.map((part) => {
-          const partSize = part.end - part.start;
-          const pct = partSize > 0 ? Math.round((part.downloaded / partSize) * 100) : 0;
-          return (
-            <div key={part.index}>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 2 }}>
-                <span>
-                  <span style={{ fontWeight: 600 }}>#{part.index + 1}</span>
-                  <span style={{ color: "var(--fgColor-muted, #656d76)", marginLeft: 6 }}>
-                    {formatBytes(part.start)} – {formatBytes(part.end)}
-                  </span>
-                </span>
-                <span style={{ color: "var(--fgColor-muted, #656d76)" }}>
-                  {formatBytes(part.downloaded)} / {formatBytes(partSize)} · {pct}%
-                </span>
-              </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <div style={{ flex: 1 }}>
-                  <ProgressBar progress={Math.min(pct, 100)} />
-                </div>
-                <Label
-                  variant={part.status === "completed" ? "success" : part.status === "downloading" ? "accent" : part.status === "failed" ? "danger" : "default"}
-                  style={{ fontSize: 10, lineHeight: "14px", whiteSpace: "nowrap" }}
-                >
-                  {part.status}{part.retries > 0 ? ` (${part.retries})` : ""}
-                </Label>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
 export default function NewDownloadWindow() {
   const settings = useSettingsStore((s) => s.settings);
   const proxies = settings.proxies;
   const startDownload = useStartDownload();
   const { settings: loadedSettings } = useSettings();
   const setSettings = useSettingsStore((s) => s.setSettings);
-  const [view, setView] = useState<"form" | "progress">("form");
-  const [downloadId, setDownloadId] = useState<number | null>(null);
-  const progressItem = useDownload(downloadId ?? undefined);
-
   const [url, setUrl] = useState("");
   const [filename, setFilename] = useState("");
   const [autoFilled, setAutoFilled] = useState(false);
@@ -135,15 +88,6 @@ export default function NewDownloadWindow() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const initial = params.get("url") ?? "";
-    const resumeId = params.get("downloadId");
-
-    // If opened for an existing download (resume), go directly to progress view
-    if (resumeId) {
-      setDownloadId(Number(resumeId));
-      setView("progress");
-      return;
-    }
-
     if (initial) {
       setUrl(initial);
       if (extractFilename(initial)) { setFilename(extractFilename(initial)); setAutoFilled(true); }
@@ -156,14 +100,6 @@ export default function NewDownloadWindow() {
       });
     }
   }, []);
-
-  // Auto-close when download view completes
-  useEffect(() => {
-    if (view === "progress" && progressItem && progressItem.status === "completed") {
-      const timer = setTimeout(() => getCurrentWebviewWindow().close(), 1000);
-      return () => clearTimeout(timer);
-    }
-  }, [view, progressItem]);
 
   const handleUrlChange = useCallback((value: string) => {
     setUrl(value);
@@ -178,54 +114,19 @@ export default function NewDownloadWindow() {
   const handleSubmit = async () => {
     if (!url) return;
     try {
-      const id = await startDownload.mutateAsync({ url, filename, proxyName, connections, savePath });
+      await startDownload.mutateAsync({ url, filename, proxyName, connections, savePath });
       try {
         const { emit } = await import("@tauri-apps/api/event");
         await emit("download-created");
       } catch {}
-      setDownloadId(id);
-      setView("progress");
+      getCurrentWebviewWindow().close();
     } catch (err) {
       console.error("Download failed:", err);
       alert(t("downloadError.failed") + ": " + (err instanceof Error ? err.message : String(err)));
     }
   };
 
-  // ─── Progress view (after submission) ──────────────────────────────────
-  if (view === "progress") {
-    const item = progressItem;
-    return (
-      <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "auto", padding: 12 }}>
-        {item ? (
-          <>
-            <div style={{ marginBottom: 12 }}>
-              <Text weight="semibold" size="medium" style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {item.file_name}
-              </Text>
-              <Text size="small" style={{ color: "var(--fgColor-muted, #656d76)" }}>
-                {formatBytes(item.downloaded)} / {formatBytes(item.total_size)}
-              </Text>
-              <div style={{ marginTop: 8 }}>
-                <ProgressBar progress={item.total_size > 0 ? Math.round((item.downloaded / item.total_size) * 100) : 0} />
-              </div>
-            </div>
-            {item.parts.length > 0 && <ThreadList parts={item.parts} />}
-            <div style={{ marginTop: 12, textAlign: "center" }}>
-              <Text size="small" style={{ color: "var(--fgColor-muted, #656d76)" }}>
-                {item.status === "completed" ? "Download complete ✓" : "Downloading..."}
-              </Text>
-            </div>
-          </>
-        ) : (
-          <div style={{ textAlign: "center", padding: 24 }}>
-            <Text size="medium" style={{ color: "var(--fgColor-muted, #656d76)" }}>Starting download...</Text>
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  // ─── Form view ─────────────────────────────────────────────────────────
+// ─── Form view ─────────────────────────────────────────────────────────
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "auto" }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 10, padding: 12 }}>

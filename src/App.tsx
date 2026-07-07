@@ -123,29 +123,37 @@ function App() {
     win.once("tauri://error", (e) => console.error("Failed to open details:", e));
   }, []);
 
-  // Listen for download completed → notification + details window
+  async function sendDownloadNotification(id: number, title: string) {
+    try {
+      const { sendNotification, isPermissionGranted, requestPermission } =
+        await import("@tauri-apps/plugin-notification");
+      let ok = await isPermissionGranted();
+      if (!ok) {
+        const perm = await requestPermission();
+        ok = perm === "granted";
+      }
+      if (ok) {
+        const items = await invoke("list_downloads");
+        const itemsArr = items as Array<{ file_name: string; id: number }>;
+        const item = itemsArr.find((d) => d.id === id);
+        sendNotification({ title, body: item?.file_name ?? `Download #${id}` });
+      }
+    } catch {}
+  }
+
+  // Listen for download started → system notification
+  useEffect(() => {
+    const unlisten = listen<number>("download-started", (event) => {
+      sendDownloadNotification(event.payload, "Download Started");
+    });
+    return () => { unlisten.then(f => f()); };
+  }, []);
+
+  // Listen for download completed → system notification + details window
   useEffect(() => {
     const unlisten = listen<number>("download-completed", async (event) => {
-      const id = event.payload;
-      // Send system notification
-      try {
-        const { sendNotification, isPermissionGranted, requestPermission } =
-          await import("@tauri-apps/plugin-notification");
-        let ok = await isPermissionGranted();
-        if (!ok) {
-          const perm = await requestPermission();
-          ok = perm === "granted";
-        }
-        if (ok) {
-          const items = await invoke("list_downloads");
-          const itemsArr = items as Array<{ file_name: string; id: number }>;
-          const item = itemsArr.find((d) => d.id === id);
-          sendNotification({ title: "Download Complete", body: item?.file_name ?? `Download #${id}` });
-        }
-      } catch (e) {
-        console.error("Notification failed:", e);
-      }
-      openDownloadDetailsWindow(id);
+      await sendDownloadNotification(event.payload, "Download Complete");
+      openDownloadDetailsWindow(event.payload);
     });
     return () => { unlisten.then(f => f()); };
   }, [openDownloadDetailsWindow]);

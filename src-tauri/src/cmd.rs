@@ -44,6 +44,10 @@ impl AppState {
         }
 
         match event.kind {
+            EventKind::DownloadStarted => {
+                // Notify frontend: task started
+                let _ = self.app_handle.emit("download-started", event.download_id);
+            }
             EventKind::DownloadCompleted => {
                 if let Ok(mut items) = self.db.list_downloads() {
                     if let Some(item) = items.iter_mut().find(|i| i.id == event.download_id) {
