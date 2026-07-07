@@ -10,12 +10,14 @@ export interface SpeedInfo {
 
 type SpeedMap = Map<number, SpeedInfo>;
 
-const WINDOW_SIZE = 5; // rolling average over last 5 samples
+const WINDOW_SIZE = 10; // rolling average over last 10 samples (~5 seconds)
+const MIN_BYTES_DELTA = 512 * 1024; // ignore updates where total delta < 512KB
 
 export function useDownloadSpeed(downloads: DownloadItem[]): SpeedMap {
-  // Store last N (downloaded, timestamp) pairs per download
   const samplesRef = useRef<Map<number, Array<{ downloaded: number; time: number }>>>(new Map());
   const [speeds, setSpeeds] = useState<SpeedMap>(() => new Map());
+  // Keep previous bps for smoothing when current sample is stale
+  const prevBpsRef = useRef<Map<number, number>>(new Map());
 
   useEffect(() => {
     const next = new Map<number, SpeedInfo>();
@@ -23,10 +25,10 @@ export function useDownloadSpeed(downloads: DownloadItem[]): SpeedMap {
     for (const item of downloads) {
       if (item.status !== "downloading") {
         samplesRef.current.delete(item.id);
+        prevBpsRef.current.delete(item.id);
         continue;
       }
 
-      // Get or create sample buffer
       if (!samplesRef.current.has(item.id)) {
         samplesRef.current.set(item.id, []);
       }
@@ -35,24 +37,41 @@ export function useDownloadSpeed(downloads: DownloadItem[]): SpeedMap {
 
       // Add current sample
       samples.push({ downloaded: item.downloaded, time: now });
-      // Keep only last WINDOW_SIZE samples
       if (samples.length > WINDOW_SIZE) {
         samples.shift();
       }
 
-      // Need at least 2 samples to compute speed
       if (samples.length >= 2) {
         const first = samples[0];
         const last = samples[samples.length - 1];
         const dt = (last.time - first.time) / 1000;
         const dBytes = last.downloaded - first.downloaded;
 
-        if (dt > 0 && dBytes > 0) {
-          const bps = Math.round(dBytes / dt);
+        if (dt > 0.1 && dBytes >= MIN_BYTES_DELTA) {
+          const rawBps = Math.round(dBytes / dt);
+          // EMA smoothing: blend with previous value to reduce jitter
+          const prev = prevBpsRef.current.get(item.id);
+          const bps = prev !== undefined
+            ? Math.round(prev * 0.6 + rawBps * 0.4)
+            : rawBps;
+          prevBpsRef.current.set(item.id, bps);
           next.set(item.id, {
             display: formatBytes(bps) + t("downloadRow.speed"),
             bps,
           });
+        } else {
+          // Not enough data change — carry forward previous speed if available
+          const prev = prevBpsRef.current.get(item.id);
+          if (prev !== undefined && prev > 0) {
+            // Decay speed slightly so it doesn't freeze
+            const decayed = Math.round(prev * 0.95);
+            if (decayed > 1024) {
+              next.set(item.id, {
+                display: formatBytes(decayed) + t("downloadRow.speed"),
+                bps: decayed,
+              });
+            }
+          }
         }
       }
     }
