@@ -12,11 +12,22 @@ pub fn align_up(v: u64) -> u64 {
     (v + ALIGN - 1) & !(ALIGN - 1)
 }
 
-pub fn compute_chunks(file_size: u64, num_chunks: u32, min_chunk_size: u64) -> Vec<Task> {
+/// Compute chunk size so each worker handles ~20 chunks.
+/// Formula: file_size / (connections × 20), clamped to [4MB, 64MB].
+fn dynamic_chunk_size(file_size: u64, connections: u32) -> u64 {
+    let conns = connections.max(1);
+    let target = file_size / (conns as u64 * 20); // ~20 chunks/worker
+    target
+        .max(4 * 1024 * 1024)    // min 4MB
+        .min(64 * 1024 * 1024)   // max 64MB
+}
+
+pub fn compute_chunks(file_size: u64, num_chunks: u32, _min_chunk_size: u64) -> Vec<Task> {
     if num_chunks == 0 {
         return vec![Task { offset: 0, length: file_size }];
     }
-    let chunk_size = (file_size / num_chunks as u64).max(min_chunk_size);
+    let chunk_size = dynamic_chunk_size(file_size, num_chunks)
+        .max(align_up(file_size / num_chunks as u64));
     let chunk_size = align_up(chunk_size);
 
     let mut tasks = Vec::new();
@@ -128,8 +139,8 @@ mod tests {
 
     #[test]
     fn test_compute_chunks_large_file() {
-        let tasks = compute_chunks(10 * 1024 * 1024, 4, 2 * 1024 * 1024);
-        assert!(tasks.len() >= 4, "got {} chunks", tasks.len());
+        let tasks = compute_chunks(10 * 1024 * 1024, 4, 0);
+        assert!(tasks.len() >= 2, "got {} chunks", tasks.len());
         let total: u64 = tasks.iter().map(|t| t.length).sum();
         assert_eq!(total, 10 * 1024 * 1024);
     }

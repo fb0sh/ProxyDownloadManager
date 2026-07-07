@@ -4,6 +4,8 @@ use crate::worker::WorkerPool;
 use crate::config;
 use crate::log::Logger;
 use crate::icons::{IconCache, IconData};
+use crate::state::runtime::DownloadManagerState;
+use std::process::Command as StdCommand;
 use tauri::State;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -14,20 +16,20 @@ pub struct AppState {
     pub worker_pool: WorkerPool,
     pub logger: Mutex<Logger>,
     pub app_handle: tauri::AppHandle,
+    pub runtime: DownloadManagerState,
 }
 
 impl AppState {
     pub async fn handle_event(&self, event: Event) {
+        let id = event.download_id;
         let data_suffix = event.data.as_ref().map(|d| format!(" data={}", d)).unwrap_or_default();
 
-        // Try to get URL from DB for enriched logging
-        let url_info = if let Ok(items) = self.db.list_downloads() {
-            if let Some(item) = items.iter().find(|i| i.id == event.download_id) {
-                format!(" url={}", item.url)
-            } else { String::new() }
+        // Get URL for logging (single query, not full scan)
+        let url_info = if let Ok(Some(item)) = self.db.get_by_id(id) {
+            format!(" url={}", item.url)
         } else { String::new() };
 
-        let log_msg = format!("Event: {:?} id={}{}{}", event.kind, event.download_id, url_info, data_suffix);
+        let log_msg = format!("Event: {:?} id={}{}{}", event.kind, id, url_info, data_suffix);
         if let Ok(l) = self.logger.lock() {
             l.info(&log_msg);
         }
@@ -37,7 +39,7 @@ impl AppState {
             let msg = event.data.clone().unwrap_or_default();
             let url = url_info.trim_start_matches(" url=").to_string();
             let _ = self.app_handle.emit("download-error", serde_json::json!({
-                "id": event.download_id,
+                "id": id,
                 "url": url,
                 "message": msg,
             }));
@@ -45,58 +47,41 @@ impl AppState {
 
         match event.kind {
             EventKind::DownloadStarted => {
-                // Notify frontend: task started
-                let _ = self.app_handle.emit("download-started", event.download_id);
+                self.runtime.register(id);
+                let _ = self.app_handle.emit("download-started", id);
             }
             EventKind::DownloadCompleted => {
-                if let Ok(mut items) = self.db.list_downloads() {
-                    if let Some(item) = items.iter_mut().find(|i| i.id == event.download_id) {
-                        item.status = DownloadStatus::Completed;
-                        // Mark all parts as completed
-                        for part in item.parts.iter_mut() {
-                            if !matches!(part.status, PartStatus::Completed) {
-                                part.status = PartStatus::Completed;
-                            }
+                self.runtime.remove(id);
+                if let Ok(Some(mut item)) = self.db.get_by_id(id) {
+                    item.status = DownloadStatus::Completed;
+                    for part in item.parts.iter_mut() {
+                        if !matches!(part.status, PartStatus::Completed) {
+                            part.status = PartStatus::Completed;
                         }
-                        let _ = self.db.update_download(item);
                     }
+                    let _ = self.db.update_download(&item);
                 }
-                // Notify frontend to pop up download-complete window
-                let _ = self.app_handle.emit("download-completed", event.download_id);
+                let _ = self.app_handle.emit("download-completed", id);
             }
             EventKind::DownloadErrored => {
-                if let Ok(mut items) = self.db.list_downloads() {
-                    if let Some(item) = items.iter_mut().find(|i| i.id == event.download_id) {
-                        // Don't overwrite if already paused by user
-                        if matches!(item.status, DownloadStatus::Paused) {
-                            return;
-                        }
-                        item.status = DownloadStatus::Failed(event.data.unwrap_or_default());
-                        // Mark downloading/pending parts as failed
-                        for part in item.parts.iter_mut() {
-                            if matches!(part.status, PartStatus::Pending | PartStatus::Downloading) {
-                                part.status = PartStatus::Failed(format!("download failed"));
-                            }
-                        }
-                        let _ = self.db.update_download(item);
+                self.runtime.remove(id);
+                if let Ok(Some(mut item)) = self.db.get_by_id(id) {
+                    if matches!(item.status, DownloadStatus::Paused) {
+                        return;
                     }
+                    item.status = DownloadStatus::Failed(event.data.unwrap_or_default());
+                    for part in item.parts.iter_mut() {
+                        if matches!(part.status, PartStatus::Pending | PartStatus::Downloading) {
+                            part.status = PartStatus::Failed(format!("download failed"));
+                        }
+                    }
+                    let _ = self.db.update_download(&item);
                 }
             }
             EventKind::DownloadProgress => {
-                if let Ok(mut items) = self.db.list_downloads() {
-                    if let Some(item) = items.iter_mut().find(|i| i.id == event.download_id) {
-                        if let Some(data) = &event.data {
-                            if let Ok(downloaded) = data.parse::<u64>() {
-                                item.downloaded = downloaded;
-                                // Mark pending parts as downloading on first progress
-                                for part in item.parts.iter_mut() {
-                                    if matches!(part.status, PartStatus::Pending) {
-                                        part.status = PartStatus::Downloading;
-                                    }
-                                }
-                                let _ = self.db.update_download(item);
-                            }
-                        }
+                if let Some(data) = &event.data {
+                    if let Ok(downloaded) = data.parse::<u64>() {
+                        self.runtime.update_progress(id, downloaded);
                     }
                 }
             }
@@ -286,12 +271,44 @@ pub async fn start_download(
     };
 
     let settings = config::load();
+    let max_conns = settings.max_connections.max(1).min(32);
+
+    // Connection count: 0 = auto (based on file size), >0 = user-specified
+    let connections = if connections > 0 {
+        connections.min(32)
+    } else if file_size == 0 {
+        max_conns.min(2)
+    } else if file_size < 100 * 1024 * 1024 {
+        max_conns.min(2)
+    } else if file_size < 1024 * 1024 * 1024 {
+        max_conns.min(4)
+    } else if file_size < 10u64 * 1024 * 1024 * 1024 {
+        max_conns.min(8)
+    } else {
+        max_conns.min(16)
+    };
     let save_dir = if save_path.is_empty() {
         settings.download_dir
     } else {
         save_path
     };
     let full_path = unique_filename(&save_dir, &file_name);
+
+    // Check available disk space before starting
+    if file_size > 0 {
+        let pdm_path = format!("{}.pdm", full_path);
+        if let Some(parent) = std::path::Path::new(&pdm_path).parent() {
+            if let Ok(available) = fs2::available_space(parent) {
+                let needed = file_size + (2u64 * 1024 * 1024); // extra 2MB margin
+                if available < needed {
+                    return Err(format!(
+                        "Insufficient disk space: need {}, available {}",
+                        needed, available
+                    ));
+                }
+            }
+        }
+    }
 
     let cfg = DownloadConfig {
         url: url.clone(),
@@ -485,6 +502,24 @@ pub fn get_file_icon(
     file_name: String,
 ) -> IconData {
     icon_cache.get(&file_name)
+}
+
+/// Open a file with the system default application, bypassing opener plugin scope.
+/// Safe because the user explicitly clicked Open.
+#[tauri::command]
+pub fn open_file(path: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    let status = StdCommand::new("open").arg(&path).status();
+    #[cfg(target_os = "windows")]
+    let status = StdCommand::new("cmd").args(["/c", "start", "", &path]).status();
+    #[cfg(target_os = "linux")]
+    let status = StdCommand::new("xdg-open").arg(&path).status();
+
+    match status {
+        Ok(s) if s.success() => Ok(()),
+        Ok(s) => Err(format!("exit code: {}", s)),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 #[tauri::command]

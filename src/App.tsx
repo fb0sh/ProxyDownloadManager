@@ -61,6 +61,10 @@ function App() {
       title: t("newDownload.title"),
     });
     win.once("tauri://created", async () => {
+      // Send the URL to the new window via event (more reliable than query param)
+      if (url) {
+        try { await win.emit("new-download-url", url); } catch {}
+      }
       await win.show().catch(() => {});
       await win.unminimize().catch(() => {});
       await win.center().catch(() => {});
@@ -88,11 +92,16 @@ function App() {
     return () => { unlisten.then(f => f()); };
   }, [onUrlDetected]);
 
-  // Listen for download-created event from New Download window → refresh list
+  // Listen for download-created event → refresh list + show main window
   const queryClient = useQueryClient();
   useEffect(() => {
-    const unlisten = listen("download-created", () => {
+    const unlisten = listen("download-created", async () => {
       queryClient.invalidateQueries({ queryKey: ["downloads"] });
+      // Bring main window to front (it may be hidden to tray)
+      try {
+        const mainWin = await WebviewWindow.getByLabel("main");
+        if (mainWin) { await mainWin.show(); await mainWin.setFocus(); }
+      } catch {}
     });
     return () => { unlisten.then(f => f()); };
   }, [queryClient]);
@@ -115,20 +124,31 @@ function App() {
     win.once("tauri://error", (e) => console.error("Failed to open details:", e));
   }, []);
 
-  // Listen for notification clicks → open download details
+  // Listen for notification clicks
   useEffect(() => {
     let unreg: PluginListener | null = null;
     (async () => {
       const mod = await import("@tauri-apps/plugin-notification");
-      unreg = await mod.onAction((notification) => {
-        const id = (notification as any)?.extra?.downloadId;
-        if (id) openDownloadDetailsWindow(Number(id));
+      unreg = await mod.onAction(async (notification) => {
+        const extra = (notification as any)?.extra;
+        const id = extra?.downloadId;
+        const ntype = extra?.type;
+        if (ntype === "started") {
+          // Download started → show main window
+          try {
+            const mainWin = await WebviewWindow.getByLabel("main");
+            if (mainWin) { await mainWin.show(); await mainWin.setFocus(); }
+          } catch {}
+        } else if (id) {
+          // Completed / error → open details window
+          openDownloadDetailsWindow(Number(id));
+        }
       });
     })();
     return () => { if (unreg) { unreg.unregister(); } };
   }, [openDownloadDetailsWindow]);
 
-  async function sendDownloadNotification(id: number, title: string, body?: string) {
+  async function sendDownloadNotification(id: number, title: string, body?: string, ntype?: string) {
     try {
       const { sendNotification, isPermissionGranted, requestPermission } =
         await import("@tauri-apps/plugin-notification");
@@ -145,7 +165,7 @@ function App() {
           title,
           body: body ?? item?.file_name ?? `Download #${id}`,
           autoCancel: true,
-          extra: { downloadId: id },
+          extra: { downloadId: id, type: ntype ?? "" },
         });
       }
     } catch {}
@@ -154,7 +174,7 @@ function App() {
   // Listen for download started → system notification
   useEffect(() => {
     const unlisten = listen<number>("download-started", (event) => {
-      sendDownloadNotification(event.payload, "Download Started");
+      sendDownloadNotification(event.payload, "Download Started", undefined, "started");
     });
     return () => { unlisten.then(f => f()); };
   }, []);
@@ -162,7 +182,7 @@ function App() {
   // Listen for download completed → system notification + details window
   useEffect(() => {
     const unlisten = listen<number>("download-completed", async (event) => {
-      await sendDownloadNotification(event.payload, "Download Complete");
+      await sendDownloadNotification(event.payload, "Download Complete", undefined, "completed");
       openDownloadDetailsWindow(event.payload);
     });
     return () => { unlisten.then(f => f()); };
@@ -172,7 +192,7 @@ function App() {
   useEffect(() => {
     const unlisten = listen<{id: number; url: string; message: string}>("download-error", (event) => {
       const { id, message } = event.payload;
-      sendDownloadNotification(id, t("downloadError.failed"), message.slice(0, 100));
+      sendDownloadNotification(id, t("downloadError.failed"), message.slice(0, 100), "error");
     });
     return () => { unlisten.then(f => f()); };
   }, []);

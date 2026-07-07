@@ -8,7 +8,8 @@ import { t, setLanguage } from "../../i18n";
 import { enable as autostartEnable, disable as autostartDisable } from "@tauri-apps/plugin-autostart";
 import type { Settings } from "../../types";
 
-const THREAD_OPTIONS = [4, 8, 16, 32, 64];
+const THREAD_OPTIONS = [0, 4, 8, 16, 32, 64];
+const THREAD_LABELS: Record<number, string> = { 0: "Auto", 4: "4", 8: "8", 16: "16", 32: "32", 64: "64" };
 const RETRY_OPTIONS = [3, 5, 10, 20, 50];
 
 interface SettingsDialogProps {
@@ -168,7 +169,7 @@ export default function SettingsDialog({ onClose }: SettingsDialogProps) {
                 <div style={{ ...fieldControl, display: "flex", gap: 12, alignItems: "center" }}>
                   <div style={{ flex: 1 }}>
                     <Select value={String(settings.max_connections)} onChange={(e) => setSettings({ ...settings, max_connections: Number(e.target.value) })}>
-                      {THREAD_OPTIONS.map((n) => (<Select.Option key={n} value={String(n)}>{n}</Select.Option>))}
+                      {THREAD_OPTIONS.map((n) => (<Select.Option key={n} value={String(n)}>{THREAD_LABELS[n]}</Select.Option>))}
                     </Select>
                   </div>
                   <span style={{ fontSize: 13, fontWeight: 600, color: "var(--fgColor-muted, #656d76)" }}>{t("settings.retries")}</span>

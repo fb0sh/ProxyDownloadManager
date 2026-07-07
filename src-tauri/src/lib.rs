@@ -57,8 +57,10 @@ pub fn run() {
                 worker_pool,
                 logger,
                 app_handle: app.handle().clone(),
+                runtime: crate::state::runtime::DownloadManagerState::new(),
             });
             let ev_state = state.clone();
+            let flush_state = state.clone();
             app.manage(state);
 
             // Hide from Dock (macOS menu-bar only app)
@@ -126,6 +128,36 @@ pub fn run() {
                     eprintln!("WS server error: {}", e);
                 }
             });
+
+            let recovery_state = flush_state.clone();
+
+            // Background task: flush runtime progress to DB every 5 seconds
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    let flushed = flush_state.runtime.flush_to_db(&flush_state.db);
+                    if flushed > 0 {
+                        eprintln!("[ProxyDM] Flushed {} progress entries to DB", flushed);
+                    }
+                }
+            });
+
+            // Crash recovery: re-queue all incomplete downloads
+            {
+                if let Ok(items) = recovery_state.db.list_downloads() {
+                    let mut changed = false;
+                    for mut item in items.into_iter() {
+                        if matches!(item.status, crate::types::DownloadStatus::Downloading) {
+                            item.status = crate::types::DownloadStatus::Paused;
+                            let _ = recovery_state.db.update_download(&item);
+                            changed = true;
+                        }
+                    }
+                    if changed {
+                        eprintln!("[ProxyDM] Crash recovery: paused stale downloads");
+                    }
+                }
+            }
 
             Ok(())
         })

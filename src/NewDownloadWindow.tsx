@@ -71,7 +71,7 @@ export default function NewDownloadWindow() {
   const [filename, setFilename] = useState("");
   const [autoFilled, setAutoFilled] = useState(false);
   const [proxyName, setProxyName] = useState(settings.default_proxy);
-  const [connections, setConnections] = useState(settings.max_connections);
+  const [connections, setConnections] = useState(0); // 0 = auto (backend picks based on file size)
   const [savePath, setSavePath] = useState(settings.download_dir);
 
   // Sync backend settings
@@ -88,17 +88,34 @@ export default function NewDownloadWindow() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const initial = params.get("url") ?? "";
+
     if (initial) {
       setUrl(initial);
       if (extractFilename(initial)) { setFilename(extractFilename(initial)); setAutoFilled(true); }
-    } else {
-      readClipboardUrl().then((clipUrl) => {
-        if (clipUrl) {
-          setUrl(clipUrl);
-          if (extractFilename(clipUrl)) { setFilename(extractFilename(clipUrl)); setAutoFilled(true); }
-        }
-      });
+      return;
     }
+
+    // Listen for URL from parent window (more reliable than query param)
+    let cancelled = false;
+    (async () => {
+      const { listen } = await import("@tauri-apps/api/event");
+      const unlisten = await listen<string>("new-download-url", (event) => {
+        if (cancelled) return;
+        const u = event.payload;
+        setUrl(u);
+        if (extractFilename(u)) { setFilename(extractFilename(u)); setAutoFilled(true); }
+      });
+      // Clean up listener if component unmounts before event arrives
+      return () => { cancelled = true; unlisten(); };
+    })();
+
+    // Fallback: read clipboard
+    readClipboardUrl().then((clipUrl) => {
+      if (clipUrl && !url) {
+        setUrl(clipUrl);
+        if (extractFilename(clipUrl)) { setFilename(extractFilename(clipUrl)); setAutoFilled(true); }
+      }
+    });
   }, []);
 
   const handleUrlChange = useCallback((value: string) => {
@@ -156,8 +173,14 @@ export default function NewDownloadWindow() {
           <div style={{ ...sectionBody, flexDirection: "row", gap: 12 }}>
             <FormControl style={{ flex: 1 }}>
               <FormControl.Label>{t("newDownload.connections")}</FormControl.Label>
-              <TextInput type="number" value={String(connections)}
-                onChange={(e) => setConnections(Number(e.target.value))} min={1} max={32} block />
+              <Select value={String(connections)} onChange={(e) => setConnections(Number(e.target.value))}>
+                <Select.Option value="0">Auto</Select.Option>
+                <Select.Option value="4">4</Select.Option>
+                <Select.Option value="8">8</Select.Option>
+                <Select.Option value="16">16</Select.Option>
+                <Select.Option value="32">32</Select.Option>
+                <Select.Option value="64">64</Select.Option>
+              </Select>
             </FormControl>
             <FormControl style={{ flex: 1 }}>
               <FormControl.Label>{t("newDownload.proxy")}</FormControl.Label>

@@ -34,7 +34,9 @@ impl Db {
     fn init(&self) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS downloads (
+            "PRAGMA journal_mode=WAL;
+             PRAGMA synchronous=NORMAL;
+             CREATE TABLE IF NOT EXISTS downloads (
                 id INTEGER PRIMARY KEY,
                 url TEXT NOT NULL,
                 file_name TEXT NOT NULL,
@@ -130,6 +132,58 @@ impl Db {
                 parts_str,
                 item.resumable.map(|v| if v { 1 } else { 0 }),
             ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn get_by_id(&self, id: u64) -> Result<Option<DownloadItem>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, url, file_name, save_path, total_size, downloaded, status, last_try,
+                        created_at, proxy_name, connections, parts, resumable FROM downloads WHERE id=?1"
+            )
+            .map_err(|e| e.to_string())?;
+
+        let mut rows = stmt.query_map(params![id], |row| {
+            let id: u64 = row.get(0)?;
+            let url: String = row.get(1)?;
+            let file_name: String = row.get(2)?;
+            let save_path: String = row.get(3)?;
+            let total_size: u64 = row.get(4)?;
+            let downloaded: u64 = row.get(5)?;
+            let status_str: String = row.get(6)?;
+            let last_try: String = row.get(7)?;
+            let created_at: String = row.get(8)?;
+            let proxy_name: String = row.get(9)?;
+            let connections: u32 = row.get(10)?;
+            let parts_str: String = row.get(11)?;
+            let resumable: Option<i32> = row.get(12)?;
+
+            let parts: Vec<DownloadPart> = serde_json::from_str(&parts_str).unwrap_or_default();
+            let status = parse_status(&status_str);
+
+            Ok(DownloadItem {
+                id, url, file_name, save_path, total_size, downloaded, status, parts,
+                proxy_name, connections, resumable: resumable.map(|v| v != 0),
+                merge_progress: 0.0, created_at, last_try,
+            })
+        }).map_err(|e| e.to_string())?;
+
+        match rows.next() {
+            Some(Ok(item)) => Ok(Some(item)),
+            Some(Err(e)) => Err(e.to_string()),
+            None => Ok(None),
+        }
+    }
+
+    /// Lightweight: only update the `downloaded` field (used for progress flushes).
+    pub fn update_download_progress(&self, id: u64, downloaded: u64) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE downloads SET downloaded=?1 WHERE id=?2",
+            params![downloaded, id],
         )
         .map_err(|e| e.to_string())?;
         Ok(())

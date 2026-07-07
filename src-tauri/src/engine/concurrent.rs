@@ -6,7 +6,26 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::error::Error;
 use tokio::sync::mpsc;
-use tokio::io::AsyncWriteExt;
+
+/// Parse a SlowChunk error: "SlowChunk:offset:chunk_size:written"
+/// Returns a new Task for the remaining portion if valid.
+fn parse_slow_chunk(err: &str, orig: &Task) -> Option<Task> {
+    let parts: Vec<&str> = err.split(':').collect();
+    if parts.len() != 4 || parts[0] != "SlowChunk" {
+        return None;
+    }
+    let offset: u64 = parts[1].parse().ok()?;
+    let chunk_size: u64 = parts[2].parse().ok()?;
+    let written: u64 = parts[3].parse().ok()?;
+    let remaining = chunk_size.saturating_sub(written);
+    if remaining < 1024 * 1024 {
+        return None; // less than 1MB left, not worth splitting
+    }
+    Some(Task {
+        offset: offset + written,
+        length: remaining,
+    })
+}
 
 pub struct ConcurrentDownloader {
     pool: Arc<NetworkPool>,
@@ -28,12 +47,11 @@ impl ConcurrentDownloader {
             sqrt.max(1).min(32)
         };
 
-        let min_chunk = 2u64 * 1024 * 1024; // 2MB
         let tasks = if cfg.is_resume {
             // For resume, tasks come from saved state
             vec![]
         } else {
-            chunk::compute_chunks(cfg.total_size, num_conns, min_chunk)
+            chunk::compute_chunks(cfg.total_size, num_conns, 0)
         };
 
         // Resume path: state loaded from Sub-Plan B (state/gob.rs) merge
@@ -44,9 +62,10 @@ impl ConcurrentDownloader {
         let num_workers = num_conns.min(tasks.len() as u32).max(1);
 
         let queue = Arc::new(ChunkQueue::new(tasks));
-        let file = Arc::new(tokio::sync::Mutex::new(
-            create_output_file(&cfg.output_path).await?
-        ));
+
+        // Pre-allocate file and use std FileExt::write_at for lock-free concurrent writes
+        let file = create_output_file(&cfg.output_path, cfg.total_size).await?;
+        let file = Arc::new(file);
 
         let client = self.pool.get_client(if cfg.proxy_name.is_empty() { None } else { Some(&cfg.proxy_name) });
 
@@ -98,12 +117,18 @@ impl ConcurrentDownloader {
                     };
 
                     let result = download_task(
-                        &url, &client, &file, &task, &cancel_for_task, &limiter, retries_left, &user_agent, &bytes_written,
+                        &url, &client, &*file, &task, &cancel_for_task, &limiter, retries_left, &user_agent, &bytes_written,
                     ).await;
 
                     match result {
                         Ok(_) => {}
                         Err(e) => {
+                            // SlowChunk: split remaining work for other workers
+                            if let Some(rest) = parse_slow_chunk(&e, &task) {
+                                queue.push(rest);
+                                // Don't consume retry count — not a real failure
+                                continue;
+                            }
                             if retries_left > 0 {
                                 retries_left -= 1;
                                 queue.push(task);
@@ -131,11 +156,8 @@ impl ConcurrentDownloader {
         reporter_stop.store(true, Ordering::Relaxed);
         let _ = reporter_handle.await;
 
-        // Sync file to ensure all writes are visible to metadata
-        {
-            let mut f = file.lock().await;
-            let _ = f.flush().await;
-        }
+        // Sync file to ensure all writes are visible
+        let _ = file.sync_all();
 
         // Verify completeness (cancel only set by user, not by reporter cleanup)
         let downloaded = bytes_written.load(Ordering::Relaxed);
@@ -156,14 +178,22 @@ impl ConcurrentDownloader {
     }
 }
 
-async fn create_output_file(path: &str) -> Result<tokio::fs::File, String> {
+async fn create_output_file(path: &str, total_size: u64) -> Result<std::fs::File, String> {
     let pdm_path = format!("{}.pdm", path);
     if let Some(parent) = std::path::Path::new(&pdm_path).parent() {
-        tokio::fs::create_dir_all(parent).await.map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    tokio::fs::File::create(&pdm_path)
-        .await
-        .map_err(|e| format!("Failed to create output file: {}", e))
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .read(true)
+        .open(&pdm_path)
+        .map_err(|e| format!("Failed to create output file: {}", e))?;
+    // Pre-allocate space for the entire file
+    if total_size > 0 {
+        let _ = file.set_len(total_size);
+    }
+    Ok(file)
 }
 
 async fn finalize_file(output_path: &str, save_path: &str) -> Result<(), String> {
@@ -173,14 +203,32 @@ async fn finalize_file(output_path: &str, save_path: &str) -> Result<(), String>
         .map_err(|e| format!("Failed to rename file: {}", e))
 }
 
+/// Cross-platform write_at: write to a specific offset without seeking.
+#[cfg(unix)]
+fn write_at(file: &std::fs::File, buf: &[u8], offset: u64) -> std::io::Result<()> {
+    use std::os::unix::fs::FileExt;
+    FileExt::write_all_at(file, buf, offset)
+}
+
+#[cfg(windows)]
+fn write_at(file: &std::fs::File, buf: &[u8], offset: u64) -> std::io::Result<()> {
+    use std::os::windows::fs::FileExt;
+    let mut written = 0;
+    while written < buf.len() {
+        let n = FileExt::seek_write(file, &buf[written..], offset + written as u64)?;
+        written += n;
+    }
+    Ok(())
+}
+
 async fn download_task(
     url: &str,
     client: &reqwest::Client,
-    file: &Arc<tokio::sync::Mutex<tokio::fs::File>>,
+    file: &std::fs::File,
     task: &Task,
     cancel: &AtomicBool,
     limiter: &MultiLimiter,
-    _max_retries: u32, // used by worker loop, not here
+    _max_retries: u32,
     user_agent: &str,
     bytes_written: &AtomicU64,
 ) -> Result<(), String> {
@@ -196,18 +244,15 @@ async fn download_task(
     if !user_agent.is_empty() {
         req = req.header("User-Agent", user_agent);
     }
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| {
-            let mut msg = format!("Request failed: {}", e);
-            let mut src = std::error::Error::source(&e);
-            while let Some(s) = src {
-                msg.push_str(&format!(": {}", s));
-                src = s.source();
-            }
-            msg
-        })?;
+    let resp = req.send().await.map_err(|e| {
+        let mut msg = format!("Request failed: {}", e);
+        let mut src = std::error::Error::source(&e);
+        while let Some(s) = src {
+            msg.push_str(&format!(": {}", s));
+            src = s.source();
+        }
+        msg
+    })?;
 
     let status = resp.status();
     if status != reqwest::StatusCode::PARTIAL_CONTENT && status != reqwest::StatusCode::OK {
@@ -216,39 +261,60 @@ async fn download_task(
 
     let stream = resp.bytes_stream();
     use futures_util::StreamExt;
-    use tokio::io::AsyncSeekExt;
     let mut stream = std::pin::pin!(stream);
-    let mut written = task.offset;
+    let base_offset = task.offset;
+    let mut written: u64 = 0; // relative offset within this task
+    let chunk_size = task.length;
+
+    const BUF_SIZE: usize = 1024 * 1024; // 1MB
+    let mut buf = Vec::with_capacity(BUF_SIZE);
+
+    // Slow chunk detection: if >30s elapsed and <10% done, abort
+    let start_time = std::time::Instant::now();
 
     loop {
-        // Timeout on stream reads so cancel can be detected promptly
+        // Abort slow chunks so other workers can steal remaining work
+        let elapsed = start_time.elapsed();
+        if elapsed > std::time::Duration::from_secs(30)
+            && chunk_size > 0
+            && written < chunk_size / 10
+        {
+            return Err(format!("SlowChunk:{}:{}:{}", base_offset, chunk_size, written));
+        }
+
         let chunk_result = tokio::time::timeout(
-            std::time::Duration::from_secs(3), stream.next()
+            std::time::Duration::from_secs(10), stream.next()
         ).await;
-        let chunk_result = match chunk_result {
-            Ok(Some(c)) => c,
-            Ok(None) => break,
+        let chunk = match chunk_result {
+            Ok(Some(Ok(c))) => c,
+            Ok(Some(Err(e))) => return Err(format!("Stream error: {}", e)),
+            Ok(None) => {
+                if !buf.is_empty() {
+                    write_at(file, &buf, base_offset + written)
+                        .map_err(|e| format!("write_at error: {}", e))?;
+                    written += buf.len() as u64;
+                    bytes_written.fetch_add(buf.len() as u64, Ordering::Relaxed);
+                }
+                break;
+            }
             Err(_elapsed) => {
-                // Timeout — check cancel, then retry
                 if cancel.load(Ordering::Relaxed) {
                     return Err("Cancelled".to_string());
                 }
                 continue;
             }
         };
-        let chunk = chunk_result.map_err(|e| format!("Stream error: {}", e))?;
         limiter.wait_n(chunk.len() as u64);
 
-        // Write each chunk immediately so file size grows incrementally
-        let mut f = file.lock().await;
-        f.seek(std::io::SeekFrom::Start(written)).await
-            .map_err(|e| format!("Seek error: {}", e))?;
-        f.write_all(&chunk).await
-            .map_err(|e| format!("Write error: {}", e))?;
-        // Drop lock so other workers can write
-        drop(f);
-        written += chunk.len() as u64;
-        bytes_written.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+        buf.extend_from_slice(&chunk);
+
+        if buf.len() >= BUF_SIZE {
+            write_at(file, &buf, base_offset + written)
+                .map_err(|e| format!("write_at error: {}", e))?;
+            written += buf.len() as u64;
+            bytes_written.fetch_add(buf.len() as u64, Ordering::Relaxed);
+            buf.clear();
+        }
     }
 
     Ok(())

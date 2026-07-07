@@ -36,6 +36,7 @@ log = "0.4"
 tungstenite = "0.24"
 file_icon_provider = "1"
 base64 = "0.22"
+fs2 = "0.4"
 
 [profile.release]
 opt-level = "z"
