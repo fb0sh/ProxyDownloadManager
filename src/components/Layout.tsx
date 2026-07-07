@@ -22,7 +22,6 @@ interface LayoutProps {
   onRedownloadItem?: import("../types").DownloadItem;
   selectedIds: Set<number>;
   onSelectChange: (ids: Set<number>) => void;
-  hasSelection: boolean;
   filter: "all" | "completed" | "incomplete";
   onFilterChange: (f: "all" | "completed" | "incomplete") => void;
 }
@@ -31,10 +30,18 @@ export default function Layout({
   onNewDownload, onExtension, onSettings, onAbout, onQuit, onLog,
   onResumeSelected, onPauseSelected, onDeleteSelected,
   onStop, onDelete, onProperties, onRedownload, onRedownloadItem,
-  selectedIds, onSelectChange, hasSelection,
+  selectedIds, onSelectChange,
   filter, onFilterChange,
 }: LayoutProps) {
   const { data: downloads = [] } = useDownloads();
+
+  const selectedDownloadStatuses = downloads
+    .filter((d) => selectedIds.has(d.id))
+    .map((d) => d.status);
+  const hasDownloadingSelected = selectedDownloadStatuses.some((s) => s === "downloading");
+  const hasPausedSelected = selectedDownloadStatuses.some((s) => s === "paused");
+  const hasCompletedSelected = selectedDownloadStatuses.some((s) => s === "completed");
+  const hasFailedSelected = selectedDownloadStatuses.some((s) => s.startsWith("failed"));
 
   const counts = {
     all: downloads.length,
@@ -57,7 +64,10 @@ export default function Layout({
         onPauseSelected={onPauseSelected}
         onDeleteSelected={onDeleteSelected}
         onRedownloadSelected={onRedownloadItem ? () => onRedownload(onRedownloadItem) : undefined}
-        hasSelection={hasSelection}
+        hasDownloadingSelected={hasDownloadingSelected}
+        hasPausedSelected={hasPausedSelected}
+        hasCompletedSelected={hasCompletedSelected}
+        hasFailedSelected={hasFailedSelected}
         hasRedownloadable={!!onRedownloadItem}
       />
       <div style={{ display: "flex", padding: "6px 8px", borderBottom: "1px solid var(--borderColor-muted, #d8dee4)" }}>

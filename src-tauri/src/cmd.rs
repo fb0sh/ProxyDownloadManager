@@ -390,12 +390,39 @@ pub async fn start_download(
 #[tauri::command]
 pub async fn pause_download(state: State<'_, Arc<AppState>>, id: u64) -> Result<(), String> {
     state.worker_pool.cancel(id).await;
-    if let Ok(mut items) = state.db.list_downloads() {
-        if let Some(item) = items.iter_mut().find(|i| i.id == id) {
-            if matches!(item.status, DownloadStatus::Downloading) {
-                item.status = DownloadStatus::Paused;
-                let _ = state.db.update_download(item);
+    if let Ok(Some(mut item)) = state.db.get_by_id(id) {
+        if matches!(item.status, DownloadStatus::Downloading) {
+            // Save state for resume: compute remaining tasks from incomplete parts
+            let mut tasks = Vec::new();
+            for part in &item.parts {
+                let remaining = part.end - part.downloaded;
+                if remaining > 0 {
+                    tasks.push(Task {
+                        offset: part.start + part.downloaded,
+                        length: remaining,
+                    });
+                }
             }
+            if !tasks.is_empty() {
+                let saved = crate::state::gob::DownloadState {
+                    url: item.url.clone(),
+                    id: item.id,
+                    file_name: item.file_name.clone(),
+                    save_path: item.save_path.clone(),
+                    total_size: item.total_size,
+                    downloaded: item.downloaded,
+                    tasks,
+                    elapsed_secs: 0,
+                    chunk_bitmap: Vec::new(),
+                    actual_chunk_size: 0,
+                    proxy_name: item.proxy_name.clone(),
+                    workers: item.connections,
+                    min_chunk_size: 0,
+                };
+                let _ = crate::state::gob::save_state(id, &saved);
+            }
+            item.status = DownloadStatus::Paused;
+            let _ = state.db.update_download(&item);
         }
     }
     Ok(())

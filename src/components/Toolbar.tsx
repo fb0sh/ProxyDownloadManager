@@ -13,14 +13,17 @@ interface ToolbarProps {
   onPauseSelected?: () => void;
   onDeleteSelected?: () => void;
   onRedownloadSelected?: () => void;
-  hasSelection: boolean;
+  hasDownloadingSelected: boolean;
+  hasPausedSelected: boolean;
+  hasCompletedSelected: boolean;
+  hasFailedSelected: boolean;
   hasRedownloadable: boolean;
 }
 
 export default function Toolbar({
   onNewDownload, onExtension, onSettings, onAbout, onQuit, onLog,
   onResumeSelected, onPauseSelected, onDeleteSelected, onRedownloadSelected,
-  hasSelection, hasRedownloadable,
+  hasDownloadingSelected, hasPausedSelected, hasCompletedSelected, hasFailedSelected, hasRedownloadable,
 }: ToolbarProps) {
   return (
     <div
@@ -36,18 +39,20 @@ export default function Toolbar({
       <Button onClick={onNewDownload} leadingVisual={PlusIcon} size="small" variant="primary">
         {t("toolbar.new")}
       </Button>
-      {hasSelection && (
-        <>
-          <Button onClick={onResumeSelected} leadingVisual={TriangleRightIcon} size="small">
-            {t("toolbar.resume")}
-          </Button>
-          <Button onClick={onPauseSelected} leadingVisual={StopIcon} size="small">
-            {t("toolbar.stop")}
-          </Button>
-          <Button onClick={onDeleteSelected} leadingVisual={TrashIcon} size="small" variant="danger">
-            {t("toolbar.delete")}
-          </Button>
-        </>
+      {hasPausedSelected && (
+        <Button onClick={onResumeSelected} leadingVisual={TriangleRightIcon} size="small">
+          {t("toolbar.resume")}
+        </Button>
+      )}
+      {hasDownloadingSelected && (
+        <Button onClick={onPauseSelected} leadingVisual={StopIcon} size="small">
+          {t("toolbar.stop")}
+        </Button>
+      )}
+      {(hasPausedSelected || hasDownloadingSelected || hasCompletedSelected || hasFailedSelected) && (
+        <Button onClick={onDeleteSelected} leadingVisual={TrashIcon} size="small" variant="danger">
+          {t("toolbar.delete")}
+        </Button>
       )}
       {hasRedownloadable && (
         <Button onClick={onRedownloadSelected} size="small">

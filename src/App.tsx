@@ -282,7 +282,6 @@ function App() {
         onRedownload={handleRedownload}
         selectedIds={selectedIds}
         onSelectChange={setSelectedIds}
-        hasSelection={selectedIds.size > 0}
         filter={filter}
         onFilterChange={setFilter}
       />

@@ -48,15 +48,18 @@ impl ConcurrentDownloader {
         };
 
         let tasks = if cfg.is_resume {
-            // For resume, tasks come from saved state
-            vec![]
+            // Load saved tasks from gob state
+            crate::state::gob::load_state(cfg.id)
+                .ok()
+                .flatten()
+                .map(|s| s.tasks)
+                .unwrap_or_default()
         } else {
             chunk::compute_chunks(cfg.total_size, num_conns, 0)
         };
 
-        // Resume path: state loaded from Sub-Plan B (state/gob.rs) merge
         if tasks.is_empty() {
-            return Err("Resume not yet implemented in concurrent downloader".to_string());
+            return Err(format!("No tasks to download for id={}", cfg.id));
         }
 
         let num_workers = num_conns.min(tasks.len() as u32).max(1);
