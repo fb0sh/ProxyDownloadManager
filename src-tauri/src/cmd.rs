@@ -404,7 +404,7 @@ pub async fn pause_download(state: State<'_, Arc<AppState>>, id: u64) -> Result<
                 }
             }
             if !tasks.is_empty() {
-                let saved = crate::state::gob::DownloadState {
+                let saved = DownloadState {
                     url: item.url.clone(),
                     id: item.id,
                     file_name: item.file_name.clone(),
