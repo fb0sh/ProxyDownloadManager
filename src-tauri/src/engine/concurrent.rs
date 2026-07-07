@@ -129,7 +129,7 @@ impl ConcurrentDownloader {
                     };
 
                     let result = download_task(
-                        &url, &client, &*file, &task, &cancel_for_task, &limiter, retries_left, &user_agent, &bytes_written,
+                        &url, &client, &*file, &task, &cancel_for_task, &limiter, &user_agent, &bytes_written,
                     ).await;
 
                     match result {
@@ -138,20 +138,19 @@ impl ConcurrentDownloader {
                             // SlowChunk: split remaining work for other workers
                             if let Some(rest) = parse_slow_chunk(&e, &task) {
                                 queue.push(rest);
-                                // Don't consume retry count — not a real failure
                                 continue;
                             }
+                            // Exponential backoff for network errors
+                            let attempt = max_retries.saturating_sub(retries_left) + 1;
+                            let backoff_secs = 2u64.pow(attempt.min(5) as u32).min(30);
+                            tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
                             if retries_left > 0 {
                                 retries_left -= 1;
-                                queue.push(task);
                             } else {
-                                let _ = event_tx.send(Event {
-                                    kind: EventKind::DownloadErrored,
-                                    download_id,
-                                    data: Some(format!("{} (retries exhausted)", e)),
-                                });
-                                return;
+                                // Keep retrying indefinitely (user can stop manually)
+                                retries_left = max_retries;
                             }
+                            queue.push(task);
                         }
                     }
                 }
@@ -245,7 +244,6 @@ async fn download_task(
     task: &Task,
     cancel: &AtomicBool,
     limiter: &MultiLimiter,
-    _max_retries: u32,
     user_agent: &str,
     bytes_written: &AtomicU64,
 ) -> Result<(), String> {
