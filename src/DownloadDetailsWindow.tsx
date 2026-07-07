@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Text, Label, Button } from "@primer/react";
 import { invoke } from "@tauri-apps/api/core";
-import { openPath } from "@tauri-apps/plugin-opener";
+import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import { formatBytes } from "./types";
 import type { DownloadItem } from "./types";
 
@@ -65,7 +65,12 @@ export default function DownloadDetailsWindow() {
   const openFile = async () => {
     if (!item) return;
     try { await openPath(item.save_path); }
-    catch (e) { console.error(e); }
+    catch (e) {
+      console.error("[ProxyDM] openPath error:", e);
+      // Fallback: try as file URL
+      try { await openUrl("file://" + item.save_path); }
+      catch (e2) { console.error("[ProxyDM] openUrl also failed:", e2); }
+    }
   };
   const openFolder = async () => {
     if (!item) return;
