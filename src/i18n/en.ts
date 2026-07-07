@@ -70,7 +70,7 @@ const en = {
     storage: "Storage",
     homeDir: "Home Directory",
     startup: "Startup",
-    launchStartup: "Launch on sign in",
+    launchStartup: "Launch ProxyDM on sign in",
     proxy: "Proxy",
     defaultProxy: "Default Proxy",
     none: "None",
