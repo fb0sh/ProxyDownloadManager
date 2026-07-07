@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Proxy Download Manager",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Intercepts browser downloads and opens ProxyDM's New Download window when the desktop app is running.",
   "homepage_url": "https://github.com/fb0sh/ProxyDownloadManager",
   "author": "fb0sh",
