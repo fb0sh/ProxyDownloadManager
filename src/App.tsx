@@ -8,6 +8,7 @@ import LogDialog from "./components/dialogs/LogDialog";
 import ExtensionDialog from "./components/dialogs/ExtensionDialog";
 import { useClipboardDetection } from "./hooks/useClipboard";
 import { usePauseDownload, useResumeDownload, useDownloads, useSettings, useRedownloadDownload } from "./query/downloadQueries";
+import { useQueryClient } from "@tanstack/react-query";
 import { useSettingsStore } from "./stores/settingsStore";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -96,6 +97,15 @@ function App() {
     });
     return () => { unlisten.then(f => f()); };
   }, [onUrlDetected]);
+
+  // Listen for download-created event from New Download window → refresh list
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    const unlisten = listen("download-created", () => {
+      queryClient.invalidateQueries({ queryKey: ["downloads"] });
+    });
+    return () => { unlisten.then(f => f()); };
+  }, [queryClient]);
 
   const handleQuit = async () => {
     try {

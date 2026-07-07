@@ -153,6 +153,11 @@ export default function NewDownloadWindow() {
     if (!url) return;
     try {
       await startDownload.mutateAsync({ url, filename, proxyName, connections, savePath });
+      // Notify main window to refresh its download list
+      try {
+        const { emit } = await import("@tauri-apps/api/event");
+        await emit("download-created");
+      } catch {}
       handleClose();
     } catch (err) {
       console.error("Download failed:", err);
