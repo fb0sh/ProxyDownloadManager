@@ -162,6 +162,12 @@ pub async fn redownload_download(
     updated.status = DownloadStatus::Downloading;
     updated.last_try = now_str();
     state.db.update_download(&updated)?;
+    // Reset progress immediately so frontend doesn't bounce
+    state.runtime.register(id);
+    let _ = state.app_handle.emit("download-progress", serde_json::json!({
+        "id": id,
+        "downloaded": 0u64,
+    }));
 
     let pool = state.worker_pool.pool_ref();
     let headers = std::collections::HashMap::new();

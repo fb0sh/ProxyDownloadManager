@@ -273,6 +273,11 @@ async fn download_task(
     let start_time = std::time::Instant::now();
 
     loop {
+        // Check cancel (responsive Stop even during streaming)
+        if cancel.load(Ordering::Relaxed) {
+            return Err("Cancelled".to_string());
+        }
+
         // Abort slow chunks so other workers can steal remaining work
         let elapsed = start_time.elapsed();
         if elapsed > std::time::Duration::from_secs(30)
@@ -290,6 +295,9 @@ async fn download_task(
             Ok(Some(Err(e))) => return Err(format!("Stream error: {}", e)),
             Ok(None) => {
                 if !buf.is_empty() {
+                    if cancel.load(Ordering::Relaxed) {
+                        return Err("Cancelled".to_string());
+                    }
                     write_at(file, &buf, base_offset + written)
                         .map_err(|e| format!("write_at error: {}", e))?;
                     written += buf.len() as u64;
@@ -309,6 +317,9 @@ async fn download_task(
         buf.extend_from_slice(&chunk);
 
         if buf.len() >= BUF_SIZE {
+            if cancel.load(Ordering::Relaxed) {
+                return Err("Cancelled".to_string());
+            }
             write_at(file, &buf, base_offset + written)
                 .map_err(|e| format!("write_at error: {}", e))?;
             written += buf.len() as u64;
