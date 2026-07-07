@@ -104,8 +104,8 @@ function App() {
     const base = window.location.origin + window.location.pathname.replace(/\/+$/, "");
     const win = new WebviewWindow("download-details", {
       url: `${base}?view=download-details&id=${id}`,
-      width: 520,
-      height: 560,
+      width: 480,
+      height: 460,
       title: t("properties.title"),
     });
     win.once("tauri://created", async () => {

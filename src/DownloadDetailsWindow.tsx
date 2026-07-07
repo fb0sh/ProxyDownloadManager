@@ -2,24 +2,44 @@ import { useState, useEffect } from "react";
 import { Text, Label, Button } from "@primer/react";
 import { invoke } from "@tauri-apps/api/core";
 import { formatBytes } from "./types";
-import { t } from "./i18n";
 import type { DownloadItem } from "./types";
 
-function formatTimestamp(ts: string): string {
+function fmt(ts: string): string {
   if (!ts) return "—";
-  const secs = Number(ts);
-  if (!Number.isFinite(secs) || secs <= 0) return ts;
+  const s = Number(ts);
+  if (!Number.isFinite(s) || s <= 0) return ts;
   try {
-    const d = new Date(secs * 1000);
-    const pad = (n: number) => String(n).padStart(2, "0");
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  } catch {
-    return ts;
-  }
+    const d = new Date(s * 1000);
+    const p = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  } catch { return ts; }
 }
 
-function statusColor(status: string): "success" | "danger" | "attention" | "accent" | "default" {
-  switch (status) {
+const card: React.CSSProperties = {
+  border: "1px solid var(--borderColor-muted, #d8dee4)", borderRadius: 6, overflow: "hidden",
+};
+const hdr: React.CSSProperties = {
+  padding: "5px 10px", fontSize: 11, fontWeight: 600,
+  color: "var(--fgColor-muted, #656d76)",
+  borderBottom: "1px solid var(--borderColor-muted, #d8dee4)",
+  background: "var(--bgColor-subtle, #f6f8fa)",
+  textTransform: "uppercase", letterSpacing: "0.05em",
+};
+const bd: React.CSSProperties = {
+  padding: "8px 10px", display: "flex", flexDirection: "column", gap: 4,
+};
+const r: React.CSSProperties = {
+  display: "flex", fontSize: 12, lineHeight: 1.5,
+};
+const l: React.CSSProperties = {
+  width: 80, flexShrink: 0, color: "var(--fgColor-muted, #656d76)", fontWeight: 600,
+};
+const v: React.CSSProperties = {
+  flex: 1, wordBreak: "break-all", color: "var(--fgColor-default, #1f2328)",
+};
+
+function statusColor(s: string): "success" | "danger" | "attention" | "accent" | "default" {
+  switch (s) {
     case "completed": return "success";
     case "failed": return "danger";
     case "paused": return "attention";
@@ -28,97 +48,98 @@ function statusColor(status: string): "success" | "danger" | "attention" | "acce
   }
 }
 
-const row: React.CSSProperties = {
-  display: "flex", fontSize: 12, lineHeight: 1.5, padding: "3px 0",
-};
-const label: React.CSSProperties = {
-  width: 90, flexShrink: 0, color: "var(--fgColor-muted, #656d76)", fontWeight: 600,
-};
-const value: React.CSSProperties = {
-  flex: 1, wordBreak: "break-all", color: "var(--fgColor-default, #1f2328)",
-};
-
 export default function DownloadDetailsWindow() {
   const [item, setItem] = useState<DownloadItem | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const id = params.get("id");
-    if (id) {
-      invoke<DownloadItem[]>("list_downloads").then((items) => {
-        const found = items.find((d) => d.id === Number(id));
-        setItem(found ?? null);
-        setLoading(false);
-      }).catch(() => setLoading(false));
-    } else {
-      setLoading(false);
-    }
+    const p = new URLSearchParams(window.location.search);
+    const id = p.get("id");
+    if (id) invoke<DownloadItem[]>(`list_downloads`)
+      .then((items) => { setItem(items.find((d) => d.id === Number(id)) ?? null); setLoading(false); })
+      .catch(() => setLoading(false));
+    else setLoading(false);
   }, []);
 
-  const handleOpenFile = async () => {
+  const openFile = async () => {
     if (!item) return;
-    try { await invoke("plugin:opener|open_path", { path: item.save_path }); }
-    catch (e) { console.error("open failed:", e); }
+    try { await invoke(`plugin:opener|open_path`, { path: item.save_path }); }
+    catch (e) { console.error(e); }
   };
-
-  const handleOpenFolder = async () => {
+  const openFolder = async () => {
     if (!item) return;
-    try { await invoke("plugin:opener|reveal_item_in_dir", { path: item.save_path }); }
+    try { await invoke(`plugin:opener|reveal_item_in_dir`, { path: item.save_path }); }
     catch {
-      try {
-        const parent = item.save_path.replace(/[/\\][^/\\]*$/, "");
-        await invoke("plugin:opener|open_path", { path: parent || "." });
-      } catch (e) { console.error("open folder failed:", e); }
+      try { await invoke(`plugin:opener|open_path`, { path: item.save_path.replace(/[/\\][^/\\]*$/, "") || "." }); }
+      catch (e) { console.error(e); }
     }
   };
 
   if (loading) return <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100vh" }}><Text>Loading...</Text></div>;
-  if (!item) return <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100vh" }}><Text>Download not found.</Text></div>;
+  if (!item) return <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100vh" }}><Text>Not found</Text></div>;
 
-  const resumable = item.resumable === true ? t("properties.yes") : item.resumable === false ? t("properties.no") : t("properties.unknown");
+  const yes = "Yes", no = "No", uk = "Unknown";
+  const resumable = item.resumable === true ? yes : item.resumable === false ? no : uk;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh", fontSize: 12 }}>
-      {/* Title bar */}
+    <div style={{ display: "flex", flexDirection: "column", height: "100vh", fontSize: 12, background: "var(--bgColor-default, #fff)" }}>
+      {/* Header */}
       <div style={{
-        display: "flex", alignItems: "center", justifyContent: "space-between",
-        padding: "6px 12px", borderBottom: "1px solid var(--borderColor-muted, #d8dee4)",
-        background: "var(--bgColor-subtle, #f6f8fa)", minHeight: 32,
+        display: "flex", alignItems: "center", gap: 8,
+        padding: "10px 14px", borderBottom: "1px solid var(--borderColor-muted, #d8dee4)",
+        background: "var(--bgColor-subtle, #f6f8fa)",
       }}>
-        <Text weight="semibold" size="small" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
+        <Text weight="semibold" size="small" style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {item.file_name}
         </Text>
-        <Label variant={statusColor(item.status)} style={{ fontSize: 10, marginLeft: 8 }}>{item.status}</Label>
+        <Label variant={statusColor(item.status)} style={{ fontSize: 11 }}>{item.status}</Label>
         {item.status === "completed" && (
-          <div style={{ display: "flex", gap: 3, marginLeft: 6 }}>
-            <Button size="small" onClick={handleOpenFile}>{t("downloadRow.open")}</Button>
-            <Button size="small" onClick={handleOpenFolder}>{t("downloadRow.openFolder")}</Button>
-          </div>
+          <>
+            <Button size="small" onClick={openFile}>Open</Button>
+            <Button size="small" onClick={openFolder}>Folder</Button>
+          </>
         )}
       </div>
 
-      {/* Compact details */}
-      <div style={{ padding: "8px 12px", flex: 1, overflow: "auto" }}>
-        <Text size="small" style={{ color: "var(--fgColor-muted, #656d76)", wordBreak: "break-all", display: "block", marginBottom: 8, lineHeight: 1.4 }}>
+      {/* URL */}
+      <div style={{ padding: "8px 14px", borderBottom: "1px solid var(--borderColor-muted, #d8dee4)" }}>
+        <Text size="small" style={{ color: "var(--fgColor-muted, #656d76)", wordBreak: "break-all", lineHeight: 1.4 }}>
           {item.url}
         </Text>
+      </div>
 
-        {/* Single card with all info */}
-        <div style={{ border: "1px solid var(--borderColor-muted, #d8dee4)", borderRadius: 6, overflow: "hidden" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-            <tbody>
-              <tr style={row as React.CSSProperties}><td style={label}>Size</td><td style={value}>{formatBytes(item.total_size)}</td></tr>
-              <tr style={{ ...row, borderTop: "1px solid var(--borderColor-muted, #d8dee4)" } as React.CSSProperties}><td style={label}>Saved</td><td style={value}>{item.save_path || "—"}</td></tr>
-              <tr style={{ ...row, borderTop: "1px solid var(--borderColor-muted, #d8dee4)" } as React.CSSProperties}><td style={label}>Created</td><td style={value}>{formatTimestamp(item.created_at)}</td></tr>
-              <tr style={{ ...row, borderTop: "1px solid var(--borderColor-muted, #d8dee4)" } as React.CSSProperties}><td style={label}>Status</td><td style={value}>{item.status}</td></tr>
-              <tr style={{ ...row, borderTop: "1px solid var(--borderColor-muted, #d8dee4)" } as React.CSSProperties}><td style={label}>Resumable</td><td style={value}>{resumable}</td></tr>
-              <tr style={{ ...row, borderTop: "1px solid var(--borderColor-muted, #d8dee4)" } as React.CSSProperties}><td style={label}>Last try</td><td style={value}>{formatTimestamp(item.last_try)}</td></tr>
-              <tr style={{ ...row, borderTop: "1px solid var(--borderColor-muted, #d8dee4)" } as React.CSSProperties}><td style={label}>Threads</td><td style={value}>{String(item.connections)}</td></tr>
-              <tr style={{ ...row, borderTop: "1px solid var(--borderColor-muted, #d8dee4)" } as React.CSSProperties}><td style={label}>Proxy</td><td style={value}>{item.proxy_name || "—"}</td></tr>
-            </tbody>
-          </table>
+      {/* Content */}
+      <div style={{ padding: "10px 14px", flex: 1, overflow: "auto", display: "flex", flexDirection: "column", gap: 10 }}>
+
+        {/* File */}
+        <div style={card}>
+          <div style={hdr}>File</div>
+          <div style={bd}>
+            <div style={r}><span style={l}>Size</span><span style={v}>{formatBytes(item.total_size)}</span></div>
+            <div style={r}><span style={l}>Saved</span><span style={v}>{item.save_path || "—"}</span></div>
+            <div style={r}><span style={l}>Created</span><span style={v}>{fmt(item.created_at)}</span></div>
+          </div>
         </div>
+
+        {/* Download */}
+        <div style={card}>
+          <div style={hdr}>Download</div>
+          <div style={bd}>
+            <div style={r}><span style={l}>Status</span><span style={v}>{item.status}</span></div>
+            <div style={r}><span style={l}>Resume</span><span style={v}>{resumable}</span></div>
+            <div style={r}><span style={l}>Last try</span><span style={v}>{fmt(item.last_try)}</span></div>
+          </div>
+        </div>
+
+        {/* Network */}
+        <div style={card}>
+          <div style={hdr}>Network</div>
+          <div style={bd}>
+            <div style={r}><span style={l}>Threads</span><span style={v}>{String(item.connections)}</span></div>
+            <div style={r}><span style={l}>Proxy</span><span style={v}>{item.proxy_name || "—"}</span></div>
+          </div>
+        </div>
+
       </div>
     </div>
   );
