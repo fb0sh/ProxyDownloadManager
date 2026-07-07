@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Text, Label, Button } from "@primer/react";
 import { invoke } from "@tauri-apps/api/core";
 import { openPath, openUrl } from "@tauri-apps/plugin-opener";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { formatBytes } from "./types";
 import type { DownloadItem } from "./types";
 
@@ -62,18 +63,18 @@ export default function DownloadDetailsWindow() {
     else setLoading(false);
   }, []);
 
+  const closeWindow = () => { getCurrentWebviewWindow().close(); };
+
   const openFile = async () => {
     if (!item) return;
     try {
-      // openUrl with file:// protocol is more reliable across platforms
       await openUrl("file://" + encodeURI(item.save_path));
-    }
-    catch (e) {
+    } catch (e) {
       console.error("[ProxyDM] openUrl failed:", e);
-      // Last-resort fallback
       try { await openPath(item.save_path); }
       catch (e2) { console.error(e2); }
     }
+    closeWindow();
   };
   const openFolder = async () => {
     if (!item) return;
@@ -85,6 +86,7 @@ export default function DownloadDetailsWindow() {
       try { await openPath(item.save_path.replace(/[/\\][^/\\]*$/, "") || "."); }
       catch (e) { console.error(e); }
     }
+    closeWindow();
   };
 
   if (loading) return <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100vh" }}><Text>Loading...</Text></div>;
