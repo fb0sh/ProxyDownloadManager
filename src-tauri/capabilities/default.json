@@ -8,7 +8,10 @@
     "core:window:allow-close",
     "dialog:default",
     "opener:default",
-    "opener:allow-open-path",
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [{ "path": "$HOME/**" }, { "path": "$DOWNLOAD/**" }, { "path": "/**" }]
+    },
     "core:event:default",
     "clipboard-manager:allow-read-text",
     "autostart:allow-enable",
