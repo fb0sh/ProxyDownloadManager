@@ -18,8 +18,8 @@ export default function DeleteDialog({ ids, onClose }: DeleteDialogProps) {
 
   return (
     <Dialog title={t("delete.title")} onClose={onClose}>
-      <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 16 }}>
-        <Text>
+      <div style={{ padding: "10px 12px", display: "flex", flexDirection: "column", gap: 10 }}>
+        <Text size="small">
           {ids.length === 1 ? t("delete.confirm") : t("delete.confirmMultiple").replace("{count}", String(ids.length))}
         </Text>
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
