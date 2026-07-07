@@ -9,6 +9,11 @@
 const WS_URL = 'ws://127.0.0.1:18999';
 let ws = null;
 let reconnectTimer = null;
+let lastNotRunningNotificationAt = 0;
+
+const startedAt = Date.now();
+const STARTUP_GRACE_MS = 10000;
+const NOT_RUNNING_NOTIFICATION_COOLDOWN_MS = 15000;
 
 // ─── Toggle on/off ────────────────────────────────────────────────────────────
 
@@ -59,11 +64,24 @@ function updateIcon(enabled) {
 // ─── WebSocket ────────────────────────────────────────────────────────────────
 
 function connect() {
-  if (ws && ws.readyState === WebSocket.OPEN) return;
-  try { ws = new WebSocket(WS_URL); } catch { scheduleReconnect(); return; }
-  ws.onopen = () => { if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; } };
-  ws.onclose = () => { ws = null; scheduleReconnect(); };
-  ws.onerror = () => { ws = null; scheduleReconnect(); };
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+  let socket;
+  try { socket = new WebSocket(WS_URL); } catch { scheduleReconnect(); return; }
+  ws = socket;
+  socket.onopen = () => {
+    if (ws !== socket) return;
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  };
+  socket.onclose = () => {
+    if (ws !== socket) return;
+    ws = null;
+    scheduleReconnect();
+  };
+  socket.onerror = () => {
+    if (ws !== socket) return;
+    ws = null;
+    scheduleReconnect();
+  };
 }
 
 function scheduleReconnect() {
@@ -86,29 +104,29 @@ function send(url, referrer, tabTitle) {
 
 function sendReliable(url, referrer, tabTitle) {
   return new Promise((resolve) => {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      try { ws.send(url); resolve(true); } catch { resolve(false); }
-      return;
-    }
-
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
 
+    let socket = null;
     let done = false;
     const finish = (ok) => {
       if (done) return;
       done = true;
       clearTimeout(timer);
+      if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+        try { socket.close(); } catch {}
+      }
       resolve(ok);
     };
-    const timer = setTimeout(() => finish(false), 2000);
+    const timer = setTimeout(() => finish(false), 3000);
 
     try {
-      ws = new WebSocket(WS_URL);
-      ws.onopen = () => {
-        try { ws.send(url); finish(true); } catch { finish(false); }
+      socket = new WebSocket(WS_URL);
+      socket.onopen = () => {
+        try { socket.send(url); } catch { finish(false); }
       };
-      ws.onclose = () => { ws = null; if (!done) finish(false); else scheduleReconnect(); };
-      ws.onerror = () => { if (!done) finish(false); };
+      socket.onmessage = () => finish(true);
+      socket.onclose = () => { if (!done) finish(false); };
+      socket.onerror = () => { if (!done) finish(false); };
     } catch {
       finish(false);
     }
@@ -148,6 +166,10 @@ chrome.downloads.onCreated.addListener(async (item) => {
   }
   const downloadUrl = getDownloadUrl(item);
   if (!downloadUrl || downloadUrl.startsWith('blob:')) return;
+  if (isRestoredDownloadEvent(item)) {
+    console.log('[ProxyDM] restored browser download ignored:', downloadUrl, item.startTime);
+    return;
+  }
 
   console.log('[ProxyDM] download intercepted:', downloadUrl, 'file:', item.filename);
 
@@ -160,7 +182,7 @@ chrome.downloads.onCreated.addListener(async (item) => {
         chrome.downloads.erase({ id: item.id });
       });
     } else {
-      notifyNotRunning();
+      notifyNotRunning({ allowStartupGrace: true });
     }
   });
 });
@@ -200,8 +222,16 @@ function notify(title, message) {
   });
 }
 
-function notifyNotRunning() {
-  notify('ProxyDM is not running', 'Using the browser download instead. Start ProxyDM to capture downloads.');
+function notifyNotRunning({ allowStartupGrace = false } = {}) {
+  const now = Date.now();
+  const inStartupGrace = allowStartupGrace && now - startedAt < STARTUP_GRACE_MS;
+  const inCooldown = now - lastNotRunningNotificationAt < NOT_RUNNING_NOTIFICATION_COOLDOWN_MS;
+
+  if (!inStartupGrace && !inCooldown) {
+    notify('ProxyDM is not running', 'Using the browser download instead. Start ProxyDM to capture downloads.');
+    lastNotRunningNotificationAt = now;
+  }
+
   // Show a warning badge until the extension is enabled again
   chrome.action.setBadgeText({ text: '!' });
   chrome.action.setBadgeBackgroundColor({ color: '#cf222e' });
@@ -212,6 +242,11 @@ function notifyNotRunning() {
 
 function getDownloadUrl(item) {
   return item.finalUrl || item.url || '';
+}
+
+function isRestoredDownloadEvent(item) {
+  const startTime = Date.parse(item.startTime || '');
+  return Number.isFinite(startTime) && startTime + STARTUP_GRACE_MS < startedAt;
 }
 
 function looksLikeDownload(url) {
