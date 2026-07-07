@@ -48,12 +48,18 @@ impl ConcurrentDownloader {
         };
 
         let tasks = if cfg.is_resume {
-            // Load saved tasks from gob state
-            crate::state::gob::load_state(cfg.id)
-                .ok()
-                .flatten()
-                .map(|s| s.tasks)
-                .unwrap_or_default()
+            // Load saved progress, then recompute chunks for the remaining range
+            let saved = crate::state::gob::load_state(cfg.id)
+                .ok().flatten();
+            let offset = saved.as_ref().map(|s| s.downloaded).unwrap_or(0);
+            let remaining = cfg.total_size.saturating_sub(offset);
+            if remaining == 0 {
+                return Err(format!("Download {} already complete", cfg.id));
+            }
+            chunk::compute_chunks(remaining, num_conns, 0)
+                .into_iter()
+                .map(|mut t| { t.offset += offset; t })
+                .collect::<Vec<_>>()
         } else {
             chunk::compute_chunks(cfg.total_size, num_conns, 0)
         };
