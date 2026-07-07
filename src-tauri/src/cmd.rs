@@ -47,7 +47,14 @@ impl AppState {
 
         match event.kind {
             EventKind::DownloadStarted => {
-                self.runtime.register(id);
+                // For resume, initialize runtime with saved progress so flush_to_db doesn't reset DB to 0
+                let saved = crate::state::gob::load_state(id).ok().flatten();
+                self.runtime.register(id);  // sets 0, then immediately correct
+                if let Some(s) = saved {
+                    if s.downloaded > 0 {
+                        self.runtime.update_progress(id, s.downloaded);
+                    }
+                }
                 let _ = self.app_handle.emit("download-started", id);
             }
             EventKind::DownloadCompleted => {

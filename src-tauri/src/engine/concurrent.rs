@@ -38,7 +38,14 @@ impl ConcurrentDownloader {
     }
 
     pub async fn download(&self, cfg: &DownloadConfig, limiter: Arc<MultiLimiter>, cancel: Arc<AtomicBool>) -> Result<(), String> {
-        let bytes_written = Arc::new(AtomicU64::new(0));
+        // On resume, load saved progress to initialize bytes_written correctly
+        let resume_offset = if cfg.is_resume {
+            crate::state::gob::load_state(cfg.id)
+                .ok().flatten().map(|s| s.downloaded).unwrap_or(0)
+        } else {
+            0
+        };
+        let bytes_written = Arc::new(AtomicU64::new(resume_offset));
 
         let num_conns = if cfg.connections > 0 {
             cfg.connections.min(32)
@@ -48,17 +55,13 @@ impl ConcurrentDownloader {
         };
 
         let tasks = if cfg.is_resume {
-            // Load saved progress, then recompute chunks for the remaining range
-            let saved = crate::state::gob::load_state(cfg.id)
-                .ok().flatten();
-            let offset = saved.as_ref().map(|s| s.downloaded).unwrap_or(0);
-            let remaining = cfg.total_size.saturating_sub(offset);
+            let remaining = cfg.total_size.saturating_sub(resume_offset);
             if remaining == 0 {
                 return Err(format!("Download {} already complete", cfg.id));
             }
             chunk::compute_chunks(remaining, num_conns, 0)
                 .into_iter()
-                .map(|mut t| { t.offset += offset; t })
+                .map(|mut t| { t.offset += resume_offset; t })
                 .collect::<Vec<_>>()
         } else {
             chunk::compute_chunks(cfg.total_size, num_conns, 0)
