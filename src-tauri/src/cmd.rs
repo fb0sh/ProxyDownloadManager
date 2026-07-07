@@ -392,16 +392,24 @@ pub async fn pause_download(state: State<'_, Arc<AppState>>, id: u64) -> Result<
     state.worker_pool.cancel(id).await;
     if let Ok(Some(mut item)) = state.db.get_by_id(id) {
         if matches!(item.status, DownloadStatus::Downloading) {
-            // Save state for resume: compute remaining tasks from incomplete parts
+            // Save state for resume: compute remaining tasks based on total progress
             let mut tasks = Vec::new();
-            for part in &item.parts {
-                let remaining = part.end - part.downloaded;
-                if remaining > 0 {
-                    tasks.push(Task {
-                        offset: part.start + part.downloaded,
-                        length: remaining,
-                    });
+            let mut parts_sorted = item.parts.clone();
+            parts_sorted.sort_by_key(|p| p.start);
+            let mut accounted: u64 = 0;
+            for part in &parts_sorted {
+                let part_size = part.end - part.start;
+                if accounted + part_size <= item.downloaded {
+                    // This part is fully downloaded
+                    accounted += part_size;
+                    continue;
                 }
+                let remaining = part_size.saturating_sub(item.downloaded.saturating_sub(accounted));
+                let part_offset = part.start + (item.downloaded.saturating_sub(accounted));
+                if remaining > 1024 * 1024 {
+                    tasks.push(Task { offset: part_offset, length: remaining });
+                }
+                accounted += part_size;
             }
             if !tasks.is_empty() {
                 let saved = DownloadState {
