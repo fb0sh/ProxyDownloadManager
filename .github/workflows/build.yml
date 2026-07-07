@@ -1,13 +1,9 @@
 # =============================================================================
 # Build & Release — Proxy Download Manager
 #
-# Triggers:
-#   - Push to main (or any tag v*)
-#   - Pull request to main
-#
-# Builds:
+# Only builds when a tag v* is pushed. Produces native installers:
 #   macOS   → .dmg
-#   Windows → .msi / .exe (NSIS)
+#   Windows → .exe (NSIS)
 #   Linux   → .deb / .AppImage / .rpm
 # =============================================================================
 
@@ -15,15 +11,10 @@ name: Build & Release
 
 on:
   push:
-    branches: [main]
     tags: ["v*"]
-  pull_request:
-    branches: [main]
 
-# Windows codesign (optional) — set in repo secrets
 env:
   APP_NAME: proxydownloadmanager
-  APP_ID: com.fb0sh.proxydownloadmanager
 
 concurrency:
   group: ${{ github.ref }}
@@ -57,18 +48,10 @@ jobs:
       - name: Install JS deps
         run: pnpm install --frozen-lockfile
 
-      - name: Build
+      - name: Build DMG
         run: pnpm tauri build
-        env:
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_API_KEY_PATH: ${{ secrets.APPLE_API_KEY_PATH }}
 
-      - name: Upload DMG
+      - name: Upload .dmg
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.APP_NAME }}-macos
@@ -102,27 +85,17 @@ jobs:
       - name: Install JS deps
         run: pnpm install --frozen-lockfile
 
-      - name: Build
-        run: pnpm tauri build
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      - name: Build NSIS (.exe)
+        run: pnpm tauri build --bundles nsis
 
-      - name: Upload MSI
+      - name: Upload .exe
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.APP_NAME }}-windows
-          path: src-tauri/target/release/bundle/msi/*.msi
-          if-no-files-found: warn
-
-      - name: Upload NSIS
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.APP_NAME }}-windows-nsis
           path: src-tauri/target/release/bundle/nsis/*.exe
           if-no-files-found: warn
 
-  # ─── Linux (deb + AppImage + rpm) ─────────────────────────────────────────
+  # ─── Linux ────────────────────────────────────────────────────────────────
   linux:
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -156,11 +129,8 @@ jobs:
       - name: Install JS deps
         run: pnpm install --frozen-lockfile
 
-      - name: Build all Linux bundles
-        run: pnpm tauri build --bundles deb,appimage,rpm
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      - name: Build .deb
+        run: pnpm tauri build --bundles deb
 
       - name: Upload .deb
         uses: actions/upload-artifact@v4
@@ -169,12 +139,18 @@ jobs:
           path: src-tauri/target/release/bundle/deb/*.deb
           if-no-files-found: warn
 
+      - name: Build .AppImage
+        run: pnpm tauri build --bundles appimage
+
       - name: Upload .AppImage
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.APP_NAME }}-linux-appimage
           path: src-tauri/target/release/bundle/appimage/*.AppImage
           if-no-files-found: warn
+
+      - name: Build .rpm
+        run: pnpm tauri build --bundles rpm
 
       - name: Upload .rpm
         uses: actions/upload-artifact@v4
@@ -183,11 +159,10 @@ jobs:
           path: src-tauri/target/release/bundle/rpm/*.rpm
           if-no-files-found: warn
 
-  # ─── Release (when tag v*) ────────────────────────────────────────────────
+  # ─── Release ──────────────────────────────────────────────────────────────
   release:
     needs: [macos, windows, linux]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
 
@@ -197,12 +172,11 @@ jobs:
           pattern: ${{ env.APP_NAME }}-*
           merge-multiple: true
 
-      - name: Create Release
+      - name: Upload to Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             *.dmg
-            *.msi
             *.exe
             *.deb
             *.AppImage
