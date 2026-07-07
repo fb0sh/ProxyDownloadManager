@@ -1,6 +1,5 @@
 import { useState, useEffect } from "react";
-import { Text, Label, Button, ProgressBar } from "@primer/react";
-import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { Text, Label, Button } from "@primer/react";
 import { invoke } from "@tauri-apps/api/core";
 import { formatBytes } from "./types";
 import { t } from "./i18n";
@@ -77,8 +76,6 @@ export default function DownloadDetailsWindow() {
     }
   }, []);
 
-  const handleClose = () => { getCurrentWebviewWindow().close(); };
-
   const handleOpenFile = async () => {
     if (!item) return;
     try { await invoke("plugin:opener|open_path", { path: item.save_path }); }
@@ -112,7 +109,6 @@ export default function DownloadDetailsWindow() {
     );
   }
 
-  const progress = item.total_size > 0 ? Math.round((item.downloaded / item.total_size) * 100) : 0;
   const resumable = item.resumable === true ? t("properties.yes") : item.resumable === false ? t("properties.no") : t("properties.unknown");
 
   return (
@@ -131,7 +127,6 @@ export default function DownloadDetailsWindow() {
               <Button size="small" onClick={handleOpenFolder}>{t("downloadRow.openFolder")}</Button>
             </>
           )}
-          <Button size="small" onClick={handleClose}>{t("newDownload.cancel")}</Button>
         </div>
       </div>
 
@@ -151,15 +146,7 @@ export default function DownloadDetailsWindow() {
           </Text>
         </div>
 
-        {/* Progress */}
-        {progress > 0 && (
-          <div style={{ textAlign: "center", padding: "8px 0" }}>
-            <Text weight="semibold" size="large">{progress}%</Text>
-            <Text size="small" style={{ color: "var(--fgColor-muted, #656d76)", display: "block" }}>
-              {formatBytes(item.downloaded)} / {formatBytes(item.total_size)}
-            </Text>
-          </div>
-        )}
+
 
         {/* File section */}
         <div style={sectionCard}>
@@ -213,49 +200,6 @@ export default function DownloadDetailsWindow() {
             </div>
           </div>
         </div>
-
-        {/* Threads section */}
-        {item.parts.length > 0 && (
-          <div style={sectionCard}>
-            <div style={sectionHeader}>Threads ({item.parts.length})</div>
-            <div style={sectionBody}>
-              {item.parts.map((part) => {
-                const partSize = part.end - part.start;
-                const partPct = partSize > 0 ? Math.round((part.downloaded / partSize) * 100) : 0;
-                const color = part.status === "completed" ? "var(--fgColor-success, #1a7f37)"
-                  : part.status === "downloading" ? "var(--fgColor-accent, #0969da)"
-                  : part.status === "failed" ? "var(--fgColor-danger, #cf222e)"
-                  : "var(--fgColor-muted, #656d76)";
-                return (
-                  <div key={part.index} style={{ display: "flex", flexDirection: "column", gap: 2, padding: "4px 0" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
-                      <span>
-                        <span style={{ fontWeight: 600, color }}>#{part.index + 1}</span>
-                        <span style={{ color: "var(--fgColor-muted, #656d76)", marginLeft: 6 }}>
-                          {formatBytes(part.start)} – {formatBytes(part.end)}
-                        </span>
-                      </span>
-                      <span style={{ color: "var(--fgColor-muted, #656d76)" }}>
-                        {formatBytes(part.downloaded)} / {formatBytes(partSize)} · {partPct}%
-                      </span>
-                    </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <div style={{ flex: 1 }}>
-                        <ProgressBar progress={Math.min(partPct, 100)} />
-                      </div>
-                      <Label
-                        variant={part.status === "completed" ? "success" : part.status === "downloading" ? "accent" : part.status === "failed" ? "danger" : "default"}
-                        style={{ fontSize: 10, lineHeight: "14px" }}
-                      >
-                        {part.status}{part.retries > 0 ? ` (${part.retries})` : ""}
-                      </Label>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
 
       </div>
     </div>
