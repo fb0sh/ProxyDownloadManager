@@ -36,6 +36,10 @@ impl SingleDownloader {
                 msg
             })?;
 
+        if cancel.load(Ordering::Relaxed) {
+            return Err("Cancelled".to_string());
+        }
+
         let status = resp.status();
         if !status.is_success() {
             // Handle 429/503 with Retry-After

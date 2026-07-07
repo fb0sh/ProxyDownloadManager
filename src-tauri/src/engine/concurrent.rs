@@ -254,6 +254,10 @@ async fn download_task(
         msg
     })?;
 
+    if cancel.load(Ordering::Relaxed) {
+        return Err("Cancelled".to_string());
+    }
+
     let status = resp.status();
     if status != reqwest::StatusCode::PARTIAL_CONTENT && status != reqwest::StatusCode::OK {
         return Err(format!("HTTP {}", status));
