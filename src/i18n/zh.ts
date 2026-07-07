@@ -126,6 +126,9 @@ const zh: Translations = {
   about: {
     title: "关于",
     version: "版本",
+    description: "多线程下载管理器，支持每下载独立代理",
+    techStack: "Rust + Tauri 2 + React 19",
+    author: "作者",
     checkUpdate: "检查更新",
     checking: "检查中...",
     upToDate: "已是最新版本！",

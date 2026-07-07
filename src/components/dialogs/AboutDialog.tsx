@@ -69,10 +69,13 @@ export default function AboutDialog({ onClose, onDownloadUpdate }: AboutDialogPr
             {t("about.version")} {version}
           </Text>
           <Text size="small" style={{ color: "var(--fgColor-muted, #656d76)", display: "block", marginTop: 4 }}>
-            Multi-threaded download manager with per-download proxy support
+            {t("about.description")}
           </Text>
-          <Text size="small" style={{ color: "var(--fgColor-muted, #656d76)", display: "block", marginTop: 12 }}>
-            Rust + Tauri 2 + React 19
+          <Text size="small" style={{ color: "var(--fgColor-muted, #656d76)", display: "block" }}>
+            {t("about.techStack")}
+          </Text>
+          <Text size="small" style={{ color: "var(--fgColor-muted, #656d76)", display: "block", marginTop: 8 }}>
+            {t("about.author")}: fb0sh, DohHoKun
           </Text>
         </div>
 

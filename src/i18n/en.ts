@@ -124,6 +124,9 @@ const en = {
   about: {
     title: "About",
     version: "Version",
+    description: "Multi-threaded download manager with per-download proxy support",
+    techStack: "Rust + Tauri 2 + React 19",
+    author: "Author",
     checkUpdate: "Check for Updates",
     checking: "Checking...",
     upToDate: "You're up to date!",
