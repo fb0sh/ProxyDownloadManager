@@ -132,6 +132,23 @@ const zh: Translations = {
   downloadError: {
     failed: "下载失败",
   },
+  extension: {
+    openFolder: "打开扩展目录",
+    copy: "复制",
+    copied: "已复制！",
+    notFound: "扩展未找到，请从",
+    intro: "浏览器扩展已打包在应用中。打开扩展目录，在浏览器中手动加载：",
+    instructions: "安装步骤（Chrome/Edge）：",
+    step1: "打开 chrome://extensions（或 edge://extensions）",
+    step2: "开启「开发者模式」（右上角开关）",
+    step3: "点击「加载已解压的扩展程序」",
+    step4: "选择 chrome 或 edge 文件夹",
+    firefox: "Firefox：",
+    ffStep1: "打开 about:debugging#/runtime/this-firefox",
+    ffStep2: "点击「临时加载附加组件」",
+    ffStep3: "选择 firefox 文件夹中的 manifest.json",
+    ffNote: "注意：Firefox 临时加载的附加组件重启后失效",
+  },
 };
 
 export default zh;

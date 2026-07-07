@@ -610,6 +610,56 @@ pub fn open_file(path: String) -> Result<(), String> {
     }
 }
 
+/// Resolve the path to the bundled browser extensions directory and open it
+/// in the system file manager, so the user can manually install the extension.
+#[tauri::command]
+pub fn open_extensions_folder(app: tauri::AppHandle) -> Result<(), String> {
+    let ext_dir = resolve_extensions_dir(&app)?;
+
+    #[cfg(target_os = "macos")]
+    let status = StdCommand::new("open").arg(&ext_dir).status();
+    #[cfg(target_os = "windows")]
+    let status = StdCommand::new("explorer").arg(&ext_dir).status();
+    #[cfg(target_os = "linux")]
+    let status = StdCommand::new("xdg-open").arg(&ext_dir).status();
+
+    match status {
+        Ok(s) if s.success() => Ok(()),
+        Ok(s) => Err(format!("exit code: {}", s)),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Resolve the path to the bundled browser extensions directory.
+/// Used by the frontend to display the path to the user.
+#[tauri::command]
+pub fn get_extensions_dir(app: tauri::AppHandle) -> Result<String, String> {
+    resolve_extensions_dir(&app)
+}
+
+fn resolve_extensions_dir(app: &tauri::AppHandle) -> Result<String, String> {
+    // Production: extensions are bundled via bundle.resources into the resource dir
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        let ext_dir = resource_dir.join("extensions");
+        if ext_dir.exists() {
+            return Ok(ext_dir.to_string_lossy().to_string());
+        }
+    }
+
+    // Dev fallback: resolve relative to src-tauri/
+    let dev_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(|p| p.join("browsers-extension"));
+
+    if let Some(path) = dev_path {
+        if path.exists() {
+            return Ok(path.to_string_lossy().to_string());
+        }
+    }
+
+    Err("Extensions directory not found. The browser extensions may not have been bundled. Try reinstalling the application.".to_string())
+}
+
 #[tauri::command]
 pub async fn test_proxy(
     _state: State<'_, Arc<AppState>>,

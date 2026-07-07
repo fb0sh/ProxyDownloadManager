@@ -39,6 +39,11 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "resources": {
+      "../browsers-extension/chrome": "extensions/chrome",
+      "../browsers-extension/firefox": "extensions/firefox",
+      "../browsers-extension/edge": "extensions/edge"
+    },
     "windows": {
       "wix": null,
       "nsis": null

@@ -130,6 +130,23 @@ const en = {
   downloadError: {
     failed: "Download failed",
   },
+  extension: {
+    openFolder: "Open Extensions Folder",
+    copy: "Copy",
+    copied: "Copied!",
+    notFound: "Extensions not found. Please download from",
+    intro: "Browser extensions are bundled with the app. Open the folder and load the extension manually in your browser:",
+    instructions: "Instructions:",
+    step1: "Open chrome://extensions (or edge://extensions)",
+    step2: "Enable Developer mode (top-right toggle)",
+    step3: "Click Load unpacked",
+    step4: "Select the chrome or edge folder",
+    firefox: "Firefox:",
+    ffStep1: "Open about:debugging#/runtime/this-firefox",
+    ffStep2: "Click Load Temporary Add-on",
+    ffStep3: "Select firefox/manifest.json inside the folder",
+    ffNote: "Note: Firefox temporary add-ons reset on restart",
+  },
 };
 
 export default en;

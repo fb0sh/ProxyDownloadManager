@@ -184,6 +184,8 @@ pub fn run() {
             cmd::file_exists,
             cmd::test_proxy,
             cmd::get_file_icon,
+            cmd::open_extensions_folder,
+            cmd::get_extensions_dir,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
