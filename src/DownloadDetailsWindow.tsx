@@ -64,12 +64,15 @@ export default function DownloadDetailsWindow() {
 
   const openFile = async () => {
     if (!item) return;
-    try { await openPath(item.save_path); }
+    try {
+      // openUrl with file:// protocol is more reliable across platforms
+      await openUrl("file://" + encodeURI(item.save_path));
+    }
     catch (e) {
-      console.error("[ProxyDM] openPath error:", e);
-      // Fallback: try as file URL
-      try { await openUrl("file://" + item.save_path); }
-      catch (e2) { console.error("[ProxyDM] openUrl also failed:", e2); }
+      console.error("[ProxyDM] openUrl failed:", e);
+      // Last-resort fallback
+      try { await openPath(item.save_path); }
+      catch (e2) { console.error(e2); }
     }
   };
   const openFolder = async () => {
