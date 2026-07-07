@@ -22,9 +22,6 @@ tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-objc2 = "0.6.4"
-objc2-foundation = "0.3.2"
-objc2-app-kit = "0.3.2"
 toml = "0.8"
 dirs = "6"
 rusqlite = { version = "0.31", features = ["bundled"] }
@@ -34,9 +31,14 @@ futures-util = "0.3"
 url = "2"
 log = "0.4"
 tungstenite = "0.24"
-file_icon_provider = "1"
 base64 = "0.22"
 fs2 = "0.4"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.4"
+objc2-foundation = "0.3.2"
+objc2-app-kit = "0.3.2"
+file_icon_provider = "1"
 
 [profile.release]
 opt-level = "z"
