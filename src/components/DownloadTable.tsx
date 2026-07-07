@@ -193,7 +193,7 @@ export default function DownloadTable({
       width: "auto" as const,
       renderCell: (row: DownloadItem) => (
         <Text size="small" style={{ whiteSpace: "nowrap" }}>
-          {row.status === "completed" ? formatBytes(row.total_size) : `${formatBytes(row.downloaded)} / ${formatBytes(row.total_size)}`}
+          {row.total_size === 0 ? "—" : row.status === "completed" ? formatBytes(row.total_size) : `${formatBytes(row.downloaded)} / ${formatBytes(row.total_size)}`}
         </Text>
       ),
     },
@@ -203,6 +203,9 @@ export default function DownloadTable({
       width: "auto" as const,
       renderCell: (row: DownloadItem) => {
         const pct = row.total_size > 0 ? Math.round((row.downloaded / row.total_size) * 100) : 0;
+        if (row.total_size === 0) {
+          return <Text size="small" style={{ color: "var(--fgColor-muted, #656d76)" }}>—</Text>;
+        }
         if (row.status === "downloading") {
           return <Text size="small">{pct}{t("progress.percent")}</Text>;
         }

@@ -82,6 +82,11 @@ impl AppState {
                 if let Some(data) = &event.data {
                     if let Ok(downloaded) = data.parse::<u64>() {
                         self.runtime.update_progress(id, downloaded);
+                        // Real-time event so frontend doesn't wait for DB flush
+                        let _ = self.app_handle.emit("download-progress", serde_json::json!({
+                            "id": id,
+                            "downloaded": downloaded,
+                        }));
                     }
                 }
             }

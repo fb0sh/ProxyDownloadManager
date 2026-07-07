@@ -11,7 +11,7 @@ export default function AboutDialog({ onClose }: AboutDialogProps) {
     <Dialog title={t("about.title")} onClose={onClose}>
       <div style={{ padding: 16, textAlign: "center" }}>
         <Text weight="semibold" size="large" style={{ display: "block", marginBottom: 8 }}>
-          ProxyDM
+          ProxyDownloadManager
         </Text>
         <Text size="small" style={{ color: "var(--fgColor-muted, #656d76)", display: "block" }}>
           Version 0.1.0

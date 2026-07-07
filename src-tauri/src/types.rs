@@ -180,7 +180,7 @@ impl Default for Settings {
                 .to_string(),
             max_connections: 0, // 0 = auto
             max_retries: 10,
-            user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36 Edg/149.0.0.0".to_string(),
+            user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0".to_string(),
             launch_at_startup: false,
             proxies: std::collections::HashMap::new(),
             global_rate_limit: 0,

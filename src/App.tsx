@@ -97,11 +97,22 @@ function App() {
   useEffect(() => {
     const unlisten = listen("download-created", async () => {
       queryClient.invalidateQueries({ queryKey: ["downloads"] });
-      // Bring main window to front (it may be hidden to tray)
       try {
         const mainWin = await WebviewWindow.getByLabel("main");
         if (mainWin) { await mainWin.show(); await mainWin.setFocus(); }
       } catch {}
+    });
+    return () => { unlisten.then(f => f()); };
+  }, [queryClient]);
+
+  // Listen for real-time progress updates (avoid waiting for DB flush)
+  useEffect(() => {
+    const unlisten = listen<{id: number; downloaded: number}>("download-progress", (event) => {
+      const { id, downloaded } = event.payload;
+      queryClient.setQueryData<DownloadItem[]>(["downloads"], (old) => {
+        if (!old) return old;
+        return old.map((d) => d.id === id ? { ...d, downloaded } : d);
+      });
     });
     return () => { unlisten.then(f => f()); };
   }, [queryClient]);
