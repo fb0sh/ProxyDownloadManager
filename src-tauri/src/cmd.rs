@@ -48,6 +48,12 @@ impl AppState {
                 if let Ok(mut items) = self.db.list_downloads() {
                     if let Some(item) = items.iter_mut().find(|i| i.id == event.download_id) {
                         item.status = DownloadStatus::Completed;
+                        // Mark all parts as completed
+                        for part in item.parts.iter_mut() {
+                            if !matches!(part.status, PartStatus::Completed) {
+                                part.status = PartStatus::Completed;
+                            }
+                        }
                         let _ = self.db.update_download(item);
                     }
                 }
@@ -62,6 +68,12 @@ impl AppState {
                             return;
                         }
                         item.status = DownloadStatus::Failed(event.data.unwrap_or_default());
+                        // Mark downloading/pending parts as failed
+                        for part in item.parts.iter_mut() {
+                            if matches!(part.status, PartStatus::Pending | PartStatus::Downloading) {
+                                part.status = PartStatus::Failed(format!("download failed"));
+                            }
+                        }
                         let _ = self.db.update_download(item);
                     }
                 }
@@ -72,6 +84,12 @@ impl AppState {
                         if let Some(data) = &event.data {
                             if let Ok(downloaded) = data.parse::<u64>() {
                                 item.downloaded = downloaded;
+                                // Mark pending parts as downloading on first progress
+                                for part in item.parts.iter_mut() {
+                                    if matches!(part.status, PartStatus::Pending) {
+                                        part.status = PartStatus::Downloading;
+                                    }
+                                }
                                 let _ = self.db.update_download(item);
                             }
                         }
@@ -290,6 +308,32 @@ pub async fn start_download(
 
     let id = state.worker_pool.add(cfg).await?;
 
+    // Compute initial chunk layout for thread progress display
+    let parts = if supports_range && file_size > 0 {
+        let num_conns = if connections > 0 { connections.min(32) } else { 1 };
+        let min_chunk = 2u64 * 1024 * 1024; // 2MB
+        let tasks = crate::engine::chunk::compute_chunks(file_size, num_conns, min_chunk);
+        tasks.iter().enumerate().map(|(i, t)| DownloadPart {
+            index: i as u32,
+            start: t.offset,
+            end: t.offset + t.length,
+            downloaded: 0,
+            temp_path: String::new(),
+            status: PartStatus::Pending,
+            retries: 0,
+        }).collect()
+    } else {
+        vec![DownloadPart {
+            index: 0,
+            start: 0,
+            end: file_size,
+            downloaded: 0,
+            temp_path: String::new(),
+            status: PartStatus::Pending,
+            retries: 0,
+        }]
+    };
+
     let item = DownloadItem {
         id,
         url,
@@ -298,7 +342,7 @@ pub async fn start_download(
         total_size: file_size,
         downloaded: 0,
         status: DownloadStatus::Downloading,
-        parts: Vec::new(),
+        parts,
         proxy_name,
         connections,
         resumable: Some(supports_range),
