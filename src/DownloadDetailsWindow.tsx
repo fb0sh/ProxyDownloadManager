@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Text, Label, Button } from "@primer/react";
+import { Text, Label, Button, ProgressBar } from "@primer/react";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { invoke } from "@tauri-apps/api/core";
 import { formatBytes } from "./types";
@@ -213,6 +213,49 @@ export default function DownloadDetailsWindow() {
             </div>
           </div>
         </div>
+
+        {/* Threads section */}
+        {item.parts.length > 0 && (
+          <div style={sectionCard}>
+            <div style={sectionHeader}>Threads ({item.parts.length})</div>
+            <div style={sectionBody}>
+              {item.parts.map((part) => {
+                const partSize = part.end - part.start;
+                const partPct = partSize > 0 ? Math.round((part.downloaded / partSize) * 100) : 0;
+                const color = part.status === "completed" ? "var(--fgColor-success, #1a7f37)"
+                  : part.status === "downloading" ? "var(--fgColor-accent, #0969da)"
+                  : part.status === "failed" ? "var(--fgColor-danger, #cf222e)"
+                  : "var(--fgColor-muted, #656d76)";
+                return (
+                  <div key={part.index} style={{ display: "flex", flexDirection: "column", gap: 2, padding: "4px 0" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+                      <span>
+                        <span style={{ fontWeight: 600, color }}>#{part.index + 1}</span>
+                        <span style={{ color: "var(--fgColor-muted, #656d76)", marginLeft: 6 }}>
+                          {formatBytes(part.start)} – {formatBytes(part.end)}
+                        </span>
+                      </span>
+                      <span style={{ color: "var(--fgColor-muted, #656d76)" }}>
+                        {formatBytes(part.downloaded)} / {formatBytes(partSize)} · {partPct}%
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <div style={{ flex: 1 }}>
+                        <ProgressBar progress={Math.min(partPct, 100)} />
+                      </div>
+                      <Label
+                        variant={part.status === "completed" ? "success" : part.status === "downloading" ? "accent" : part.status === "failed" ? "danger" : "default"}
+                        style={{ fontSize: 10, lineHeight: "14px" }}
+                      >
+                        {part.status}{part.retries > 0 ? ` (${part.retries})` : ""}
+                      </Label>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
       </div>
     </div>
