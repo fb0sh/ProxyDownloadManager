@@ -5,11 +5,11 @@ use crate::config;
 use crate::log::Logger;
 use crate::icons::{IconCache, IconData};
 use crate::state::runtime::DownloadManagerState;
+use auto_launch::AutoLaunchBuilder;
 use std::process::Command as StdCommand;
-use tauri::State;
 use std::sync::Arc;
 use std::sync::Mutex;
-use tauri::Emitter;
+use tauri::{Emitter, Manager, State};
 
 pub struct AppState {
     pub db: Db,
@@ -514,10 +514,59 @@ pub fn save_settings(state: State<'_, Arc<AppState>>, settings: Settings) -> Res
     let old = crate::config::load();
     let tls_changed = old.danger_accept_invalid_certs != settings.danger_accept_invalid_certs;
     crate::config::save(&settings)?;
+    sync_autostart(&state.app_handle, settings.launch_at_startup, settings.silent_startup)?;
     if tls_changed {
         state.worker_pool.clear_clients();
     }
     Ok(())
+}
+
+fn sync_autostart(
+    app: &tauri::AppHandle,
+    launch_at_startup: bool,
+    silent_startup: bool,
+) -> Result<(), String> {
+    let mut builder = AutoLaunchBuilder::new();
+    builder.set_app_name(&app.package_info().name);
+
+    let args = if silent_startup {
+        vec![crate::SILENT_START_ARG]
+    } else {
+        Vec::new()
+    };
+    builder.set_args(&args);
+
+    let current_exe = std::env::current_exe().map_err(|e| e.to_string())?;
+
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(appimage) = app.env().appimage.and_then(|p| p.to_str().map(|s| s.to_string())) {
+            builder.set_app_path(&appimage);
+        } else {
+            builder.set_app_path(&current_exe.display().to_string());
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        builder.set_use_launch_agent(true);
+        let exe_path = current_exe
+            .canonicalize()
+            .map_err(|e| e.to_string())?
+            .display()
+            .to_string();
+        builder.set_app_path(&exe_path);
+    }
+
+    #[cfg(target_os = "windows")]
+    builder.set_app_path(&current_exe.display().to_string());
+
+    let autostart = builder.build().map_err(|e| e.to_string())?;
+    if launch_at_startup {
+        autostart.enable().map_err(|e| e.to_string())
+    } else {
+        autostart.disable().map_err(|e| e.to_string())
+    }
 }
 
 #[tauri::command]

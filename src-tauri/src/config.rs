@@ -65,6 +65,19 @@ mod tests {
     }
 
     #[test]
+    fn test_settings_missing_silent_startup_defaults_enabled() {
+        let toml_str = toml::to_string(&Settings::default()).unwrap();
+        let without_silent = toml_str
+            .lines()
+            .filter(|line| !line.starts_with("silent_startup"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let back: Settings = toml::from_str(&without_silent).unwrap();
+        assert!(back.silent_startup);
+    }
+
+    #[test]
     fn test_settings_default_serializable() {
         let s = Settings::default();
         let toml_str = toml::to_string(&s).unwrap();

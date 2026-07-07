@@ -52,6 +52,7 @@ export interface Settings {
   max_retries: number;
   user_agent: string;
   launch_at_startup: boolean;
+  silent_startup: boolean;
   proxies: Record<string, ProxyConfig>;
   global_rate_limit: number;
   default_proxy: string;

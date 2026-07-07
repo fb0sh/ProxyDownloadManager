@@ -161,6 +161,8 @@ pub struct Settings {
     pub max_retries: u32,
     pub user_agent: String,
     pub launch_at_startup: bool,
+    #[serde(default = "default_silent_startup")]
+    pub silent_startup: bool,
     pub proxies: std::collections::HashMap<String, ProxyConfig>,
     pub global_rate_limit: u64,
     pub default_proxy: String,
@@ -182,6 +184,7 @@ impl Default for Settings {
             max_retries: 10,
             user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0".to_string(),
             launch_at_startup: false,
+            silent_startup: default_silent_startup(),
             proxies: std::collections::HashMap::new(),
             global_rate_limit: 0,
             default_proxy: String::new(),
@@ -190,6 +193,10 @@ impl Default for Settings {
             danger_accept_invalid_certs: true,
         }
     }
+}
+
+fn default_silent_startup() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

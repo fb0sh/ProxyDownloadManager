@@ -73,6 +73,7 @@ const zh: Translations = {
     homeDir: "主目录",
     startup: "启动",
     launchStartup: "开机启动 ProxyDM",
+    silentStartup: "启动时静默到托盘",
     proxy: "代理",
     defaultProxy: "默认代理",
     none: "无",
