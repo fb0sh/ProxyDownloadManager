@@ -11,6 +11,7 @@ describe("settingsStore", () => {
         max_retries: 10,
         user_agent: "ProxyDM/0.1.0",
         launch_at_startup: false,
+        silent_startup: true,
         proxies: {},
         global_rate_limit: 0,
         default_proxy: "",
@@ -34,6 +35,7 @@ describe("settingsStore", () => {
       max_retries: 5,
       user_agent: "test",
       launch_at_startup: true,
+      silent_startup: false,
       proxies: {},
       global_rate_limit: 0,
       default_proxy: "",
@@ -45,6 +47,7 @@ describe("settingsStore", () => {
     expect(s.max_connections).toBe(16);
     expect(s.max_retries).toBe(5);
     expect(s.download_dir).toBe("/tmp/dl");
+    expect(s.silent_startup).toBe(false);
   });
 
   it("updateProxy adds a proxy", () => {

@@ -71,6 +71,7 @@ const en = {
     homeDir: "Home Directory",
     startup: "Startup",
     launchStartup: "Launch ProxyDM on sign in",
+    silentStartup: "Start silently in tray",
     proxy: "Proxy",
     defaultProxy: "Default Proxy",
     none: "None",

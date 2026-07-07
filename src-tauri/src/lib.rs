@@ -18,8 +18,11 @@ use std::sync::Mutex;
 use tauri::Manager;
 use tokio::sync::mpsc;
 
+pub(crate) const SILENT_START_ARG: &str = "--silent";
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let silent_start = std::env::args().any(|arg| arg == SILENT_START_ARG);
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
     let (request_tx, mut request_rx) = mpsc::unbounded_channel::<crate::types::PendingDownloadRequest>();
 
@@ -32,13 +35,14 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            let _ = app.get_webview_window("main")
-                       .expect("no main window")
-                       .show();
-            let _ = app.get_webview_window("main")
-                       .expect("no main window")
-                       .set_focus();
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if args.iter().any(|arg| arg == SILENT_START_ARG) {
+                return;
+            }
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -78,6 +82,10 @@ pub fn run() {
             let handle = app.handle();
             if let Some(window) = handle.get_webview_window("main") {
                 let _ = window.set_title(&format!("ProxyDownloadManager {}", handle.package_info().version));
+                if !silent_start {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
                 let win = window.clone();
                 window.on_window_event(move |event| {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
