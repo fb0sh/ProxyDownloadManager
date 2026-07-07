@@ -127,25 +127,26 @@ function App() {
   // Listen for notification clicks
   useEffect(() => {
     let unreg: PluginListener | null = null;
+    let cancelled = false;
     (async () => {
       const mod = await import("@tauri-apps/plugin-notification");
       unreg = await mod.onAction(async (notification) => {
+        if (cancelled) return;
         const extra = (notification as any)?.extra;
         const id = extra?.downloadId;
         const ntype = extra?.type;
+        console.log("[ProxyDM FE] Notification clicked:", ntype, id, extra);
         if (ntype === "started") {
-          // Download started → show main window
           try {
             const mainWin = await WebviewWindow.getByLabel("main");
             if (mainWin) { await mainWin.show(); await mainWin.setFocus(); }
           } catch {}
         } else if (id) {
-          // Completed / error → open details window
           openDownloadDetailsWindow(Number(id));
         }
       });
     })();
-    return () => { if (unreg) { unreg.unregister(); } };
+    return () => { cancelled = true; if (unreg) { unreg.unregister(); } };
   }, [openDownloadDetailsWindow]);
 
   async function sendDownloadNotification(id: number, title: string, body?: string, ntype?: string) {
