@@ -1,6 +1,10 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { ThemeProvider, BaseStyles } from "@primer/react";
+import { ThemeProvider, BaseStyles, Text } from "@primer/react";
+import {
+  DownloadIcon, PlugIcon, ShieldIcon,
+  BrowserIcon, PasteIcon, SyncIcon,
+} from "@primer/octicons-react";
 import { setLanguage, t } from "../src/i18n";
 import { useSettingsStore } from "../src/stores/settingsStore";
 import {
@@ -12,8 +16,9 @@ import SettingsDialog from "../src/components/dialogs/SettingsDialog";
 import AboutDialog from "../src/components/dialogs/AboutDialog";
 import LogDialog from "../src/components/dialogs/LogDialog";
 import ExtensionDialog from "../src/components/dialogs/ExtensionDialog";
+import NewDownloadDialog from "../src/components/dialogs/NewDownloadDialog";
+import PropertiesDialog from "../src/components/dialogs/PropertiesDialog";
 import type { DownloadItem } from "../src/types";
-import { invoke } from "@tauri-apps/api/core";
 
 /* ─── React Query client ────────────────────────────────────────────── */
 const queryClient = new QueryClient({
@@ -28,6 +33,8 @@ type Dialog =
   | { type: "about" }
   | { type: "extension" }
   | { type: "log" }
+  | { type: "newDownload"; url?: string }
+  | { type: "properties"; id: number }
   | null;
 
 function AppInner() {
@@ -49,31 +56,10 @@ function AppInner() {
     }
   }, [loadedSettings, setSettings]);
 
-  /* ── Demo event simulation ──────────────────────────────────────── */
-  const handleNewDownload = useCallback(async () => {
-    const url = prompt(t("newDownload.url"));
-    if (!url) return;
-    try {
-      const filename = url.split("/").pop() || "download";
-      await invoke("start_download", { url, filename, proxyName: "", connections: 4, savePath: "/Downloads" });
-      queryClient.invalidateQueries({ queryKey: ["downloads"] });
-    } catch {}
-  }, []);
-
-  const handleRedownload = useCallback(async (item: DownloadItem) => {
-    try {
-      await redownloadDownload.mutateAsync(item.id);
-    } catch {}
-  }, [redownloadDownload]);
-
-  const handleProperties = useCallback((_id: number) => {
-    // no separate window in demo — inline is fine
-  }, []);
-
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
       <Layout
-        onNewDownload={handleNewDownload}
+        onNewDownload={() => setDialog({ type: "newDownload" })}
         onExtension={() => setDialog({ type: "extension" })}
         onLog={() => setDialog({ type: "log" })}
         onSettings={() => setDialog({ type: "settings" })}
@@ -84,8 +70,8 @@ function AppInner() {
         onDeleteSelected={() => setDialog({ type: "delete", ids: Array.from(selectedIds) })}
         onStop={(id) => pauseDownload.mutate(id)}
         onDelete={(ids) => setDialog({ type: "delete", ids })}
-        onProperties={handleProperties}
-        onRedownload={handleRedownload}
+        onProperties={(id) => setDialog({ type: "properties", id })}
+        onRedownload={async (item) => { try { await redownloadDownload.mutateAsync(item.id); } catch {} }}
         onRedownloadItem={
           selectedIds.size === 1
             ? downloads.find(d => selectedIds.has(d.id) && (d.status === "completed" || d.status.startsWith("failed")))
@@ -101,14 +87,20 @@ function AppInner() {
         <DeleteDialog ids={dialog.ids} onClose={() => { setDialog(null); setSelectedIds(new Set()); }} />
       )}
       {dialog?.type === "settings" && <SettingsDialog onClose={() => setDialog(null)} />}
-      {dialog?.type === "about" && <AboutDialog onClose={() => setDialog(null)} onDownloadUpdate={(url) => invoke("start_download", { url, filename: "", proxyName: "", connections: 4, savePath: "/Downloads" })} />}
+      {dialog?.type === "about" && <AboutDialog onClose={() => setDialog(null)} onDownloadUpdate={() => {}} />}
       {dialog?.type === "extension" && <ExtensionDialog onClose={() => setDialog(null)} />}
       {dialog?.type === "log" && <LogDialog onClose={() => setDialog(null)} />}
+      {dialog?.type === "newDownload" && (
+        <NewDownloadDialog onClose={() => setDialog(null)} initialUrl={dialog.url || ""} />
+      )}
+      {dialog?.type === "properties" && (
+        <PropertiesDialog id={dialog.id} onClose={() => setDialog(null)} />
+      )}
     </div>
   );
 }
 
-/* ─── Page shell with hero, features, etc. ──────────────────────────── */
+/* ─── Page shell ────────────────────────────────────────────────────── */
 
 const pageStyles = `
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -117,7 +109,7 @@ const pageStyles = `
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
     -webkit-font-smoothing: antialiased;
   }
-  a { color: #58a6ff; text-decoration: none; }
+  a { color: #0969da; text-decoration: none; }
   a:hover { text-decoration: underline; }
   .app-window {
     border: 1px solid #d0d7de;
@@ -125,7 +117,7 @@ const pageStyles = `
     overflow: hidden;
     box-shadow: 0 4px 24px rgba(0,0,0,0.08);
     background: #fff;
-    height: 480px;
+    height: 520px;
   }
   @keyframes fadeUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
   .anim-fade { animation: fadeUp 0.5s ease both; }
@@ -133,6 +125,12 @@ const pageStyles = `
   .anim-fade-2 { animation: fadeUp 0.5s 0.2s ease both; }
   .anim-fade-3 { animation: fadeUp 0.5s 0.3s ease both; }
 `;
+
+type Feature = {
+  icon: typeof DownloadIcon;
+  title: string;
+  desc: string;
+};
 
 function Page() {
   const [scrolled, setScrolled] = useState(false);
@@ -142,13 +140,37 @@ function Page() {
     return () => window.removeEventListener("scroll", f);
   }, []);
 
-  const features = [
-    { icon: "⬇️", title: "多线程下载", desc: "单任务最高 32 线程并行，自动根据文件大小调整连接数，充分利用带宽。" },
-    { icon: "🔁", title: "断点续传", desc: "支持 HTTP Range 请求，中断后自动恢复，无需从头开始。" },
-    { icon: "🔒", title: "代理支持", desc: "HTTP / SOCKS5 代理，支持全局代理和每下载独立代理。" },
-    { icon: "🧩", title: "浏览器扩展", desc: "Chrome / Edge / Firefox 扩展，一键拦截下载并交由 ProxyDownloadManager 接管。" },
-    { icon: "📋", title: "剪贴板监测", desc: "自动检测剪贴板中的下载链接，弹出新建下载窗口。" },
-    { icon: "⚡", title: "系统集成", desc: "托盘驻留、开机自启、通知推送、文件关联。" },
+  const features: Feature[] = [
+    {
+      icon: ShieldIcon,
+      title: "每下载独立代理",
+      desc: "每个下载任务可单独选择代理，支持 HTTP / SOCKS5 协议。同时维护多个代理候选列表，下载失败时自动切换候选代理，无需中断任务。",
+    },
+    {
+      icon: DownloadIcon,
+      title: "多线程并发",
+      desc: "单任务最高 32 线程并行下载，自动根据文件大小和网络状况调整并发数，大幅提升下载速度。",
+    },
+    {
+      icon: BrowserIcon,
+      title: "浏览器扩展联动",
+      desc: "Chrome / Edge / Firefox 扩展一键安装。右键菜单或自动拦截下载链接，URL 实时发送到桌面端，浏览器后台无需保持打开。",
+    },
+    {
+      icon: SyncIcon,
+      title: "断点续传 & 重试",
+      desc: "支持 HTTP Range 请求，中断后自动恢复。多候选代理 + 多 User-Agent 轮询，下载失败自动切换重试，无需人工干预。",
+    },
+    {
+      icon: PasteIcon,
+      title: "剪贴板智能监测",
+      desc: "自动识别剪贴板中的下载链接，弹出新建下载窗口。支持批量监测，无需手动粘贴。",
+    },
+    {
+      icon: PlugIcon,
+      title: "系统深度集成",
+      desc: "托盘驻留后台下载、开机自启、系统通知推送、文件关联。macOS 菜单栏模式，Windows / Linux 系统托盘，体验原生。",
+    },
   ];
 
   return (
@@ -177,7 +199,7 @@ function Page() {
               display: "inline-flex", alignItems: "center", gap: 6,
               padding: "6px 14px", borderRadius: 6, fontSize: 14, fontWeight: 600,
               background: "#1f883d", color: "#fff", border: "1px solid #1a7f37",
-            }}>⬇️ 下载</span>
+            }}><DownloadIcon size={16} /> 下载</span>
           </a>
           <a href="https://github.com/fb0sh/ProxyDownloadManager" target="_blank" rel="noreferrer">
             <span style={{
@@ -209,11 +231,12 @@ function Page() {
             v0.5.0 — 多线程下载管理器
           </div>
           <h1 style={{ fontSize: 44, fontWeight: 800, letterSpacing: "-0.03em", marginBottom: 16, color: "#1f2328", lineHeight: 1.2 }}>
-            让下载快人一步
+            每个下载都选对代理
           </h1>
-          <p style={{ fontSize: 18, color: "#656d76", maxWidth: 520, margin: "0 auto 32px", lineHeight: 1.6 }}>
-            ProxyDownloadManager 是一款开源的多线程下载工具，支持代理、断点续传、浏览器集成。
-            基于 Rust + Tauri 构建，兼具性能与优雅的桌面体验。
+          <p style={{ fontSize: 18, color: "#656d76", maxWidth: 560, margin: "0 auto 32px", lineHeight: 1.6 }}>
+            ProxyDownloadManager 是一款开源下载工具。
+            每个任务可独立选择 HTTP / SOCKS5 代理，支持多候选代理自动切换。
+            浏览器扩展一键拦截，多线程并发加速，断点续传不中断。
           </p>
           <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
             <a href="https://github.com/fb0sh/ProxyDownloadManager/releases/latest" target="_blank" rel="noreferrer">
@@ -221,7 +244,7 @@ function Page() {
                 display: "inline-flex", alignItems: "center", gap: 8,
                 padding: "12px 28px", borderRadius: 8, fontSize: 16, fontWeight: 600,
                 background: "#1f883d", color: "#fff", border: "1px solid #1a7f37",
-              }}>⬇️ 下载 ProxyDownloadManager</span>
+              }}><DownloadIcon size={18} /> 下载 ProxyDownloadManager</span>
             </a>
             <a href="https://github.com/fb0sh/ProxyDownloadManager" target="_blank" rel="noreferrer">
               <span style={{
@@ -244,9 +267,9 @@ function Page() {
             实际体验
           </h2>
           <p style={{ textAlign: "center", color: "#656d76", marginBottom: 32, fontSize: 15 }}>
-            下方是完整的 ProxyDownloadManager 交互界面，直接操作试试
+            完整的 ProxyDownloadManager 界面，直接操作试试
           </p>
-          <div className="anim-fade-1 app-window" style={{ height: 520 }}>
+          <div className="anim-fade-1 app-window">
             <QueryClientProvider client={queryClient}>
               <ThemeProvider colorMode="day">
                 <BaseStyles>
@@ -261,21 +284,28 @@ function Page() {
       {/* ── Features ── */}
       <section style={{ padding: "60px 24px", maxWidth: 940, margin: "0 auto" }}>
         <h2 className="anim-fade" style={{ fontSize: 28, fontWeight: 700, marginBottom: 40, color: "#1f2328", textAlign: "center" }}>
-          功能特性
+          核心特性
         </h2>
-        <div style={{
-          display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12,
-        }}>
-          {features.map((f, i) => (
-            <div key={f.title} className={`anim-fade-${i % 4}`} style={{
-              padding: 20, borderRadius: 8, border: "1px solid #d0d7de",
-              background: "#fff", transition: "all 0.2s",
-            }}>
-              <div style={{ fontSize: 28, marginBottom: 8 }}>{f.icon}</div>
-              <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 6, color: "#1f2328" }}>{f.title}</div>
-              <div style={{ fontSize: 13, color: "#656d76", lineHeight: 1.6 }}>{f.desc}</div>
-            </div>
-          ))}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 16 }}>
+          {features.map((f, i) => {
+            const IconEl = f.icon;
+            return (
+              <div key={f.title} className={`anim-fade-${i % 4}`} style={{
+                padding: 24, borderRadius: 8, border: "1px solid #d0d7de",
+                background: "#fff", transition: "all 0.2s",
+              }}>
+                <div style={{ color: "#1f883d", marginBottom: 12 }}>
+                  <IconEl size={24} />
+                </div>
+                <Text weight="semibold" style={{ display: "block", marginBottom: 6, fontSize: 15, color: "#1f2328" }}>
+                  {f.title}
+                </Text>
+                <Text size="small" style={{ color: "#656d76", lineHeight: 1.6, display: "block" }}>
+                  {f.desc}
+                </Text>
+              </div>
+            );
+          })}
         </div>
       </section>
 
@@ -287,9 +317,9 @@ function Page() {
           </h2>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center" }}>
             {[
-              ["Tauri 2", "桌面框架"], ["React 19", "前端"], ["Primer React", "UI"],
-              ["Rust", "后端"], ["Tokio", "异步"], ["reqwest", "HTTP"],
-              ["SQLite", "存储"], ["TypeScript", "类型安全"],
+              ["Tauri 2", "桌面框架"], ["React 19", "前端"], ["Primer React", "UI 组件"],
+              ["Rust", "后端引擎"], ["Tokio", "异步运行时"], ["reqwest", "HTTP 客户端"],
+              ["SQLite", "任务存储"], ["TypeScript", "类型安全"],
             ].map(([name, desc]) => (
               <span key={name} style={{
                 display: "inline-flex", gap: 4, padding: "6px 12px", borderRadius: 6,
@@ -307,13 +337,15 @@ function Page() {
       <section style={{ padding: "60px 24px 80px", textAlign: "center" }}>
         <div className="anim-fade">
           <h2 style={{ fontSize: 28, fontWeight: 700, marginBottom: 16, color: "#1f2328" }}>立即开始使用</h2>
-          <p style={{ color: "#656d76", marginBottom: 28, fontSize: 15 }}>免费、开源、跨平台。下载 ProxyDownloadManager，体验更高效的下载方式。</p>
+          <p style={{ color: "#656d76", marginBottom: 28, fontSize: 15 }}>
+            免费、开源、跨平台。每下载独立选代理，多候选自动切换。
+          </p>
           <a href="https://github.com/fb0sh/ProxyDownloadManager/releases/latest" target="_blank" rel="noreferrer">
             <span style={{
               display: "inline-flex", alignItems: "center", gap: 8,
               padding: "12px 28px", borderRadius: 8, fontSize: 16, fontWeight: 600,
               background: "#1f883d", color: "#fff", border: "1px solid #1a7f37",
-            }}>⬇️ 下载 ProxyDownloadManager</span>
+            }}><DownloadIcon size={18} /> 下载 ProxyDownloadManager</span>
           </a>
         </div>
       </section>
