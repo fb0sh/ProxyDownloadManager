@@ -5,6 +5,13 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-08
+
+### CI
+
+- Linux 构建合并为一次编译 — `--bundles deb,appimage,rpm` 避免三次重复编译
+- Release 页面使用 `CHANGELOG.md` 内容替代自动生成的 PR 标题
+
 ## [0.4.1] - 2026-07-08
 
 ### Fixed
