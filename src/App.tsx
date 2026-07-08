@@ -171,27 +171,44 @@ function App() {
     return () => { cancelled = true; if (unreg) { unreg.unregister(); } };
   }, [openDownloadDetailsWindow]);
 
-  async function sendDownloadNotification(id: number, title: string, body?: string, ntype?: string) {
+  async function sendDownloadNotification(id: number, title: string, body?: string, _ntype?: string) {
+    // Try Tauri plugin notification first
     try {
-      const { sendNotification, isPermissionGranted, requestPermission } =
+      const { isPermissionGranted, requestPermission, sendNotification } =
         await import("@tauri-apps/plugin-notification");
-      let ok = await isPermissionGranted();
+      const ok = await isPermissionGranted();
       if (!ok) {
         const perm = await requestPermission();
-        ok = perm === "granted";
+        if (perm !== "granted") {
+          console.warn("[ProxyDM FE] notification permission denied");
+          return;
+        }
       }
-      if (ok) {
-        const items = await invoke("list_downloads");
-        const itemsArr = items as Array<{ file_name: string; id: number }>;
-        const item = itemsArr.find((d) => d.id === id);
-        sendNotification({
-          title,
-          body: body ?? item?.file_name ?? `Download #${id}`,
-          autoCancel: true,
-          extra: { downloadId: id, type: ntype ?? "" },
-        });
+      // Look up filename for body — don't block notification if it fails
+      let fileName: string | undefined = body;
+      if (!fileName) {
+        try {
+          const items = await invoke("list_downloads") as Array<{ file_name: string; id: number }>;
+          fileName = items.find((d) => d.id === id)?.file_name;
+        } catch (e) {
+          console.warn("[ProxyDM FE] list_downloads for notification failed:", e);
+        }
       }
-    } catch {}
+      sendNotification({
+        title,
+        body: fileName ?? `Download #${id}`,
+      });
+      console.log("[ProxyDM FE] notification sent:", title, fileName);
+    } catch (e) {
+      // Fallback: Web Notification API directly
+      try {
+        if (window.Notification.permission === "granted") {
+          new window.Notification(title, { body: body ?? `Download #${id}` });
+        }
+      } catch (e2) {
+        console.warn("[ProxyDM FE] notification failed:", e, e2);
+      }
+    }
   }
 
   // Listen for download started → system notification
