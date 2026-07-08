@@ -5,6 +5,8 @@
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-08
+
 ### Fixed
 
 - 修复主窗口重新获得焦点时下载列表不刷新的问题 — 添加 Tauri 原生 focus 事件监听和 `refetchIntervalInBackground`
@@ -17,11 +19,21 @@
 - 全链路日志增强 — Rust 后端（engine、worker、probe、pool、config、cmd）、前端组件生命周期、浏览器扩展 WebSocket 生命周期均添加结构化日志
 - `Db::max_id()` 方法 — 用于跨重启持久化 ID 计数器
 - `filename_from_url()` 三策略文件名提取：路径提取、query 参数 `filename=` 扫描、全文 `name.ext` 兜底
+- About 对话框显示新版本的更新内容（GitHub Release body）
 
 ### Changed
 
 - `WorkerPool::new()` 接受 `next_id_start` 参数替代硬编码的 `1`
 - `NewDownloadDialog` 提交成功后也 `emit("download-created")`，与 `NewDownloadWindow` 行为一致
+
+### Docs
+
+- 新增 AGENTS.md — AI 开发工作流规范（任务流程、提交前校验、Changelog 纪律、授权规则）
+- 新增 CHANGELOG.md — 中文更新日志
+
+### CI
+
+- 新增 check.yml — PR 提交时自动执行 TypeScript 类型检查 + Rust check/test + 前端测试（不构建安装包）
 
 ## [0.4.0] - 2026-07-08
 
