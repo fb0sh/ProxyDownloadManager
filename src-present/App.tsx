@@ -165,8 +165,8 @@ function Page() {
     },
     {
       icon: DownloadIcon,
-      title: "多线程并发",
-      desc: "单任务最高 32 线程并行下载，自动根据文件大小和网络状况调整并发数，大幅提升下载速度。",
+      title: "多代理并发",
+      desc: "单任务最高 64 线程并行下载，自动根据文件大小和网络状况调整并发数，大幅提升下载速度。",
     },
     {
       icon: BrowserIcon,
@@ -245,7 +245,7 @@ function Page() {
             marginBottom: 20,
           }}>
             <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#1f883d", display: "inline-block" }} />
-            v0.5.0 — 多线程下载管理器
+            v0.5.0 — 多代理下载管理器
           </div>
           <h1 className="hero-title" style={{ fontSize: 44, fontWeight: 800, letterSpacing: "-0.03em", marginBottom: 16, color: "#1f2328", lineHeight: 1.2 }}>
             每个下载都选对代理
@@ -253,7 +253,7 @@ function Page() {
           <p className="hero-sub" style={{ fontSize: 18, color: "#656d76", maxWidth: 560, margin: "0 auto 32px", lineHeight: 1.6 }}>
             ProxyDownloadManager 是一款开源下载工具。
             每个任务可独立选择 HTTP / SOCKS5 代理，支持多候选代理自动切换。
-            浏览器扩展一键拦截，多线程并发加速，断点续传不中断。
+            浏览器扩展一键拦截，多代理并发加速，断点续传不中断。
           </p>
           <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
             <a href="https://github.com/fb0sh/ProxyDownloadManager/releases/latest" target="_blank" rel="noreferrer">
