@@ -5,6 +5,19 @@
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-07-08
+
+### Fixed
+
+- 系统通知不再被 `list_downloads` 查询失败阻塞，添加错误日志和 Web API 兜底
+- 通知 `sendDownloadNotification` 不再使用空的 `catch {}` 吞掉错误
+
+### Added
+
+- 产品展示页 `src-present/`（独立 GitHub Pages 项目）
+- 在线演示部署 CI（`.github/workflows/pages.yml`）
+- 移动端适配：横向滚动演示窗口、响应式字体和布局
+
 ## [0.5.0] - 2026-07-08
 
 ### CI
