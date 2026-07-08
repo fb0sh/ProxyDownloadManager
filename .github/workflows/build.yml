@@ -132,8 +132,8 @@ jobs:
       - name: Install JS deps
         run: pnpm install --frozen-lockfile
 
-      - name: Build .deb
-        run: pnpm tauri build --bundles deb
+      - name: Build all Linux bundles
+        run: pnpm tauri build --bundles deb,appimage,rpm
 
       - name: Upload .deb
         uses: actions/upload-artifact@v4
@@ -142,18 +142,12 @@ jobs:
           path: src-tauri/target/release/bundle/deb/*.deb
           if-no-files-found: warn
 
-      - name: Build .AppImage
-        run: pnpm tauri build --bundles appimage
-
       - name: Upload .AppImage
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.APP_NAME }}-linux-appimage
           path: src-tauri/target/release/bundle/appimage/*.AppImage
           if-no-files-found: warn
-
-      - name: Build .rpm
-        run: pnpm tauri build --bundles rpm
 
       - name: Upload .rpm
         uses: actions/upload-artifact@v4
