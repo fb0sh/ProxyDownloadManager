@@ -12,6 +12,7 @@ export function useDownloads() {
     queryKey: DOWNLOADS_KEY,
     queryFn: listDownloads,
     refetchInterval: 1000,
+    refetchIntervalInBackground: true,
   });
 }
 

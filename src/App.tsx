@@ -13,6 +13,7 @@ import { useSettingsStore } from "./stores/settingsStore";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { setLanguage, t } from "./i18n";
 import type { DownloadItem } from "./types";
 
@@ -224,6 +225,25 @@ function App() {
     });
     return () => { unlisten.then(f => f()); };
   }, []);
+
+  // Refresh download list when the main window gains focus
+  // (Tauri WebView doesn't fire browser focus events, so TanStack Query's
+  //  refetchOnWindowFocus won't work — we listen for the native Tauri event)
+  useEffect(() => {
+    let unreg: (() => void) | null = null;
+    let cancelled = false;
+    (async () => {
+      const unlisten = await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+        if (cancelled) return;
+        if (focused) {
+          console.log('[ProxyDM FE] window focused, invalidating downloads query');
+          queryClient.invalidateQueries({ queryKey: ["downloads"] });
+        }
+      });
+      if (!cancelled) unreg = unlisten;
+    })();
+    return () => { cancelled = true; if (unreg) unreg(); };
+  }, [queryClient]);
 
   // Update existing Properties dialog to open as separate window
   const handleProperties = useCallback((id: number) => {

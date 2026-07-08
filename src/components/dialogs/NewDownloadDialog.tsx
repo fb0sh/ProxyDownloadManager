@@ -92,6 +92,11 @@ export default function NewDownloadDialog({ initialUrl = "", onClose }: NewDownl
 
     try {
       await startDownload.mutateAsync({ url, filename, proxyName, connections, savePath });
+      // Notify main window to refresh download list
+      try {
+        const { emit } = await import("@tauri-apps/api/event");
+        await emit("download-created");
+      } catch {}
       onClose();
     } catch (err) {
       console.error("Download failed:", err);
