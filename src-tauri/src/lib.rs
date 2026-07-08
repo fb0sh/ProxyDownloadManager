@@ -47,6 +47,12 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
+            // macOS: deploy bundled browser extensions to ~/Library/Application Support/<id>/extensions/
+            #[cfg(target_os = "macos")]
+            if let Err(e) = crate::cmd::deploy_extensions(app.handle()) {
+                eprintln!("[ProxyDM] Failed to deploy browser extensions: {}", e);
+            }
+
             let _ = crate::tray::build_tray(app.handle());
 
             let icon_cache = crate::icons::IconCache::new();

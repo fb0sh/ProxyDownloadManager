@@ -752,27 +752,116 @@ fn compare_versions(a: &str, b: &str) -> i32 {
     0
 }
 
-fn resolve_extensions_dir(app: &tauri::AppHandle) -> Result<String, String> {
-    // Production: extensions are bundled via bundle.resources into the resource dir
-    if let Ok(resource_dir) = app.path().resource_dir() {
+/// Deploy bundled browser extensions to the app's data directory.
+/// On macOS, extensions live in ~/Library/Application Support/<id>/extensions/
+/// so users can easily browse to them in Finder for manual extension loading.
+/// On other platforms, the resource-bundled path is used directly.
+pub(crate) fn deploy_extensions(app: &tauri::AppHandle) -> Result<String, String> {
+    // Source: bundled resource dir (inside .app bundle in production, or dev tree)
+    let src_dir = if let Ok(resource_dir) = app.path().resource_dir() {
         let ext_dir = resource_dir.join("extensions");
         if ext_dir.exists() {
-            return Ok(ext_dir.to_string_lossy().to_string());
+            ext_dir
+        } else {
+            // Dev fallback
+            let dev = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .map(|p| p.join("browsers-extension"));
+            match dev {
+                Some(p) if p.exists() => p,
+                _ => return Err("Extensions source directory not found".to_string()),
+            }
         }
+    } else {
+        return Err("Cannot resolve resource directory".to_string());
+    };
+
+    #[cfg(target_os = "macos")]
+    {
+        let app_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let target_dir = app_dir.join("extensions");
+
+        // Only copy if target doesn't exist yet
+        if !target_dir.exists() {
+            std::fs::create_dir_all(&target_dir).map_err(|e| e.to_string())?;
+
+            for entry in std::fs::read_dir(&src_dir).map_err(|e| e.to_string())? {
+                let entry = entry.map_err(|e| e.to_string())?;
+                let name = entry.file_name();
+                let src = entry.path();
+                let dst = target_dir.join(&name);
+
+                if src.is_dir() {
+                    let _ = std::fs::remove_dir_all(&dst);
+                    copy_dir_recursive(&src, &dst)?;
+                } else {
+                    let _ = std::fs::copy(&src, &dst);
+                }
+            }
+        }
+
+        return Ok(target_dir.to_string_lossy().to_string());
     }
 
-    // Dev fallback: resolve relative to src-tauri/
-    let dev_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .map(|p| p.join("browsers-extension"));
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(src_dir.to_string_lossy().to_string())
+    }
+}
 
-    if let Some(path) = dev_path {
-        if path.exists() {
-            return Ok(path.to_string_lossy().to_string());
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
+    std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+    for entry in std::fs::read_dir(src).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let ty = entry.file_type().map_err(|e| e.to_string())?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            let _ = std::fs::copy(&src_path, &dst_path);
         }
     }
+    Ok(())
+}
 
-    Err("Extensions directory not found. The browser extensions may not have been bundled. Try reinstalling the application.".to_string())
+fn resolve_extensions_dir(app: &tauri::AppHandle) -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    {
+        // macOS: point to the deployed copy in Application Support
+        if let Ok(app_dir) = app.path().app_data_dir() {
+            let ext_dir = app_dir.join("extensions");
+            if ext_dir.exists() {
+                return Ok(ext_dir.to_string_lossy().to_string());
+            }
+        }
+        // Fallback: try deploying now
+        return deploy_extensions(app);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Other platforms: use the resource-bundled path directly
+        if let Ok(resource_dir) = app.path().resource_dir() {
+            let ext_dir = resource_dir.join("extensions");
+            if ext_dir.exists() {
+                return Ok(ext_dir.to_string_lossy().to_string());
+            }
+        }
+
+        // Dev fallback: resolve relative to src-tauri/
+        let dev_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .map(|p| p.join("browsers-extension"));
+
+        if let Some(path) = dev_path {
+            if path.exists() {
+                return Ok(path.to_string_lossy().to_string());
+            }
+        }
+
+        Err("Extensions directory not found. The browser extensions may not have been bundled. Try reinstalling the application.".to_string())
+    }
 }
 
 #[tauri::command]
