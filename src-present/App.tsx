@@ -117,13 +117,30 @@ const pageStyles = `
     overflow: hidden;
     box-shadow: 0 4px 24px rgba(0,0,0,0.08);
     background: #fff;
+    width: 940px;
     height: 520px;
+    flex-shrink: 0;
+  }
+  .app-window-wrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    display: flex;
+    justify-content: center;
   }
   @keyframes fadeUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
   .anim-fade { animation: fadeUp 0.5s ease both; }
   .anim-fade-1 { animation: fadeUp 0.5s 0.1s ease both; }
   .anim-fade-2 { animation: fadeUp 0.5s 0.2s ease both; }
   .anim-fade-3 { animation: fadeUp 0.5s 0.3s ease both; }
+
+  @media (max-width: 768px) {
+    .hero-title { font-size: 28px !important; }
+    .hero-sub { font-size: 15px !important; }
+    .section-title { font-size: 22px !important; }
+    .nav-links { gap: 4px !important; }
+    .nav-links a span { padding: 4px 10px !important; font-size: 12px !important; }
+    .app-window-wrap { justify-content: flex-start; }
+  }
 `;
 
 type Feature = {
@@ -193,7 +210,7 @@ function Page() {
           </svg>
           ProxyDownloadManager
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div className="nav-links" style={{ display: "flex", gap: 8 }}>
           <a href="https://github.com/fb0sh/ProxyDownloadManager/releases/latest" target="_blank" rel="noreferrer">
             <span style={{
               display: "inline-flex", alignItems: "center", gap: 6,
@@ -230,15 +247,15 @@ function Page() {
             <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#1f883d", display: "inline-block" }} />
             v0.5.0 — 多线程下载管理器
           </div>
-          <h1 style={{ fontSize: 44, fontWeight: 800, letterSpacing: "-0.03em", marginBottom: 16, color: "#1f2328", lineHeight: 1.2 }}>
+          <h1 className="hero-title" style={{ fontSize: 44, fontWeight: 800, letterSpacing: "-0.03em", marginBottom: 16, color: "#1f2328", lineHeight: 1.2 }}>
             每个下载都选对代理
           </h1>
-          <p style={{ fontSize: 18, color: "#656d76", maxWidth: 560, margin: "0 auto 32px", lineHeight: 1.6 }}>
+          <p className="hero-sub" style={{ fontSize: 18, color: "#656d76", maxWidth: 560, margin: "0 auto 32px", lineHeight: 1.6 }}>
             ProxyDownloadManager 是一款开源下载工具。
             每个任务可独立选择 HTTP / SOCKS5 代理，支持多候选代理自动切换。
             浏览器扩展一键拦截，多线程并发加速，断点续传不中断。
           </p>
-          <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
+          <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
             <a href="https://github.com/fb0sh/ProxyDownloadManager/releases/latest" target="_blank" rel="noreferrer">
               <span style={{
                 display: "inline-flex", alignItems: "center", gap: 8,
@@ -269,21 +286,23 @@ function Page() {
           <p style={{ textAlign: "center", color: "#656d76", marginBottom: 32, fontSize: 15 }}>
             完整的 ProxyDownloadManager 界面，直接操作试试
           </p>
-          <div className="anim-fade-1 app-window">
-            <QueryClientProvider client={queryClient}>
-              <ThemeProvider colorMode="day">
-                <BaseStyles>
-                  <AppInner />
-                </BaseStyles>
-              </ThemeProvider>
-            </QueryClientProvider>
+          <div className="anim-fade-1 app-window-wrap">
+            <div className="app-window">
+              <QueryClientProvider client={queryClient}>
+                <ThemeProvider colorMode="day">
+                  <BaseStyles>
+                    <AppInner />
+                  </BaseStyles>
+                </ThemeProvider>
+              </QueryClientProvider>
+            </div>
           </div>
         </div>
       </section>
 
       {/* ── Features ── */}
       <section style={{ padding: "60px 24px", maxWidth: 940, margin: "0 auto" }}>
-        <h2 className="anim-fade" style={{ fontSize: 28, fontWeight: 700, marginBottom: 40, color: "#1f2328", textAlign: "center" }}>
+        <h2 className="anim-fade section-title" style={{ fontSize: 28, fontWeight: 700, marginBottom: 40, color: "#1f2328", textAlign: "center" }}>
           核心特性
         </h2>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 16 }}>
