@@ -12,6 +12,7 @@ interface ExtensionDialogProps {
 type LoadState = "loading" | "loaded" | "error";
 
 export default function ExtensionDialog({ onClose }: ExtensionDialogProps) {
+  console.debug('[ProxyDM FE] ExtensionDialog mount');
   const [extDir, setExtDir] = useState<string>("");
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [copyLabel, setCopyLabel] = useState<string>(t("extension.copy"));

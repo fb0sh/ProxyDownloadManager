@@ -17,10 +17,13 @@ pub async fn probe(
     user_agents: &[String],
 ) -> Result<ProbeResult, String> {
     let client = pool.get_client(proxy);
+    eprintln!("[ProxyDM] probe start url={} proxy={:?} uas={}", url, proxy, user_agents.len());
 
     // Try each UA, return first success
     let mut first_err: Option<String> = None;
-    for ua in user_agents.iter().chain(std::iter::once(&String::new())) {
+    for (i, ua) in user_agents.iter().chain(std::iter::once(&String::new())).enumerate() {
+        eprintln!("[ProxyDM] probe attempt #{} ua_prefix={:?}...", i,
+            &ua[..ua.len().min(40)]);
         // Try Range first to detect 206 support
         let mut range_req = client.get(url);
         range_req = range_req.header("Range", "bytes=0-0");
@@ -109,6 +112,7 @@ pub async fn probe(
                     .unwrap_or_else(|| "download".to_string())
             });
 
+        eprintln!("[ProxyDM] probe SUCCESS ua#{} range={} size={} name={}", i, supports_range, file_size, file_name);
         return Ok(ProbeResult {
             supports_range,
             file_size,
@@ -117,8 +121,10 @@ pub async fn probe(
         });
     }
 
-    Err(match first_err {
-        Some(e) => format!("All probe attempts failed (first error: {})", e),
+    let err_msg = match first_err {
+        Some(ref e) => format!("All probe attempts failed (first error: {})", e),
         None => "All probe attempts failed".to_string(),
-    })
+    };
+    eprintln!("[ProxyDM] probe FAILED: {}", err_msg);
+    Err(err_msg)
 }

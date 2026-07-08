@@ -9,6 +9,7 @@ interface DeleteDialogProps {
 }
 
 export default function DeleteDialog({ ids, onClose }: DeleteDialogProps) {
+  console.debug('[ProxyDM FE] DeleteDialog mount ids=', ids);
   const deleteDownload = useDeleteDownload();
 
   const handleDelete = async (deleteFile: boolean) => {

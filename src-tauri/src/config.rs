@@ -36,6 +36,7 @@ pub fn save(settings: &Settings) -> Result<(), String> {
     }
     let content = toml::to_string(settings).map_err(|e| e.to_string())?;
     std::fs::write(&path, content).map_err(|e| e.to_string())?;
+    eprintln!("[ProxyDM] config saved to {:?}", path);
     Ok(())
 }
 

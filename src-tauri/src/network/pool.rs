@@ -22,6 +22,7 @@ impl NetworkPool {
         if let Some(client) = map.get(&key) {
             return client.clone();
         }
+        eprintln!("[ProxyDM] pool creating new client for proxy={}", key);
         let mut builder = reqwest::Client::builder()
             .pool_max_idle_per_host(128)
             .tcp_keepalive(Some(Duration::from_secs(60)))
@@ -32,6 +33,7 @@ impl NetworkPool {
 
         if let Some(proxy_str) = proxy_url {
             if let Ok(proxy) = Proxy::all(proxy_str) {
+                eprintln!("[ProxyDM] pool applying proxy: {}", proxy_str);
                 builder = builder.proxy(proxy);
             }
         }
@@ -43,6 +45,9 @@ impl NetworkPool {
 
     /// Clear cached clients so next get_client() rebuilds with current settings
     pub fn clear(&self) {
-        self.clients.lock().unwrap().clear();
+        let mut map = self.clients.lock().unwrap();
+        let count = map.len();
+        map.clear();
+        eprintln!("[ProxyDM] pool cleared {} cached client(s)", count);
     }
 }

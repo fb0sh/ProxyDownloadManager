@@ -50,14 +50,20 @@ function statusColor(s: string): "success" | "danger" | "attention" | "accent" |
 }
 
 export default function DownloadDetailsWindow() {
+  console.log('[ProxyDM FE] DownloadDetailsWindow mount');
   const [item, setItem] = useState<DownloadItem | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const p = new URLSearchParams(window.location.search);
     const id = p.get("id");
+    console.log('[ProxyDM FE] DownloadDetailsWindow id=', id);
     if (id) invoke<DownloadItem[]>("list_downloads")
-      .then((items) => { setItem(items.find((d) => d.id === Number(id)) ?? null); setLoading(false); })
+      .then((items) => {
+        const found = items.find((d) => d.id === Number(id)) ?? null;
+        console.log('[ProxyDM FE] DownloadDetailsWindow found:', found?.file_name, found?.status);
+        setItem(found); setLoading(false);
+      })
       .catch(() => setLoading(false));
     else setLoading(false);
   }, []);

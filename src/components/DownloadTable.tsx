@@ -43,6 +43,7 @@ export default function DownloadTable({
   onStop, onDelete, onProperties, onRedownload,
 }: DownloadTableProps) {
   const { data: downloads = [], isLoading } = useDownloads();
+  console.debug('[ProxyDM FE] DownloadTable render filter=', filter, 'count=', downloads.length);
   const filtered = applyFilter(downloads, filter);
   const speeds = useDownloadSpeed(filtered);
   const icons = useFileIcons(filtered);

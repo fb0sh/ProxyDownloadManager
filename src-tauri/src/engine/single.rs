@@ -17,6 +17,7 @@ impl SingleDownloader {
     }
 
     pub async fn download(&self, cfg: &DownloadConfig, limiter: Arc<MultiLimiter>, cancel: Arc<AtomicBool>) -> Result<(), String> {
+        eprintln!("[ProxyDM] single id={} url={}", cfg.id, cfg.url);
         let mut req = self.pool
             .get_client(if cfg.proxy_name.is_empty() { None } else { Some(&cfg.proxy_name) })
             .get(&cfg.url);
@@ -33,8 +34,11 @@ impl SingleDownloader {
                     msg.push_str(&format!(": {}", s));
                     src = s.source();
                 }
+                eprintln!("[ProxyDM] single id={} REQUEST ERROR: {}", cfg.id, msg);
                 msg
             })?;
+        eprintln!("[ProxyDM] single id={} HTTP {} size={}", cfg.id, resp.status(),
+            resp.headers().get("content-length").and_then(|v| v.to_str().ok()).unwrap_or("?"));
 
         if cancel.load(Ordering::Relaxed) {
             return Err("Cancelled".to_string());
@@ -109,6 +113,8 @@ impl SingleDownloader {
             total += buf.len() as u64;
         }
         file.flush().map_err(|e| format!("Flush error: {}", e))?;
+
+        eprintln!("[ProxyDM] single id={} done total={} bytes", cfg.id, total);
 
         // Final progress update so UI reaches 100%
         let _ = self.event_tx.send(Event {

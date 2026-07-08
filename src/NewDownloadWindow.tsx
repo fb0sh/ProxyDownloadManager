@@ -62,6 +62,7 @@ const sectionBody: React.CSSProperties = {
 };
 
 export default function NewDownloadWindow() {
+  console.log('[ProxyDM FE] NewDownloadWindow mount');
   const settings = useSettingsStore((s) => s.settings);
   const proxies = settings.proxies;
   const startDownload = useStartDownload();
@@ -99,9 +100,11 @@ export default function NewDownloadWindow() {
     let cancelled = false;
     (async () => {
       const { listen } = await import("@tauri-apps/api/event");
+      console.log('[ProxyDM FE] NewDownloadWindow listening for new-download-url');
       const unlisten = await listen<string>("new-download-url", (event) => {
         if (cancelled) return;
         const u = event.payload;
+        console.log('[ProxyDM FE] NewDownloadWindow received url:', u);
         setUrl(u);
         if (extractFilename(u)) { setFilename(extractFilename(u)); setAutoFilled(true); }
       });
@@ -112,6 +115,7 @@ export default function NewDownloadWindow() {
     // Fallback: read clipboard
     readClipboardUrl().then((clipUrl) => {
       if (clipUrl && !url) {
+        console.log('[ProxyDM FE] NewDownloadWindow clipboard fallback:', clipUrl);
         setUrl(clipUrl);
         if (extractFilename(clipUrl)) { setFilename(extractFilename(clipUrl)); setAutoFilled(true); }
       }
@@ -130,8 +134,10 @@ export default function NewDownloadWindow() {
 
   const handleSubmit = async () => {
     if (!url) return;
+    console.log('[ProxyDM FE] submit download url=', url, 'filename=', filename, 'proxy=', proxyName, 'conns=', connections);
     try {
       await startDownload.mutateAsync({ url, filename, proxyName, connections, savePath });
+      console.log('[ProxyDM FE] download submitted OK');
       try {
         const { emit } = await import("@tauri-apps/api/event");
         await emit("download-created");

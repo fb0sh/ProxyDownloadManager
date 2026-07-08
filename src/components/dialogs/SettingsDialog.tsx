@@ -68,6 +68,7 @@ const fieldControl: React.CSSProperties = {
 };
 
 export default function SettingsDialog({ onClose }: SettingsDialogProps) {
+  console.debug('[ProxyDM FE] SettingsDialog mount');
   const { settings: initialSettings, saveSettings } = useSettings();
   const [settings, setSettings] = useState<Settings | null>(null);
   const [newProxy, setNewProxy] = useState<ProxyForm>(emptyProxy);

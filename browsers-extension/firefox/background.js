@@ -64,21 +64,31 @@ function updateIcon(enabled) {
 // ─── WebSocket ────────────────────────────────────────────────────────────────
 
 function connect() {
-  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+    console.log('[ProxyDM] WS already connected, skipping');
+    return;
+  }
+  console.log('[ProxyDM] WS connecting to', WS_URL);
   let socket;
-  try { socket = new WebSocket(WS_URL); } catch { scheduleReconnect(); return; }
+  try { socket = new WebSocket(WS_URL); } catch (e) {
+    console.warn('[ProxyDM] WS new WebSocket failed:', e);
+    scheduleReconnect(); return;
+  }
   ws = socket;
   socket.onopen = () => {
     if (ws !== socket) return;
+    console.log('[ProxyDM] WS connected');
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
   };
-  socket.onclose = () => {
+  socket.onclose = (evt) => {
     if (ws !== socket) return;
+    console.warn('[ProxyDM] WS closed code=' + evt.code + ' reason=' + evt.reason);
     ws = null;
     scheduleReconnect();
   };
-  socket.onerror = () => {
+  socket.onerror = (evt) => {
     if (ws !== socket) return;
+    console.warn('[ProxyDM] WS error');
     ws = null;
     scheduleReconnect();
   };
@@ -95,14 +105,22 @@ function disconnect() {
 }
 
 function send(url, referrer, tabTitle) {
-  if (!ws || ws.readyState !== WebSocket.OPEN) { connect(); return false; }
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    console.warn('[ProxyDM] send: WS not open, reconnecting');
+    connect(); return false;
+  }
   try {
+    console.log('[ProxyDM] WS send:', url);
     ws.send(url);
     return true;
-  } catch { return false; }
+  } catch (e) {
+    console.warn('[ProxyDM] WS send error:', e);
+    return false;
+  }
 }
 
 function sendReliable(url, referrer, tabTitle) {
+  console.log('[ProxyDM] WS sendReliable:', url);
   return new Promise((resolve) => {
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
 
@@ -115,19 +133,36 @@ function sendReliable(url, referrer, tabTitle) {
       if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
         try { socket.close(); } catch {}
       }
+      console.log('[ProxyDM] WS sendReliable result:', ok ? 'ACK' : 'FAIL');
       resolve(ok);
     };
-    const timer = setTimeout(() => finish(false), 3000);
+    const timer = setTimeout(() => {
+      console.warn('[ProxyDM] WS sendReliable timeout (3s)');
+      finish(false);
+    }, 3000);
 
     try {
       socket = new WebSocket(WS_URL);
       socket.onopen = () => {
-        try { socket.send(url); } catch { finish(false); }
+        try { socket.send(url); } catch (e) {
+          console.warn('[ProxyDM] WS sendReliable send failed:', e);
+          finish(false);
+        }
       };
-      socket.onmessage = () => finish(true);
-      socket.onclose = () => { if (!done) finish(false); };
-      socket.onerror = () => { if (!done) finish(false); };
-    } catch {
+      socket.onmessage = (evt) => {
+        console.debug('[ProxyDM] WS sendReliable ack:', evt.data);
+        finish(true);
+      };
+      socket.onclose = (evt) => {
+        console.warn('[ProxyDM] WS sendReliable closed code=' + evt.code);
+        if (!done) finish(false);
+      };
+      socket.onerror = () => {
+        console.warn('[ProxyDM] WS sendReliable error');
+        if (!done) finish(false);
+      };
+    } catch (e) {
+      console.error('[ProxyDM] WS sendReliable exception:', e);
       finish(false);
     }
   });
@@ -136,6 +171,7 @@ function sendReliable(url, referrer, tabTitle) {
 // ─── Context menus ────────────────────────────────────────────────────────────
 
 function createContextMenus() {
+  console.log('[ProxyDM] creating context menus');
   chrome.contextMenus.removeAll(() => {
     chrome.contextMenus.create({ id: 'dl-link', title: 'Download with ProxyDM', contexts: ['link', 'video', 'audio'] });
     chrome.contextMenus.create({ id: 'dl-page', title: 'Download page with ProxyDM', contexts: ['page'] });
@@ -144,6 +180,7 @@ function createContextMenus() {
 }
 
 function destroyContextMenus() {
+  console.log('[ProxyDM] destroying context menus');
   chrome.contextMenus.removeAll();
 }
 
@@ -178,8 +215,9 @@ chrome.downloads.onCreated.addListener(async (item) => {
     console.log('[ProxyDM] sent to app:', ok);
     if (ok) {
       chrome.downloads.cancel(item.id, () => {
-        if (chrome.runtime.lastError) console.debug(chrome.runtime.lastError.message);
+        if (chrome.runtime.lastError) console.warn('[ProxyDM] cancel error:', chrome.runtime.lastError.message);
         chrome.downloads.erase({ id: item.id });
+        console.log('[ProxyDM] browser download cancelled + erased:', item.id);
       });
     } else {
       notifyNotRunning({ allowStartupGrace: true });
@@ -191,12 +229,14 @@ chrome.downloads.onCreated.addListener(async (item) => {
 
 chrome.runtime.onInstalled.addListener(async () => {
   const on = await isEnabled();
+  console.log('[ProxyDM] runtime.onInstalled enabled=', on);
   updateIcon(on);
   if (on) { createContextMenus(); connect(); }
 });
 
 chrome.runtime.onStartup.addListener(async () => {
   const on = await isEnabled();
+  console.log('[ProxyDM] runtime.onStartup enabled=', on);
   updateIcon(on);
   if (on) { createContextMenus(); connect(); }
 });
@@ -204,6 +244,7 @@ chrome.runtime.onStartup.addListener(async () => {
 // ─── Message from content script ──────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  console.log('[ProxyDM] content script message:', request.action, request.url?.slice(0, 80));
   if (request.action === 'sendUrl') {
     sendReliable(request.url, '', '').then((ok) => sendResponse({ ok }));
     return true;

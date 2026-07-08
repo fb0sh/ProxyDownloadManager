@@ -9,6 +9,7 @@ interface LogDialogProps {
 }
 
 export default function LogDialog({ onClose }: LogDialogProps) {
+  console.debug('[ProxyDM FE] LogDialog mount');
   const [logs, setLogs] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
 

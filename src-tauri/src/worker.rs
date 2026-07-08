@@ -42,6 +42,8 @@ impl WorkerPool {
 
     async fn spawn_task(&self, mut cfg: DownloadConfig, permit: tokio::sync::OwnedSemaphorePermit, id: u64) {
         cfg.id = id;
+        eprintln!("[ProxyDM] worker spawn id={} url={} proxy={} conns={}",
+            id, cfg.url, cfg.proxy_name, cfg.connections);
         let cancel = Arc::new(AtomicBool::new(false));
         {
             let mut active = self.active.lock().await;
@@ -59,15 +61,17 @@ impl WorkerPool {
 
             let result = engine::run_download(cfg, pool, event_tx.clone(), limiter, cancel.clone()).await;
 
-            if let Err(e) = &result {
-                // Don't emit DownloadErrored for user-requested cancellation — pause_download
-                // already sets DB status to Paused. Emitting an error event would race with it.
-                if e != "Cancelled" {
-                    let _ = event_tx.send(Event {
-                        kind: crate::types::EventKind::DownloadErrored,
-                        download_id: id,
-                        data: Some(e.clone()),
-                    });
+            match &result {
+                Ok(_) => eprintln!("[ProxyDM] worker id={} completed OK", id),
+                Err(e) => {
+                    eprintln!("[ProxyDM] worker id={} ERROR: {}", id, e);
+                    if e != "Cancelled" {
+                        let _ = event_tx.send(Event {
+                            kind: crate::types::EventKind::DownloadErrored,
+                            download_id: id,
+                            data: Some(e.clone()),
+                        });
+                    }
                 }
             }
 
@@ -75,6 +79,7 @@ impl WorkerPool {
             {
                 let mut active = active_map.lock().await;
                 active.remove(&id);
+                eprintln!("[ProxyDM] worker id={} cleaned up, {} active remaining", id, active.len());
             }
             drop(permit);
         });
@@ -83,7 +88,10 @@ impl WorkerPool {
     pub async fn cancel(&self, id: u64) {
         let mut active = self.active.lock().await;
         if let Some(cancel) = active.remove(&id) {
+            eprintln!("[ProxyDM] worker cancel id={} (flag set)", id);
             cancel.store(true, Ordering::Relaxed);
+        } else {
+            eprintln!("[ProxyDM] worker cancel id={} (not found, already done?)", id);
         }
     }
 

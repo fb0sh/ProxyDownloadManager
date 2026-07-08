@@ -33,6 +33,7 @@ export default function Layout({
   selectedIds, onSelectChange,
   filter, onFilterChange,
 }: LayoutProps) {
+  console.debug('[ProxyDM FE] Layout mount');
   const { data: downloads = [] } = useDownloads();
 
   const selectedDownloadStatuses = downloads

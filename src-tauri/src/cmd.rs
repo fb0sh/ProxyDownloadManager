@@ -396,6 +396,10 @@ pub async fn start_download(
 
 #[tauri::command]
 pub async fn pause_download(state: State<'_, Arc<AppState>>, id: u64) -> Result<(), String> {
+    eprintln!("[ProxyDM] pause_download id={}", id);
+    if let Ok(l) = state.logger.lock() {
+        l.info(&format!("Pause id={}", id));
+    }
     state.worker_pool.cancel(id).await;
     // Flush runtime progress to DB so saved state has latest downloaded value
     state.runtime.flush_to_db(&state.db);
@@ -431,6 +435,10 @@ pub async fn pause_download(state: State<'_, Arc<AppState>>, id: u64) -> Result<
 
 #[tauri::command]
 pub async fn resume_download(state: State<'_, Arc<AppState>>, id: u64) -> Result<(), String> {
+    eprintln!("[ProxyDM] resume_download id={}", id);
+    if let Ok(l) = state.logger.lock() {
+        l.info(&format!("Resume id={}", id));
+    }
     if let Ok(Some(saved_state)) = crate::state::gob::load_state(id) {
         // Update DB status to Downloading before spawn
         if let Ok(mut items) = state.db.list_downloads() {
@@ -468,6 +476,7 @@ pub async fn resume_download(state: State<'_, Arc<AppState>>, id: u64) -> Result
 
 #[tauri::command]
 pub async fn cancel_download(state: State<'_, Arc<AppState>>, id: u64) -> Result<(), String> {
+    eprintln!("[ProxyDM] cancel_download id={}", id);
     state.worker_pool.cancel(id).await;
     Ok(())
 }
@@ -478,6 +487,10 @@ pub async fn delete_download(
     id: u64,
     delete_file: bool,
 ) -> Result<(), String> {
+    eprintln!("[ProxyDM] delete_download id={} delete_file={}", id, delete_file);
+    if let Ok(l) = state.logger.lock() {
+        l.info(&format!("Delete id={} delete_file={}", id, delete_file));
+    }
     let save_path = if delete_file {
         state.db.list_downloads().ok()
             .and_then(|items| items.into_iter().find(|i| i.id == id))
@@ -495,9 +508,11 @@ pub async fn delete_download(
         let p = std::path::Path::new(&path);
         let pdm_path = p.with_extension("pdm");
         if pdm_path.exists() {
+            eprintln!("[ProxyDM] delete removing file: {:?}", p);
             let _ = std::fs::remove_file(&pdm_path);
         }
         if p.exists() {
+            eprintln!("[ProxyDM] delete removing file: {:?}", p);
             let _ = std::fs::remove_file(p);
         }
     }
@@ -511,11 +526,17 @@ pub fn get_settings() -> Result<Settings, String> {
 
 #[tauri::command]
 pub fn save_settings(state: State<'_, Arc<AppState>>, settings: Settings) -> Result<(), String> {
+    eprintln!("[ProxyDM] save_settings lang={} dl_dir={} max_conns={} tls_invalid={}",
+        settings.language, settings.download_dir, settings.max_connections, settings.danger_accept_invalid_certs);
+    if let Ok(l) = state.logger.lock() {
+        l.info(&format!("Settings saved: language={} download_dir={}", settings.language, settings.download_dir));
+    }
     let old = crate::config::load();
     let tls_changed = old.danger_accept_invalid_certs != settings.danger_accept_invalid_certs;
     crate::config::save(&settings)?;
     sync_autostart(&state.app_handle, settings.launch_at_startup, settings.silent_startup)?;
     if tls_changed {
+        eprintln!("[ProxyDM] TLS cert validation changed, clearing client pool");
         state.worker_pool.clear_clients();
     }
     Ok(())
@@ -571,6 +592,7 @@ fn sync_autostart(
 
 #[tauri::command]
 pub fn exit_app(app: tauri::AppHandle) {
+    eprintln!("[ProxyDM] exit_app called");
     app.exit(0);
 }
 
@@ -634,7 +656,12 @@ pub fn open_extensions_folder(app: tauri::AppHandle) -> Result<(), String> {
 /// Used by the frontend to display the path to the user.
 #[tauri::command]
 pub fn get_extensions_dir(app: tauri::AppHandle) -> Result<String, String> {
-    resolve_extensions_dir(&app)
+    let result = resolve_extensions_dir(&app);
+    match &result {
+        Ok(p) => eprintln!("[ProxyDM] get_extensions_dir -> {}", p),
+        Err(e) => eprintln!("[ProxyDM] get_extensions_dir ERROR: {}", e),
+    }
+    result
 }
 
 #[derive(serde::Serialize)]

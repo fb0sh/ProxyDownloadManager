@@ -22,6 +22,7 @@ interface AboutDialogProps {
 type CheckState = "idle" | "checking" | "done" | "error";
 
 export default function AboutDialog({ onClose, onDownloadUpdate }: AboutDialogProps) {
+  console.debug('[ProxyDM FE] AboutDialog mount');
   const [version, setVersion] = useState("");
   const [proxyName, setProxyName] = useState("");
   const [checkState, setCheckState] = useState<CheckState>("idle");

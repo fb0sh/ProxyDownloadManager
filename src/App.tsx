@@ -25,6 +25,10 @@ type Dialog =
   | null;
 
 function App() {
+  console.group('[ProxyDM FE] App');
+  console.log('mount version=0.4.0');
+  console.groupEnd();
+
   const [dialog, setDialog] = useState<Dialog>(null);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [filter, setFilter] = useState<"all" | "completed" | "incomplete">("all");
@@ -39,15 +43,17 @@ function App() {
   // Sync loaded settings to zustand store for cross-component access
   useEffect(() => {
     if (loadedSettings) {
+      console.log('[ProxyDM FE] settings loaded:', loadedSettings.language, loadedSettings.download_dir);
       setSettings(loadedSettings);
       setLanguage(loadedSettings.language || "en");
     }
   }, [loadedSettings, setSettings]);
 
   const openNewDownloadWindow = useCallback(async (url?: string) => {
+    console.log('[ProxyDM FE] openNewDownloadWindow url=', url);
     // Don't re-open if already exists
     const existing = await WebviewWindow.getByLabel("new-download");
-    if (existing) { existing.setFocus(); return; }
+    if (existing) { console.log('[ProxyDM FE] new-download window already exists, focusing'); existing.setFocus(); return; }
 
     const base = window.location.origin + window.location.pathname.replace(/\/+$/, "");
     const params = new URLSearchParams();
@@ -86,16 +92,20 @@ function App() {
 
   // Listen for browser extension download URLs → open New Download window
   useEffect(() => {
+    console.log('[ProxyDM FE] registering browser-download-url listener');
     const unlisten = listen<string>("browser-download-url", (event) => {
+      console.log('[ProxyDM FE] received browser-download-url:', event.payload);
       onUrlDetected(event.payload);
     });
-    return () => { unlisten.then(f => f()); };
+    return () => { console.log('[ProxyDM FE] unregistering browser-download-url'); unlisten.then(f => f()); };
   }, [onUrlDetected]);
 
   // Listen for download-created event → refresh list + show main window
   const queryClient = useQueryClient();
   useEffect(() => {
+    console.log('[ProxyDM FE] registering download-created listener');
     const unlisten = listen("download-created", async () => {
+      console.log('[ProxyDM FE] download-created received, invalidating query');
       queryClient.invalidateQueries({ queryKey: ["downloads"] });
       try {
         const mainWin = await WebviewWindow.getByLabel("main");
@@ -185,7 +195,9 @@ function App() {
 
   // Listen for download started → system notification
   useEffect(() => {
+    console.log('[ProxyDM FE] registering download-started listener');
     const unlisten = listen<number>("download-started", (event) => {
+      console.log('[ProxyDM FE] download-started id=', event.payload);
       sendDownloadNotification(event.payload, "Download Started", undefined, "started");
     });
     return () => { unlisten.then(f => f()); };
@@ -193,7 +205,9 @@ function App() {
 
   // Listen for download completed → system notification + details window
   useEffect(() => {
+    console.log('[ProxyDM FE] registering download-completed listener');
     const unlisten = listen<number>("download-completed", async (event) => {
+      console.log('[ProxyDM FE] download-completed id=', event.payload);
       await sendDownloadNotification(event.payload, "Download Complete", undefined, "completed");
       openDownloadDetailsWindow(event.payload);
     });
@@ -202,8 +216,10 @@ function App() {
 
   // Listen for download errors → system notification (not blocking alert)
   useEffect(() => {
+    console.log('[ProxyDM FE] registering download-error listener');
     const unlisten = listen<{id: number; url: string; message: string}>("download-error", (event) => {
       const { id, message } = event.payload;
+      console.warn('[ProxyDM FE] download-error id=', id, 'msg=', message);
       sendDownloadNotification(id, t("downloadError.failed"), message.slice(0, 100), "error");
     });
     return () => { unlisten.then(f => f()); };

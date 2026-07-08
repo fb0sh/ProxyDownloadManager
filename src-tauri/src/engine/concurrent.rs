@@ -40,8 +40,10 @@ impl ConcurrentDownloader {
     pub async fn download(&self, cfg: &DownloadConfig, limiter: Arc<MultiLimiter>, cancel: Arc<AtomicBool>) -> Result<(), String> {
         // On resume, load saved progress to initialize bytes_written correctly
         let resume_offset = if cfg.is_resume {
-            crate::state::gob::load_state(cfg.id)
-                .ok().flatten().map(|s| s.downloaded).unwrap_or(0)
+            let saved = crate::state::gob::load_state(cfg.id).ok().flatten();
+            let off = saved.as_ref().map(|s| s.downloaded).unwrap_or(0);
+            eprintln!("[ProxyDM] concurrent id={} resume offset={}", cfg.id, off);
+            off
         } else {
             0
         };
@@ -72,12 +74,15 @@ impl ConcurrentDownloader {
         }
 
         let num_workers = num_conns.min(tasks.len() as u32).max(1);
+        eprintln!("[ProxyDM] concurrent id={} workers={} chunks={} total_size={} is_resume={}",
+            cfg.id, num_workers, tasks.len(), cfg.total_size, cfg.is_resume);
 
         let queue = Arc::new(ChunkQueue::new(tasks));
 
         // Pre-allocate file and use std FileExt::write_at for lock-free concurrent writes
         let file = create_output_file(&cfg.output_path, cfg.total_size).await?;
         let file = Arc::new(file);
+        eprintln!("[ProxyDM] concurrent id={} file created: {}.pdm", cfg.id, cfg.output_path);
 
         let client = self.pool.get_client(if cfg.proxy_name.is_empty() { None } else { Some(&cfg.proxy_name) });
 
@@ -162,6 +167,7 @@ impl ConcurrentDownloader {
         for h in handles {
             let _ = h.await;
         }
+        eprintln!("[ProxyDM] concurrent id={} all workers done", cfg.id);
 
         // Stop the reporter
         reporter_stop.store(true, Ordering::Relaxed);
@@ -259,6 +265,7 @@ async fn download_task(
     if !user_agent.is_empty() {
         req = req.header("User-Agent", user_agent);
     }
+    eprintln!("[ProxyDM] concurrent_task offset={} range_end={}", task.offset, range_end);
     let resp = req.send().await.map_err(|e| {
         let mut msg = format!("Request failed: {}", e);
         let mut src = std::error::Error::source(&e);
@@ -266,6 +273,7 @@ async fn download_task(
             msg.push_str(&format!(": {}", s));
             src = s.source();
         }
+        eprintln!("[ProxyDM] concurrent_task REQUEST ERROR offset={}: {}", task.offset, msg);
         msg
     })?;
 
@@ -274,6 +282,7 @@ async fn download_task(
     }
 
     let status = resp.status();
+    eprintln!("[ProxyDM] concurrent_task offset={} HTTP {} (expected 206 or 200)", task.offset, status);
     if status != reqwest::StatusCode::PARTIAL_CONTENT && status != reqwest::StatusCode::OK {
         return Err(format!("HTTP {}", status));
     }
@@ -303,6 +312,8 @@ async fn download_task(
             && chunk_size > 0
             && written < chunk_size / 10
         {
+            eprintln!("[ProxyDM] slow chunk offset={} written={}/{} after {}s, re-queuing",
+                base_offset, written, chunk_size, elapsed.as_secs());
             return Err(format!("SlowChunk:{}:{}:{}", base_offset, chunk_size, written));
         }
 
