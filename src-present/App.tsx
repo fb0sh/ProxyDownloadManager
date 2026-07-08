@@ -146,7 +146,7 @@ function Page() {
     { icon: "⬇️", title: "多线程下载", desc: "单任务最高 32 线程并行，自动根据文件大小调整连接数，充分利用带宽。" },
     { icon: "🔁", title: "断点续传", desc: "支持 HTTP Range 请求，中断后自动恢复，无需从头开始。" },
     { icon: "🔒", title: "代理支持", desc: "HTTP / SOCKS5 代理，支持全局代理和每下载独立代理。" },
-    { icon: "🧩", title: "浏览器扩展", desc: "Chrome / Edge / Firefox 扩展，一键拦截下载并交由 ProxyDM 接管。" },
+    { icon: "🧩", title: "浏览器扩展", desc: "Chrome / Edge / Firefox 扩展，一键拦截下载并交由 ProxyDownloadManager 接管。" },
     { icon: "📋", title: "剪贴板监测", desc: "自动检测剪贴板中的下载链接，弹出新建下载窗口。" },
     { icon: "⚡", title: "系统集成", desc: "托盘驻留、开机自启、通知推送、文件关联。" },
   ];
@@ -169,7 +169,7 @@ function Page() {
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#1f883d" strokeWidth="2">
             <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
           </svg>
-          ProxyDM
+          ProxyDownloadManager
         </div>
         <div style={{ display: "flex", gap: 8 }}>
           <a href="https://github.com/fb0sh/ProxyDownloadManager/releases/latest" target="_blank" rel="noreferrer">
@@ -212,7 +212,7 @@ function Page() {
             让下载快人一步
           </h1>
           <p style={{ fontSize: 18, color: "#656d76", maxWidth: 520, margin: "0 auto 32px", lineHeight: 1.6 }}>
-            ProxyDM 是一款开源的多线程下载工具，支持代理、断点续传、浏览器集成。
+            ProxyDownloadManager 是一款开源的多线程下载工具，支持代理、断点续传、浏览器集成。
             基于 Rust + Tauri 构建，兼具性能与优雅的桌面体验。
           </p>
           <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
@@ -221,7 +221,7 @@ function Page() {
                 display: "inline-flex", alignItems: "center", gap: 8,
                 padding: "12px 28px", borderRadius: 8, fontSize: 16, fontWeight: 600,
                 background: "#1f883d", color: "#fff", border: "1px solid #1a7f37",
-              }}>⬇️ 下载 ProxyDM</span>
+              }}>⬇️ 下载 ProxyDownloadManager</span>
             </a>
             <a href="https://github.com/fb0sh/ProxyDownloadManager" target="_blank" rel="noreferrer">
               <span style={{
@@ -244,7 +244,7 @@ function Page() {
             实际体验
           </h2>
           <p style={{ textAlign: "center", color: "#656d76", marginBottom: 32, fontSize: 15 }}>
-            下方是完整的 ProxyDM 交互界面，直接操作试试
+            下方是完整的 ProxyDownloadManager 交互界面，直接操作试试
           </p>
           <div className="anim-fade-1 app-window" style={{ height: 520 }}>
             <QueryClientProvider client={queryClient}>
@@ -307,20 +307,20 @@ function Page() {
       <section style={{ padding: "60px 24px 80px", textAlign: "center" }}>
         <div className="anim-fade">
           <h2 style={{ fontSize: 28, fontWeight: 700, marginBottom: 16, color: "#1f2328" }}>立即开始使用</h2>
-          <p style={{ color: "#656d76", marginBottom: 28, fontSize: 15 }}>免费、开源、跨平台。下载 ProxyDM，体验更高效的下载方式。</p>
+          <p style={{ color: "#656d76", marginBottom: 28, fontSize: 15 }}>免费、开源、跨平台。下载 ProxyDownloadManager，体验更高效的下载方式。</p>
           <a href="https://github.com/fb0sh/ProxyDownloadManager/releases/latest" target="_blank" rel="noreferrer">
             <span style={{
               display: "inline-flex", alignItems: "center", gap: 8,
               padding: "12px 28px", borderRadius: 8, fontSize: 16, fontWeight: 600,
               background: "#1f883d", color: "#fff", border: "1px solid #1a7f37",
-            }}>⬇️ 下载 ProxyDM</span>
+            }}>⬇️ 下载 ProxyDownloadManager</span>
           </a>
         </div>
       </section>
 
       {/* ── Footer ── */}
       <footer style={{ textAlign: "center", padding: "24px", borderTop: "1px solid #d0d7de", color: "#656d76", fontSize: 13 }}>
-        <p>ProxyDM — MIT 许可开源</p>
+        <p>ProxyDownloadManager — MIT 许可开源</p>
         <p style={{ marginTop: 4 }}>
           <a href="https://github.com/fb0sh/ProxyDownloadManager" target="_blank" rel="noreferrer">GitHub</a>
           {" · "}
