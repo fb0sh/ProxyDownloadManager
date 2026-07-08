@@ -8,11 +8,41 @@ import { t } from "../../i18n";
 function extractFilename(url: string): string {
   try {
     const u = new URL(url);
+
+    // Strategy 1: extract from URL path (most common case)
+    // e.g. https://example.com/files/photo.jpg → photo.jpg
     const path = u.pathname;
     const segments = path.split("/").filter(Boolean);
-    if (segments.length === 0) return "";
-    const last = segments[segments.length - 1];
-    if (last.includes(".") && !last.endsWith(".")) return decodeURIComponent(last);
+    if (segments.length > 0) {
+      const last = segments[segments.length - 1];
+      if (last.includes(".") && !last.endsWith(".")) return decodeURIComponent(last);
+    }
+
+    // Strategy 2: search ALL query param values for filename=xxx
+    // CDN URLs embed the filename in params like:
+    //   ?rscd=attachment%3B+filename%3Dfile.zip  (Azure CDN)
+    //   ?response-content-disposition=attachment%3B%20filename%3Dfile.zip
+    //   ?download_fname=file.zip  (other CDNs)
+    // We don't hardcode param names — we regex-search every param's decoded value.
+    for (const [_, val] of u.searchParams) {
+      if (!val) continue;
+      const decoded = decodeURIComponent(val);
+      // Match: filename="xxx" | filename=xxx | filename*=UTF-8''xxx
+      const m = decoded.match(/filename\s*=\*?(?:UTF-8''|"|)([^";\s]+)/i);
+      if (m) return m[1];
+    }
+
+    // Strategy 3: scan the full URL for the last name.extension pattern
+    // Covers URLs like https://example.com/dl?file=photo.jpg where the
+    // filename is in a query value but without a "filename=" prefix.
+    // Requires ≥2 chars before the dot to avoid matching version numbers (v1.2).
+    const pattern = /([^\/?#&=\s]{2,})\.(\w{2,5})(?=[\/?#&\s]|$)/g;
+    const matches = [...url.matchAll(pattern)];
+    if (matches.length > 0) {
+      const last = matches[matches.length - 1];
+      return last[1] + "." + last[2];
+    }
+
     return "";
   } catch {
     return "";

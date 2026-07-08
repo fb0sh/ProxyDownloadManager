@@ -135,6 +135,7 @@ const en = {
     releasePage: "View Release Page",
     noProxy: "No proxy",
     updateCheckFailed: "Failed to check for updates",
+    whatsNew: "What's New",
   },
   progress: {
     percent: "%",

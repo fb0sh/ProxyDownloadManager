@@ -61,7 +61,10 @@ pub fn run() {
             let db = crate::state::db::Db::new().expect("Failed to initialize database");
             let settings = crate::config::load();
             let danger_accept_invalid_certs = settings.danger_accept_invalid_certs;
-            let worker_pool = crate::worker::WorkerPool::new(8, event_tx.clone(), danger_accept_invalid_certs);
+            // Start ID counter from DB's highest existing ID + 1 so restarts don't
+            // cause PRIMARY KEY conflicts on INSERT (silently swallowed by let _).
+            let next_id_start = db.max_id().unwrap_or(0) + 1;
+            let worker_pool = crate::worker::WorkerPool::new(8, event_tx.clone(), danger_accept_invalid_certs, next_id_start);
             let state = Arc::new(AppState {
                 db,
                 worker_pool,

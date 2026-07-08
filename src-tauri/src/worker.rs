@@ -16,13 +16,14 @@ pub struct WorkerPool {
 }
 
 impl WorkerPool {
-    pub fn new(max_workers: u32, event_tx: mpsc::UnboundedSender<Event>, danger_accept_invalid_certs: bool) -> Self {
+    pub fn new(max_workers: u32, event_tx: mpsc::UnboundedSender<Event>, danger_accept_invalid_certs: bool, next_id_start: u64) -> Self {
+        eprintln!("[ProxyDM] WorkerPool starting next_id from {}", next_id_start);
         Self {
             semaphore: Arc::new(Semaphore::new(max_workers as usize)),
             pool: Arc::new(NetworkPool::new(danger_accept_invalid_certs)),
             event_tx,
             active: Arc::new(Mutex::new(HashMap::new())),
-            next_id: AtomicU64::new(1),
+            next_id: AtomicU64::new(next_id_start),
         }
     }
 

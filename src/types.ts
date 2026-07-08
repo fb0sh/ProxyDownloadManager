@@ -95,6 +95,7 @@ export interface UpdateInfo {
   current_version: string;
   has_update: boolean;
   release_url: string;
+  release_notes: string;
   assets: AssetInfo[];
 }
 

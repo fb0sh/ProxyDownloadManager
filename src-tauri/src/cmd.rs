@@ -277,10 +277,7 @@ pub async fn start_download(
                 l.warn(&format!("Probe failed, forcing blind download url={} err={}", url, e));
             }
             let name = if filename.is_empty() {
-                std::path::Path::new(&url)
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "download".to_string())
+                filename_from_url(&url).unwrap_or_else(|| "download".to_string())
             } else {
                 filename
             };
@@ -389,7 +386,9 @@ pub async fn start_download(
         created_at: now_str(),
         last_try: String::new(),
     };
-    let _ = state.db.insert_download(&item);
+    if let Err(e) = state.db.insert_download(&item) {
+        eprintln!("[ProxyDM] FATAL: failed to insert download id={} into DB: {}", id, e);
+    }
 
     Ok(id)
 }
@@ -677,6 +676,7 @@ pub struct UpdateInfo {
     pub current_version: String,
     pub has_update: bool,
     pub release_url: String,
+    pub release_notes: String,
     pub assets: Vec<AssetInfo>,
 }
 
@@ -684,6 +684,7 @@ pub struct UpdateInfo {
 struct GithubRelease {
     tag_name: String,
     html_url: String,
+    body: Option<String>,
     assets: Vec<GithubAsset>,
 }
 
@@ -740,6 +741,7 @@ pub async fn check_update(
         current_version,
         has_update,
         release_url: release.html_url,
+        release_notes: release.body.unwrap_or_default(),
         assets,
     })
 }
@@ -889,6 +891,66 @@ fn resolve_extensions_dir(app: &tauri::AppHandle) -> Result<String, String> {
 
         Err("Extensions directory not found. The browser extensions may not have been bundled. Try reinstalling the application.".to_string())
     }
+}
+
+/// Extract filename from a URL.
+/// Strategy 1: extract from URL path (most common case).
+/// Strategy 2: search ALL query param values for `filename=xxx`.
+///   CDNs embed the filename in various param names
+///   (rscd, response-content-disposition, download_fname, etc.) —
+///   we search every param's decoded value instead of hardcoding names.
+/// Strategy 3: scan the full URL for the last `name.extension` pattern.
+/// Fallback for filename_from_url strategy 3: split the URL string by
+/// delimiters, find the last token that looks like name.ext.
+fn last_name_from_str(s: &str) -> Option<String> {
+    let mut last: Option<String> = None;
+    for token in s.split(|c: char| c == '/' || c == '?' || c == '#' || c == '&' || c == '=' || c.is_whitespace()) {
+        if token.len() < 5 || !token.contains('.') || token.ends_with('.') { continue; }
+        let dot = token.rfind('.')?;
+        if dot < 2 { continue; }
+        let ext = &token[dot + 1..];
+        if ext.len() < 2 || ext.len() > 5 { continue; }
+        if !ext.bytes().all(|b| b.is_ascii_alphabetic()) { continue; }
+        last = Some(token.to_string());
+    }
+    last
+}
+
+fn filename_from_url(url: &str) -> Option<String> {
+    // Strategy 1: path extraction
+    if let Some(name) = std::path::Path::new(url)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .filter(|n| n.contains('.'))
+    {
+        return Some(name);
+    }
+
+    // Strategy 2: search ALL query param values for filename=xxx
+    if let Ok(parsed) = url::Url::parse(url) {
+        for (_, val) in parsed.query_pairs() {
+            let lower = val.to_lowercase();
+            if let Some(pos) = lower.find("filename=") {
+                let after = &val[pos + 9..];
+                let trimmed = after
+                    .trim_start_matches('*')
+                    .trim_start_matches("UTF-8''")
+                    .trim_matches('"')
+                    .trim();
+                let name = trimmed.split(|c: char| c == ';' || c.is_whitespace())
+                    .next().unwrap_or(trimmed);
+                if !name.is_empty() && name.contains('.') {
+                    return Some(name.to_string());
+                }
+            }
+        }
+    }
+
+    // Strategy 3: split the URL by delimiters, find all tokens that look
+    // like name.ext with 2-5 alpha extension chars, take the last one.
+    // This catches URLs like `https://example.com/dl?file=photo.jpg`.
+    // We look at the extension after the LAST dot, so tar.gz works.
+    last_name_from_str(url)
 }
 
 #[tauri::command]

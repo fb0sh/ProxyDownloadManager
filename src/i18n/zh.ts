@@ -137,6 +137,7 @@ const zh: Translations = {
     releasePage: "查看发布页面",
     noProxy: "无代理",
     updateCheckFailed: "检查更新失败",
+    whatsNew: "更新内容",
   },
   progress: {
     percent: "%",

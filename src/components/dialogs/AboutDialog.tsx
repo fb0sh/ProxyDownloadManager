@@ -170,6 +170,31 @@ export default function AboutDialog({ onClose, onDownloadUpdate }: AboutDialogPr
                     </div>
                   )}
 
+                  {/* Release notes */}
+                  {updateInfo.release_notes && (
+                    <div>
+                      <Text weight="semibold" size="small" style={{ display: "block", marginBottom: 4 }}>
+                        {t("about.whatsNew")}
+                      </Text>
+                      <div
+                        style={{
+                          maxHeight: 200,
+                          overflow: "auto",
+                          padding: "8px 10px",
+                          borderRadius: 6,
+                          fontSize: 12,
+                          lineHeight: 1.6,
+                          whiteSpace: "pre-wrap",
+                          fontFamily: "ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace",
+                          backgroundColor: "var(--bgColor-muted, #f6f8fa)",
+                          border: "1px solid var(--borderColor-default, #d0d7de)",
+                        }}
+                      >
+                        {updateInfo.release_notes}
+                      </div>
+                    </div>
+                  )}
+
                   <a
                     href={updateInfo.release_url}
                     target="_blank"

@@ -56,6 +56,16 @@ impl Db {
         Ok(())
     }
 
+    /// Return the maximum download ID in the database, or 0 if empty.
+    /// Used to initialize the worker pool's ID counter across restarts.
+    pub fn max_id(&self) -> Result<u64, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let max: u64 = conn
+            .query_row("SELECT COALESCE(MAX(id), 0) FROM downloads", [], |row| row.get(0))
+            .map_err(|e| e.to_string())?;
+        Ok(max)
+    }
+
     pub fn list_downloads(&self) -> Result<Vec<DownloadItem>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
