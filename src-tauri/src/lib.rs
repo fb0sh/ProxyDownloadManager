@@ -16,6 +16,7 @@ use crate::log::Logger;
 use std::sync::Arc;
 use std::sync::Mutex;
 use tauri::Manager;
+use tauri_plugin_global_shortcut::GlobalShortcutExt;
 use tokio::sync::mpsc;
 
 pub(crate) const SILENT_START_ARG: &str = "--silent";
@@ -46,6 +47,19 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(move |app, shortcut, event| {
+                    if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                        eprintln!("[ProxyDM] global shortcut pressed: {:?}", shortcut);
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                })
+                .build(),
+        )
         .setup(move |app| {
             // macOS: deploy bundled browser extensions to ~/Library/Application Support/<id>/extensions/
             #[cfg(target_os = "macos")]
@@ -102,6 +116,12 @@ pub fn run() {
                         let _ = win.hide();
                     }
                 });
+            }
+
+            // Register global shortcut: Ctrl+Super+J (macOS: Control+Command+J)
+            #[cfg(desktop)]
+            if let Err(e) = app.global_shortcut().register("Ctrl+Super+J") {
+                eprintln!("[ProxyDM] Failed to register global shortcut: {}", e);
             }
 
             // Spawn event handler: listens for download events, updates DB
