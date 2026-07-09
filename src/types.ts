@@ -59,6 +59,7 @@ export interface Settings {
   home_dir: string;
   language: string;
   danger_accept_invalid_certs: boolean;
+  global_shortcut: string;
 }
 
 export interface PendingDownloadRequest {

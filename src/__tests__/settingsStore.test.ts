@@ -18,6 +18,7 @@ describe("settingsStore", () => {
         home_dir: "",
         language: "en",
         danger_accept_invalid_certs: true,
+    global_shortcut: "Ctrl+Super+J",
       },
     });
   });
@@ -42,6 +43,7 @@ describe("settingsStore", () => {
       home_dir: "",
       language: "en",
       danger_accept_invalid_certs: true,
+    global_shortcut: "Ctrl+Super+J",
     });
     const s = useSettingsStore.getState().settings;
     expect(s.max_connections).toBe(16);

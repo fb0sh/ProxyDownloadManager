@@ -170,6 +170,8 @@ pub struct Settings {
     pub language: String,
     #[serde(default)]
     pub danger_accept_invalid_certs: bool,
+    #[serde(default = "default_global_shortcut")]
+    pub global_shortcut: String,
 }
 
 impl Default for Settings {
@@ -191,12 +193,17 @@ impl Default for Settings {
             home_dir: home.join(".ProxyDM").to_string_lossy().to_string(),
             language: String::from("en"),
             danger_accept_invalid_certs: true,
+            global_shortcut: default_global_shortcut(),
         }
     }
 }
 
 fn default_silent_startup() -> bool {
     true
+}
+
+fn default_global_shortcut() -> String {
+    "Ctrl+Super+J".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

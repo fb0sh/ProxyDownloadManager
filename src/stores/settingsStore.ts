@@ -22,6 +22,7 @@ export const useSettingsStore = create<SettingsStore>((set) => ({
     home_dir: "",
     language: "en",
     danger_accept_invalid_certs: true,
+    global_shortcut: "Ctrl+Super+J",
   },
   setSettings: (settings) => set({ settings }),
   updateProxy: (name, protocol, host, port) =>

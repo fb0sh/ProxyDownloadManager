@@ -209,6 +209,22 @@ export default function SettingsDialog({ onClose }: SettingsDialogProps) {
               </div>
             </div>
             <div style={sectionCard}>
+              <div style={sectionHeader}>{t("settings.globalShortcut")}</div>
+              <div style={sectionBody}>
+                <FormControl>
+                  <FormControl.Label>{t("settings.shortcutLabel")}</FormControl.Label>
+                  <TextInput
+                    value={settings.global_shortcut}
+                    onChange={(e) => setSettings({ ...settings, global_shortcut: e.target.value })}
+                    placeholder="Ctrl+Super+J"
+                    monospace
+                    block
+                  />
+                  <FormControl.Caption>{t("settings.shortcutCaption")}</FormControl.Caption>
+                </FormControl>
+              </div>
+            </div>
+            <div style={sectionCard}>
               <div style={sectionHeader}>{t("settings.language")}</div>
               <div style={sectionBody}>
                 <Select value={settings.language || "en"} onChange={(e) => setSettings({ ...settings, language: e.target.value })}>

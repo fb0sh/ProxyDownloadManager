@@ -92,6 +92,9 @@ const zh: Translations = {
     english: "English",
     chinese: "中文",
     tlsSkip: "跳过 TLS 证书验证（代理/抓包场景）",
+    globalShortcut: "全局快捷键",
+    shortcutLabel: "快捷键",
+    shortcutCaption: "留空 = 禁用。格式: Ctrl+Super+J（macOS: Control+Command+J）。",
   },
   newDownload: {
     title: "新建下载",

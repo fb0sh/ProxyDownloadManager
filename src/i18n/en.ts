@@ -90,6 +90,9 @@ const en = {
     english: "English",
     chinese: "中文",
     tlsSkip: "Skip TLS certificate verification (for proxy/intercept)",
+    globalShortcut: "Global Shortcut",
+    shortcutLabel: "Shortcut Key",
+    shortcutCaption: "Empty = disabled. Format: Ctrl+Super+J (macOS: Control+Command+J).",
   },
   newDownload: {
     title: "New Download",

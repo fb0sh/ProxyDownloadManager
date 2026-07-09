@@ -532,11 +532,30 @@ pub fn save_settings(state: State<'_, Arc<AppState>>, settings: Settings) -> Res
     }
     let old = crate::config::load();
     let tls_changed = old.danger_accept_invalid_certs != settings.danger_accept_invalid_certs;
+    let shortcut_changed = old.global_shortcut != settings.global_shortcut;
     crate::config::save(&settings)?;
     sync_autostart(&state.app_handle, settings.launch_at_startup, settings.silent_startup)?;
     if tls_changed {
         eprintln!("[ProxyDM] TLS cert validation changed, clearing client pool");
         state.worker_pool.clear_clients();
+    }
+    // Re-register global shortcut if changed
+    #[cfg(desktop)]
+    if shortcut_changed {
+        use tauri_plugin_global_shortcut::GlobalShortcutExt;
+        let app = &state.app_handle;
+        // Unregister old
+        if !old.global_shortcut.is_empty() {
+            let _ = app.global_shortcut().unregister(old.global_shortcut.as_str());
+        }
+        // Register new
+        if !settings.global_shortcut.is_empty() {
+            if let Err(e) = app.global_shortcut().register(settings.global_shortcut.as_str()) {
+                eprintln!("[ProxyDM] Failed to update global shortcut: {}", e);
+            }
+        }
+        // Also rebuild tray tooltip — but Tauri tray API doesn't support
+        // updating tooltip after creation without rebuilding the tray.
     }
     Ok(())
 }

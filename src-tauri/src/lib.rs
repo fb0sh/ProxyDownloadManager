@@ -67,13 +67,14 @@ pub fn run() {
                 eprintln!("[ProxyDM] Failed to deploy browser extensions: {}", e);
             }
 
-            let _ = crate::tray::build_tray(app.handle());
+            let db = crate::state::db::Db::new().expect("Failed to initialize database");
+            let settings = crate::config::load();
+
+            let _ = crate::tray::build_tray(app.handle(), &settings.global_shortcut);
 
             let icon_cache = crate::icons::IconCache::new();
             app.manage(icon_cache);
 
-            let db = crate::state::db::Db::new().expect("Failed to initialize database");
-            let settings = crate::config::load();
             let danger_accept_invalid_certs = settings.danger_accept_invalid_certs;
             // Start ID counter from DB's highest existing ID + 1 so restarts don't
             // cause PRIMARY KEY conflicts on INSERT (silently swallowed by let _).
@@ -118,10 +119,13 @@ pub fn run() {
                 });
             }
 
-            // Register global shortcut: Ctrl+Super+J (macOS: Control+Command+J)
+            // Register global shortcut from settings
+            let shortcut_key = settings.global_shortcut.clone();
             #[cfg(desktop)]
-            if let Err(e) = app.global_shortcut().register("Ctrl+Super+J") {
-                eprintln!("[ProxyDM] Failed to register global shortcut: {}", e);
+            if !shortcut_key.is_empty() {
+                if let Err(e) = app.global_shortcut().register(shortcut_key.as_str()) {
+                    eprintln!("[ProxyDM] Failed to register global shortcut '{}': {}", shortcut_key, e);
+                }
             }
 
             // Spawn event handler: listens for download events, updates DB

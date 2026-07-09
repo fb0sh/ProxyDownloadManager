@@ -1,12 +1,13 @@
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
+    tray::TrayIconEvent,
     tray::MouseButton,
     tray::MouseButtonState,
     AppHandle, Runtime, Manager,
 };
 
-pub fn build_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::error::Error>> {
+pub fn build_tray<R: Runtime>(app: &AppHandle<R>, _shortcut: &str) -> Result<(), Box<dyn std::error::Error>> {
     let show = MenuItem::with_id(app, "show", "Show ProxyDM", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, Some("CmdOrCtrl+Q"))?;
     let menu = Menu::with_items(app, &[&show, &quit])?;
@@ -20,6 +21,7 @@ pub fn build_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::err
     TrayIconBuilder::new()
         .icon(tray_icon)
         .icon_as_template(true)
+        .tooltip("ProxyDM")
         .menu(&menu)
         .on_menu_event(|app, event| {
             match event.id.as_ref() {
@@ -51,5 +53,3 @@ pub fn build_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::err
 
     Ok(())
 }
-
-use tauri::tray::TrayIconEvent;
