@@ -5,6 +5,21 @@
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-07-09
+
+### Fixed
+
+- `redownload_download` 现在分配新 ID 而非复用旧 ID，与领域模型一致
+- `resume_download` gob 丢失时保持同一 ID 重新下载，不再回退到 redownload（分配新 ID）
+- ConcurrentDownloader 失败后自动降级到 SingleDownloader，避免临时网络错误直接导致下载失败
+- `open_file` 注册到 Tauri 命令处理器，修复右键菜单「打开」按钮不工作的问题
+- `delete_download` 改为等待 worker 彻底停止后才删除文件，修复删除竞态
+- `pause_download` 发送前端事件 `download-paused`，不再依赖 1s 轮询
+- `resume_download` 从 DB 读取 `resumable` 字段决定引擎选择，不再硬编码 `supports_range: true`
+- 新增 `WorkerPool::cancel_and_wait` 方法，确保取消后 worker 完全停止
+- PropertiesDialog 和 DownloadDetailsWindow 中的长 URL 默认截断一行显示，右侧复制图标按钮可复制完整 URL
+- 修复 Windows 上「设置」保存按钮无响应的问题：`sync_autostart` 失败不再阻塞整个 save，改为日志记录
+
 ## [0.6.0] - 2026-07-08
 
 ### Added
@@ -96,3 +111,10 @@
 - 重新下载失败/丢失的文件
 - IDM 风格进度显示（流畅动画）
 - 右键菜单（停止、删除、打开、打开文件夹、重新下载、属性）
+
+[0.6.1]: https://github.com/fb0sh/ProxyDownloadManager/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/fb0sh/ProxyDownloadManager/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/fb0sh/ProxyDownloadManager/compare/v0.4.1...v0.5.0
+[0.4.1]: https://github.com/fb0sh/ProxyDownloadManager/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/fb0sh/ProxyDownloadManager/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/fb0sh/ProxyDownloadManager/releases/tag/v0.3.0

@@ -116,6 +116,15 @@ function App() {
     return () => { unlisten.then(f => f()); };
   }, [queryClient]);
 
+  // Listen for pause → refresh list immediately
+  useEffect(() => {
+    const unlisten = listen<number>("download-paused", (event) => {
+      console.log('[ProxyDM FE] download-paused id=', event.payload);
+      queryClient.invalidateQueries({ queryKey: ["downloads"] });
+    });
+    return () => { unlisten.then(f => f()); };
+  }, [queryClient]);
+
   // Listen for real-time progress updates (avoid waiting for DB flush)
   useEffect(() => {
     const unlisten = listen<{id: number; downloaded: number}>("download-progress", (event) => {

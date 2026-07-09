@@ -1,4 +1,6 @@
-import { Text, Label, ProgressBar } from "@primer/react";
+import { useState } from "react";
+import { Text, Label, ProgressBar, Button } from "@primer/react";
+import { CopyIcon } from "@primer/octicons-react";
 import { Dialog } from "@primer/react/experimental";
 import { useDownload } from "../../query/downloadQueries";
 import { formatBytes } from "../../types";
@@ -46,6 +48,7 @@ const cellLabel: React.CSSProperties = {
 
 const cellValue: React.CSSProperties = {
   flex: 1,
+  minWidth: 0,
   padding: "8px 12px",
   fontSize: 13,
   color: "var(--fgColor-default, #1f2328)",
@@ -74,6 +77,15 @@ function statusColor(status: string): "success" | "danger" | "attention" | "defa
 
 export default function PropertiesDialog({ id, onClose }: PropertiesDialogProps) {
   const item = useDownload(id);
+  const [urlCopied, setUrlCopied] = useState(false);
+
+  const handleCopyUrl = async () => {
+    try {
+      await navigator.clipboard.writeText(item?.url ?? "");
+      setUrlCopied(true);
+      setTimeout(() => setUrlCopied(false), 2000);
+    } catch {} // clipboard not available
+  };
 
   if (!item) return null;
 
@@ -91,9 +103,24 @@ export default function PropertiesDialog({ id, onClose }: PropertiesDialogProps)
             </Text>
             <Label variant={statusColor(item.status)}>{item.status}</Label>
           </div>
-          <Text size="small" style={{ color: "var(--fgColor-muted, #656d76)", wordBreak: "break-all", display: "block", marginTop: 4 }}>
-            {item.url}
-          </Text>
+          <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 4 }}>
+            <Text size="small" style={{
+              color: "var(--fgColor-muted, #656d76)",
+              flex: 1, minWidth: 0,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              lineHeight: 1.4,
+            }}>
+              {item.url}
+            </Text>
+            <Button size="small" onClick={handleCopyUrl}
+              leadingVisual={CopyIcon}
+              style={{ flexShrink: 0 }}
+            >
+              {urlCopied ? "✓" : ""}
+            </Button>
+          </div>
           {(item.status === "downloading" || item.status === "paused") && (
             <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8 }}>
               <div style={{ flex: 1 }}>

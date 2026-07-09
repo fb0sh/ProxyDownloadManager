@@ -29,7 +29,29 @@ pub async fn run_download(
 
     let result = if cfg.supports_range {
         let downloader = concurrent::ConcurrentDownloader::new(pool.clone(), event_tx.clone());
-        downloader.download(&cfg, limiter, cancel).await
+        let conc_result = downloader.download(&cfg, limiter.clone(), cancel.clone()).await;
+        match conc_result {
+            Ok(()) => conc_result,
+            Err(ref e) if e == "Cancelled" => conc_result,
+            Err(e) => {
+                eprintln!("[ProxyDM] Concurrent id={} failed, degrading to Single: {}", cfg.id, e);
+                // SessionReset: truncate .pdm so Single starts clean
+                let pdm_path = format!("{}.pdm", cfg.output_path);
+                let _ = std::fs::OpenOptions::new()
+                    .write(true)
+                    .truncate(true)
+                    .open(&pdm_path);
+                // Reset progress to 0 for the frontend
+                let _ = event_tx.send(Event {
+                    kind: crate::types::EventKind::DownloadProgress,
+                    download_id: cfg.id,
+                    data: Some("0".to_string()),
+                });
+                // Retry with single downloader
+                let downloader = single::SingleDownloader::new(pool, event_tx.clone());
+                downloader.download(&cfg, limiter, cancel).await
+            }
+        }
     } else {
         let downloader = single::SingleDownloader::new(pool, event_tx.clone());
         downloader.download(&cfg, limiter, cancel).await

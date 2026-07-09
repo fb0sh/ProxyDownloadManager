@@ -47,48 +47,51 @@ export default function LogDialog({ onClose }: LogDialogProps) {
 
         {/* Log area */}
         <div style={{
-          background: "var(--bgColor-inset, #f0f2f5)",
           padding: 16,
           maxHeight: 520,
           overflowY: "auto",
+          display: "flex",
+          flexDirection: "column",
+          gap: 8,
         }}>
-          <div style={{
-            fontFamily: "ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace",
-            fontSize: 11,
-            lineHeight: 1.6,
-            whiteSpace: "pre-wrap",
-            wordBreak: "break-all",
-          }}>
-            {logs.length === 0 ? (
-              <Text size="small" style={{ color: "var(--fgColor-muted, #656d76)" }}>
-                {t("log.noEntries")}
-              </Text>
-            ) : (
-              logs.map((line, i) => {
-                let color = "var(--fgColor-default, #1f2328)";
-                let bg = "transparent";
-                if (line.includes("[ERROR]")) {
-                  color = "var(--fgColor-danger, #cf222e)";
-                  bg = "var(--bgColor-danger-muted, #ffebe9)";
-                } else if (line.includes("[WARN]")) {
-                  color = "var(--fgColor-attention, #9a6700)";
-                  bg = "var(--bgColor-attention-muted, #fff8c5)";
-                } else if (line.includes("[INFO]")) {
-                  color = "var(--fgColor-accent, #0969da)";
-                }
-                return (
-                  <div key={i} style={{
-                    padding: "1px 8px",
-                    borderRadius: 3,
-                    color,
-                    background: bg,
+          {logs.length === 0 ? (
+            <Text size="small" style={{ color: "var(--fgColor-muted, #656d76)" }}>
+              {t("log.noEntries")}
+            </Text>
+          ) : (
+            logs.map((line, i) => {
+              let borderColor = "var(--borderColor-default, #d0d7de)";
+              let textColor = "var(--fgColor-default, #1f2328)";
+              if (line.includes("[ERROR]")) {
+                borderColor = "var(--borderColor-danger-emphasis, #cf222e)";
+                textColor = "var(--fgColor-danger, #cf222e)";
+              } else if (line.includes("[WARN]")) {
+                borderColor = "var(--borderColor-attention-emphasis, #bf8700)";
+                textColor = "var(--fgColor-attention, #9a6700)";
+              } else if (line.includes("[INFO]")) {
+                textColor = "var(--fgColor-accent, #0969da)";
+              }
+              return (
+                <div key={i} style={{
+                  border: `1px solid ${borderColor}`,
+                  borderRadius: 6,
+                  background: "var(--bgColor-muted, #f6f8fa)",
+                  padding: "8px 12px",
+                }}>
+                  <span style={{
+                    fontFamily: "ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace",
+                    fontSize: 11,
+                    lineHeight: 1.6,
+                    whiteSpace: "pre-wrap",
+                    overflowWrap: "break-word",
+                    color: textColor,
                   }}>
                     {line}
-                  </div>
-                );
-              })
-            )}
-          </div>
+                  </span>
+                </div>
+              );
+            })
+          )}
         </div>
       </div>
     </Dialog>

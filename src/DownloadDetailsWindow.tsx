@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { Text, Label, Button } from "@primer/react";
+import { CopyIcon } from "@primer/octicons-react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { formatBytes } from "./types";
@@ -17,7 +18,7 @@ function fmt(ts: string): string {
 }
 
 const card: React.CSSProperties = {
-  border: "1px solid var(--borderColor-muted, #d8dee4)", borderRadius: 6, overflow: "hidden",
+  border: "1px solid var(--borderColor-muted, #d8dee4)", borderRadius: 6,
 };
 const hdr: React.CSSProperties = {
   padding: "5px 10px", fontSize: 11, fontWeight: 600,
@@ -27,7 +28,7 @@ const hdr: React.CSSProperties = {
   textTransform: "uppercase", letterSpacing: "0.05em",
 };
 const bd: React.CSSProperties = {
-  padding: "8px 10px", display: "flex", flexDirection: "column", gap: 4,
+  padding: "8px 10px",
 };
 const r: React.CSSProperties = {
   display: "flex", fontSize: 12, lineHeight: 1.5,
@@ -36,7 +37,7 @@ const l: React.CSSProperties = {
   width: 80, flexShrink: 0, color: "var(--fgColor-muted, #656d76)", fontWeight: 600,
 };
 const v: React.CSSProperties = {
-  flex: 1, wordBreak: "break-all", color: "var(--fgColor-default, #1f2328)",
+  flex: 1, minWidth: 0, wordBreak: "break-all", color: "var(--fgColor-default, #1f2328)",
 };
 
 function statusColor(s: string): "success" | "danger" | "attention" | "accent" | "default" {
@@ -53,6 +54,15 @@ export default function DownloadDetailsWindow() {
   console.log('[ProxyDM FE] DownloadDetailsWindow mount');
   const [item, setItem] = useState<DownloadItem | null>(null);
   const [loading, setLoading] = useState(true);
+  const [urlCopied, setUrlCopied] = useState(false);
+
+  const handleCopyUrl = async () => {
+    try {
+      await navigator.clipboard.writeText(item?.url ?? "");
+      setUrlCopied(true);
+      setTimeout(() => setUrlCopied(false), 2000);
+    } catch {} // clipboard not available
+  };
 
   useEffect(() => {
     const p = new URLSearchParams(window.location.search);
@@ -117,9 +127,24 @@ export default function DownloadDetailsWindow() {
 
       {/* URL */}
       <div style={{ padding: "8px 14px", borderBottom: "1px solid var(--borderColor-muted, #d8dee4)" }}>
-        <Text size="small" style={{ color: "var(--fgColor-muted, #656d76)", wordBreak: "break-all", lineHeight: 1.4 }}>
-          {item.url}
-        </Text>
+        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+          <Text size="small" style={{
+            color: "var(--fgColor-muted, #656d76)",
+            flex: 1, minWidth: 0,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            lineHeight: 1.4,
+          }}>
+            {item.url}
+          </Text>
+          <Button size="small" onClick={handleCopyUrl}
+            leadingVisual={CopyIcon}
+            style={{ flexShrink: 0 }}
+          >
+            {urlCopied ? "✓" : ""}
+          </Button>
+        </div>
       </div>
 
       {/* Content */}

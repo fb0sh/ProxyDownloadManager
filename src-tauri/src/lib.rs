@@ -220,6 +220,7 @@ pub fn run() {
             cmd::open_extensions_folder,
             cmd::get_extensions_dir,
             cmd::check_update,
+            cmd::open_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

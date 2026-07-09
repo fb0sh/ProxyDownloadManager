@@ -164,18 +164,7 @@ pub async fn redownload_download(
         }
     }
 
-    let mut updated = existing.clone();
-    updated.downloaded = 0;
-    updated.status = DownloadStatus::Downloading;
-    updated.last_try = now_str();
-    state.db.update_download(&updated)?;
-    // Reset progress immediately so frontend doesn't bounce
-    state.runtime.register(id);
-    let _ = state.app_handle.emit("download-progress", serde_json::json!({
-        "id": id,
-        "downloaded": 0u64,
-    }));
-
+    // Don't modify the old record — new download attempt = new ID
     let pool = state.worker_pool.pool_ref();
     let headers = std::collections::HashMap::new();
     let proxy_url = resolve_proxy_url(&existing.proxy_name).unwrap_or_default();
@@ -205,12 +194,13 @@ pub async fn redownload_download(
         }
     };
 
+    // Allocate a new ID for this new download attempt
     let cfg = DownloadConfig {
         url: existing.url.clone(),
         output_path: existing.save_path.clone(),
-        save_path: existing.save_path,
-        id,
-        file_name: existing.file_name,
+        save_path: existing.save_path.clone(),
+        id: 0, // add() will assign
+        file_name: existing.file_name.clone(),
         is_resume: false,
         headers: std::collections::HashMap::new(),
         proxy_name: proxy_url,
@@ -222,7 +212,30 @@ pub async fn redownload_download(
         user_agent: settings.user_agent.clone(),
     };
 
-    state.worker_pool.add_with_id(cfg, id).await
+    let new_id = state.worker_pool.add(cfg).await?;
+
+    // Create a new DB record for this new attempt (old record stays as-is)
+    let new_item = DownloadItem {
+        id: new_id,
+        url: existing.url,
+        file_name: existing.file_name.clone(),
+        save_path: existing.save_path.clone(),
+        total_size: file_size,
+        downloaded: 0,
+        status: DownloadStatus::Downloading,
+        parts: vec![],
+        proxy_name: existing.proxy_name,
+        connections: existing.connections,
+        resumable: Some(supports_range),
+        merge_progress: 0.0,
+        created_at: now_str(),
+        last_try: String::new(),
+    };
+    if let Err(e) = state.db.insert_download(&new_item) {
+        eprintln!("[ProxyDM] FATAL: failed to insert redownload id={} into DB: {}", new_id, e);
+    }
+
+    Ok(new_id)
 }
 
 #[tauri::command]
@@ -427,6 +440,9 @@ pub async fn pause_download(state: State<'_, Arc<AppState>>, id: u64) -> Result<
             }
             item.status = DownloadStatus::Paused;
             let _ = state.db.update_download(&item);
+            let _ = state.app_handle.emit("download-paused", serde_json::json!({
+                "id": id,
+            }));
         }
     }
     Ok(())
@@ -439,14 +455,15 @@ pub async fn resume_download(state: State<'_, Arc<AppState>>, id: u64) -> Result
         l.info(&format!("Resume id={}", id));
     }
     if let Ok(Some(saved_state)) = crate::state::gob::load_state(id) {
-        // Update DB status to Downloading before spawn
-        if let Ok(mut items) = state.db.list_downloads() {
-            if let Some(item) = items.iter_mut().find(|i| i.id == id) {
-                item.status = DownloadStatus::Downloading;
-                item.last_try = now_str();
-                let _ = state.db.update_download(item);
-            }
-        }
+        // Update DB status and read resumable flag
+        let supports_range = if let Ok(Some(mut item)) = state.db.get_by_id(id) {
+            item.status = DownloadStatus::Downloading;
+            item.last_try = now_str();
+            let _ = state.db.update_download(&item);
+            item.resumable.unwrap_or(true)
+        } else {
+            true
+        };
 
         let proxy_url = resolve_proxy_url(&saved_state.proxy_name).unwrap_or_default();
         let cfg = DownloadConfig {
@@ -459,7 +476,7 @@ pub async fn resume_download(state: State<'_, Arc<AppState>>, id: u64) -> Result
             headers: std::collections::HashMap::new(),
             proxy_name: proxy_url,
             total_size: saved_state.total_size,
-            supports_range: true,
+            supports_range,
             rate_limit_bps: 0,
             connections: saved_state.workers,
             max_retries: 3,
@@ -467,8 +484,34 @@ pub async fn resume_download(state: State<'_, Arc<AppState>>, id: u64) -> Result
         };
         state.worker_pool.add_with_id(cfg, id).await?;
     } else {
-        // No saved state — fall back to redownload
-        return redownload_download(state, id).await.map(|_| ());
+        // No saved state — re-download with the same ID (not a new redownload)
+        if let Ok(Some(item)) = state.db.get_by_id(id) {
+            let mut updated = item.clone();
+            updated.downloaded = 0;
+            updated.status = DownloadStatus::Downloading;
+            updated.last_try = now_str();
+            let _ = state.db.update_download(&updated);
+
+            let settings = config::load();
+            let proxy_url = resolve_proxy_url(&item.proxy_name).unwrap_or_default();
+            let cfg = DownloadConfig {
+                url: item.url,
+                output_path: item.save_path.clone(),
+                save_path: item.save_path,
+                id,
+                file_name: item.file_name,
+                is_resume: false,
+                headers: std::collections::HashMap::new(),
+                proxy_name: proxy_url,
+                total_size: item.total_size,
+                supports_range: item.resumable.unwrap_or(true),
+                rate_limit_bps: 0,
+                connections: item.connections,
+                max_retries: 3,
+                user_agent: settings.user_agent,
+            };
+            state.worker_pool.add_with_id(cfg, id).await?;
+        }
     }
     Ok(())
 }
@@ -498,7 +541,7 @@ pub async fn delete_download(
         None
     };
 
-    state.worker_pool.cancel(id).await;
+    state.worker_pool.cancel_and_wait(id).await;
 
     state.db.delete_download(id)?;
     crate::state::gob::delete_state(id)?;
@@ -534,7 +577,10 @@ pub fn save_settings(state: State<'_, Arc<AppState>>, settings: Settings) -> Res
     let tls_changed = old.danger_accept_invalid_certs != settings.danger_accept_invalid_certs;
     let shortcut_changed = old.global_shortcut != settings.global_shortcut;
     crate::config::save(&settings)?;
-    sync_autostart(&state.app_handle, settings.launch_at_startup, settings.silent_startup)?;
+    // Non-fatal: autostart registry may fail on some systems
+    if let Err(e) = sync_autostart(&state.app_handle, settings.launch_at_startup, settings.silent_startup) {
+        eprintln!("[ProxyDM] Failed to sync autostart: {}", e);
+    }
     if tls_changed {
         eprintln!("[ProxyDM] TLS cert validation changed, clearing client pool");
         state.worker_pool.clear_clients();

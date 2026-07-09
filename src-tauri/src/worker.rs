@@ -11,7 +11,7 @@ pub struct WorkerPool {
     semaphore: Arc<Semaphore>,
     pool: Arc<NetworkPool>,
     event_tx: mpsc::UnboundedSender<Event>,
-    active: Arc<Mutex<HashMap<u64, Arc<AtomicBool>>>>,
+    active: Arc<Mutex<HashMap<u64, (Arc<AtomicBool>, tokio::task::JoinHandle<()>)>>>,
     next_id: AtomicU64,
 }
 
@@ -46,21 +46,18 @@ impl WorkerPool {
         eprintln!("[ProxyDM] worker spawn id={} url={} proxy={} conns={}",
             id, cfg.url, cfg.proxy_name, cfg.connections);
         let cancel = Arc::new(AtomicBool::new(false));
-        {
-            let mut active = self.active.lock().await;
-            active.insert(id, cancel.clone());
-        }
+        let cancel_for_task = cancel.clone();
         let event_tx = self.event_tx.clone();
         let pool = self.pool.clone();
         let active_map = self.active.clone();
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let limiter = Arc::new(MultiLimiter::new(
                 0, // global rate limit handled elsewhere
                 cfg.rate_limit_bps,
             ));
 
-            let result = engine::run_download(cfg, pool, event_tx.clone(), limiter, cancel.clone()).await;
+            let result = engine::run_download(cfg, pool, event_tx.clone(), limiter, cancel_for_task.clone()).await;
 
             match &result {
                 Ok(_) => eprintln!("[ProxyDM] worker id={} completed OK", id),
@@ -84,15 +81,37 @@ impl WorkerPool {
             }
             drop(permit);
         });
+        {
+            let mut active = self.active.lock().await;
+            active.insert(id, (cancel, handle));
+        }
     }
 
     pub async fn cancel(&self, id: u64) {
         let mut active = self.active.lock().await;
-        if let Some(cancel) = active.remove(&id) {
+        if let Some((cancel, _handle)) = active.remove(&id) {
             eprintln!("[ProxyDM] worker cancel id={} (flag set)", id);
             cancel.store(true, Ordering::Relaxed);
         } else {
             eprintln!("[ProxyDM] worker cancel id={} (not found, already done?)", id);
+        }
+    }
+
+    pub async fn cancel_and_wait(&self, id: u64) {
+        let handle = {
+            let mut active = self.active.lock().await;
+            if let Some((cancel, handle)) = active.remove(&id) {
+                eprintln!("[ProxyDM] worker cancel_and_wait id={} (flag set, waiting)", id);
+                cancel.store(true, Ordering::Relaxed);
+                Some(handle)
+            } else {
+                eprintln!("[ProxyDM] worker cancel_and_wait id={} (not found, already done?)", id);
+                None
+            }
+        };
+        if let Some(handle) = handle {
+            let _ = handle.await;
+            eprintln!("[ProxyDM] worker cancel_and_wait id={} worker fully stopped", id);
         }
     }
 
