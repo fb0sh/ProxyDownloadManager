@@ -2,9 +2,17 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { DownloadItem, Settings } from "../types";
 
+
+
 export function useTauriCommands() {
   return {
-    listDownloads: () => invoke<DownloadItem[]>("list_downloads"),
+    listDownloads: async () => {
+      const items: any[] = await invoke<DownloadItem[]>("list_downloads");
+      return items.map((item) => ({
+        ...item,
+        status: item.status && item.status.startsWith("failed") ? "failed" : item.status || "queued",
+      })) as DownloadItem[];
+    },
     startDownload: (url: string, filename: string, proxyName: string, connections: number, savePath: string) =>
       invoke<number>("start_download", { url, filename, proxyName, connections, savePath }),
     pauseDownload: (id: number) => invoke<void>("pause_download", { id }),

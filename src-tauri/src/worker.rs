@@ -27,16 +27,20 @@ impl WorkerPool {
         }
     }
 
+    pub fn next_id(&self) -> u64 {
+        self.next_id.fetch_add(1, Ordering::Relaxed)
+    }
+
     pub async fn add(&self, mut cfg: DownloadConfig) -> Result<u64, String> {
-        let permit = self.semaphore.clone().acquire_owned().await.map_err(|e| e.to_string())?;
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let permit = self.semaphore.clone().try_acquire_owned().map_err(|_| "Too many concurrent downloads (max 8) — wait for one to finish first.".to_string())?;
+        let id = self.next_id();
         cfg.id = id;
         self.spawn_task(cfg, permit, id).await;
         Ok(id)
     }
 
     pub async fn add_with_id(&self, cfg: DownloadConfig, id: u64) -> Result<u64, String> {
-        let permit = self.semaphore.clone().acquire_owned().await.map_err(|e| e.to_string())?;
+        let permit = self.semaphore.clone().try_acquire_owned().map_err(|_| "Too many concurrent downloads — try again later.".to_string())?;
         self.spawn_task(cfg, permit, id).await;
         Ok(id)
     }
@@ -73,10 +77,15 @@ impl WorkerPool {
                 }
             }
 
-            // Cleanup
+            // Cleanup: only remove if entry still belongs to this worker
+            // (prevents a paused→resumed worker from removing the new worker's entry)
             {
                 let mut active = active_map.lock().await;
-                active.remove(&id);
+                if let Some((entry_cancel, _)) = active.get(&id) {
+                    if Arc::ptr_eq(entry_cancel, &cancel_for_task) {
+                        active.remove(&id);
+                    }
+                }
                 eprintln!("[ProxyDM] worker id={} cleaned up, {} active remaining", id, active.len());
             }
             drop(permit);

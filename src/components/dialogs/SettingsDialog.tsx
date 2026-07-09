@@ -7,7 +7,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { t, setLanguage } from "../../i18n";
 import type { Settings } from "../../types";
 
-const THREAD_OPTIONS = [0, 4, 8, 16, 32, 64];
+const THREAD_OPTIONS = [0, 4, 8, 16, 32];
 const THREAD_LABELS: Record<number, string> = { 0: "Auto", 4: "4", 8: "8", 16: "16", 32: "32", 64: "64" };
 const RETRY_OPTIONS = [3, 5, 10, 20, 50];
 

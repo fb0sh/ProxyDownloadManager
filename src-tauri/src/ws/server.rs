@@ -109,7 +109,8 @@ impl WsServer {
 
             match msg {
                 Message::Text(text) => {
-                    eprintln!("[ProxyDM WS] Received: {}", &text[..text.len().min(200)]);
+                    let max_preview = text.char_indices().nth(200).map(|(i, _)| i).unwrap_or(text.len());
+                    eprintln!("[ProxyDM WS] Received: {}", &text[..max_preview]);
 
                     // Try parsing as browser extension JSON first:
                     // { action: "add", url: "...", referrer, tab_title, filename, proxy_name, connections }

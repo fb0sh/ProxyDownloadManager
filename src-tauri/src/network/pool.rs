@@ -26,7 +26,6 @@ impl NetworkPool {
         let mut builder = reqwest::Client::builder()
             .pool_max_idle_per_host(128)
             .tcp_keepalive(Some(Duration::from_secs(60)))
-            .timeout(Duration::from_secs(120))
             .connect_timeout(Duration::from_secs(30))
             .https_only(false)
             .danger_accept_invalid_certs(self.danger_accept_invalid_certs);

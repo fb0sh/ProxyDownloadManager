@@ -194,13 +194,33 @@ pub async fn redownload_download(
         }
     };
 
-    // Allocate a new ID for this new download attempt
-    let cfg = DownloadConfig {
+    // Allocate a new ID, insert DB record first, then spawn
+    let new_id = state.worker_pool.next_id();
+
+    let new_item = DownloadItem {
+        id: new_id,
         url: existing.url.clone(),
-        output_path: existing.save_path.clone(),
-        save_path: existing.save_path.clone(),
-        id: 0, // add() will assign
         file_name: existing.file_name.clone(),
+        save_path: existing.save_path.clone(),
+        total_size: file_size,
+        downloaded: 0,
+        status: DownloadStatus::Downloading,
+        parts: vec![],
+        proxy_name: existing.proxy_name.clone(),
+        connections: existing.connections,
+        resumable: Some(supports_range),
+        merge_progress: 0.0,
+        created_at: now_str(),
+        last_try: String::new(),
+    };
+    state.db.insert_download(&new_item)?;
+
+    let cfg = DownloadConfig {
+        url: existing.url,
+        output_path: existing.save_path.clone(),
+        save_path: existing.save_path,
+        id: new_id,
+        file_name: existing.file_name,
         is_resume: false,
         headers: std::collections::HashMap::new(),
         proxy_name: proxy_url,
@@ -209,31 +229,9 @@ pub async fn redownload_download(
         rate_limit_bps: 0,
         connections: existing.connections,
         max_retries: 3,
-        user_agent: settings.user_agent.clone(),
+        user_agent: settings.user_agent,
     };
-
-    let new_id = state.worker_pool.add(cfg).await?;
-
-    // Create a new DB record for this new attempt (old record stays as-is)
-    let new_item = DownloadItem {
-        id: new_id,
-        url: existing.url,
-        file_name: existing.file_name.clone(),
-        save_path: existing.save_path.clone(),
-        total_size: file_size,
-        downloaded: 0,
-        status: DownloadStatus::Downloading,
-        parts: vec![],
-        proxy_name: existing.proxy_name,
-        connections: existing.connections,
-        resumable: Some(supports_range),
-        merge_progress: 0.0,
-        created_at: now_str(),
-        last_try: String::new(),
-    };
-    if let Err(e) = state.db.insert_download(&new_item) {
-        eprintln!("[ProxyDM] FATAL: failed to insert redownload id={} into DB: {}", new_id, e);
-    }
+    state.worker_pool.add_with_id(cfg, new_id).await?;
 
     Ok(new_id)
 }
@@ -338,29 +336,14 @@ pub async fn start_download(
         }
     }
 
-    let cfg = DownloadConfig {
-        url: url.clone(),
-        output_path: full_path.clone(),
-        save_path: full_path.clone(),
-        id: 0,
-        file_name: file_name.clone(),
-        is_resume: false,
-        headers: std::collections::HashMap::new(),
-        proxy_name: proxy_url_str.clone().unwrap_or_default(),
-        total_size: file_size,
-        supports_range,
-        rate_limit_bps: 0,
-        connections,
-        max_retries: 3,
-        user_agent: settings.user_agent.clone(),
-    };
-
-    let id = state.worker_pool.add(cfg).await?;
+    // Allocate ID first, then insert DB record BEFORE spawning the worker
+    // (prevents race where download completes before DB record exists)
+    let id = state.worker_pool.next_id();
 
     // Compute initial chunk layout for thread progress display
     let parts = if supports_range && file_size > 0 {
         let num_conns = if connections > 0 { connections.min(32) } else { 1 };
-        let min_chunk = 2u64 * 1024 * 1024; // 2MB
+        let min_chunk = 2u64 * 1024 * 1024;
         let tasks = crate::engine::chunk::compute_chunks(file_size, num_conns, min_chunk);
         tasks.iter().enumerate().map(|(i, t)| DownloadPart {
             index: i as u32,
@@ -385,23 +368,40 @@ pub async fn start_download(
 
     let item = DownloadItem {
         id,
-        url,
-        file_name,
-        save_path: full_path,
+        url: url.clone(),
+        file_name: file_name.clone(),
+        save_path: full_path.clone(),
         total_size: file_size,
         downloaded: 0,
         status: DownloadStatus::Downloading,
         parts,
-        proxy_name,
+        proxy_name: proxy_name.clone(),
         connections,
         resumable: Some(supports_range),
         merge_progress: 0.0,
         created_at: now_str(),
         last_try: String::new(),
     };
-    if let Err(e) = state.db.insert_download(&item) {
-        eprintln!("[ProxyDM] FATAL: failed to insert download id={} into DB: {}", id, e);
-    }
+    state.db.insert_download(&item)?;
+
+    // Now spawn the worker
+    let cfg = DownloadConfig {
+        url,
+        output_path: full_path.clone(),
+        save_path: full_path.clone(),
+        id,
+        file_name,
+        is_resume: false,
+        headers: std::collections::HashMap::new(),
+        proxy_name: proxy_url_str.clone().unwrap_or_default(),
+        total_size: file_size,
+        supports_range,
+        rate_limit_bps: 0,
+        connections,
+        max_retries: 3,
+        user_agent: settings.user_agent.clone(),
+    };
+    state.worker_pool.add_with_id(cfg, id).await?;
 
     Ok(id)
 }
@@ -412,31 +412,34 @@ pub async fn pause_download(state: State<'_, Arc<AppState>>, id: u64) -> Result<
     if let Ok(l) = state.logger.lock() {
         l.info(&format!("Pause id={}", id));
     }
-    state.worker_pool.cancel(id).await;
-    // Flush runtime progress to DB so saved state has latest downloaded value
+    // Wait for workers to fully stop — engine saves task state to gob on cancel
+    state.worker_pool.cancel_and_wait(id).await;
+    // Flush runtime progress to DB
     state.runtime.flush_to_db(&state.db);
     if let Ok(Some(mut item)) = state.db.get_by_id(id) {
         if matches!(item.status, DownloadStatus::Downloading) {
-            // Save state for resume: one single task for the remaining bytes
-            let remaining = item.total_size.saturating_sub(item.downloaded);
-            if remaining > 0 {
-                let tasks = vec![Task { offset: item.downloaded, length: remaining }];
-                let saved = DownloadState {
-                    url: item.url.clone(),
-                    id: item.id,
-                    file_name: item.file_name.clone(),
-                    save_path: item.save_path.clone(),
-                    total_size: item.total_size,
-                    downloaded: item.downloaded,
-                    tasks,
-                    elapsed_secs: 0,
-                    chunk_bitmap: Vec::new(),
-                    actual_chunk_size: 0,
-                    proxy_name: item.proxy_name.clone(),
-                    workers: item.connections,
-                    min_chunk_size: 0,
-                };
-                let _ = crate::state::gob::save_state(id, &saved);
+            // For single (non-Range) downloads, the engine doesn't save state;
+            // save a simple contiguous task here.
+            if item.resumable != Some(true) {
+                let remaining = item.total_size.saturating_sub(item.downloaded);
+                if remaining > 0 {
+                    let saved = DownloadState {
+                        url: item.url.clone(),
+                        id: item.id,
+                        file_name: item.file_name.clone(),
+                        save_path: item.save_path.clone(),
+                        total_size: item.total_size,
+                        downloaded: item.downloaded,
+                        tasks: vec![Task { offset: item.downloaded, length: remaining }],
+                        elapsed_secs: 0,
+                        chunk_bitmap: Vec::new(),
+                        actual_chunk_size: 0,
+                        proxy_name: item.proxy_name.clone(),
+                        workers: 1,
+                        min_chunk_size: 0,
+                    };
+                    let _ = crate::state::gob::save_state(id, &saved);
+                }
             }
             item.status = DownloadStatus::Paused;
             let _ = state.db.update_download(&item);
@@ -548,7 +551,8 @@ pub async fn delete_download(
 
     if let Some(path) = save_path {
         let p = std::path::Path::new(&path);
-        let pdm_path = p.with_extension("pdm");
+        // .pdm is APPENDED, not replacing extension: file.zip → file.zip.pdm
+        let pdm_path = std::path::PathBuf::from(format!("{}.pdm", path));
         if pdm_path.exists() {
             eprintln!("[ProxyDM] delete removing file: {:?}", p);
             let _ = std::fs::remove_file(&pdm_path);
@@ -772,8 +776,9 @@ pub async fn check_update(
 
     let resp = client
         .get("https://api.github.com/repos/fb0sh/ProxyDownloadManager/releases/latest")
-        .header("User-Agent", "ProxyDM/0.3.0")
+        .header("User-Agent", concat!("ProxyDM/", env!("CARGO_PKG_VERSION")))
         .header("Accept", "application/vnd.github.v3+json")
+        .timeout(std::time::Duration::from_secs(30))
         .send()
         .await
         .map_err(|e| format!("Failed to check update: {}", e))?;

@@ -5,6 +5,24 @@
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-07-09
+
+### Fixed
+
+- 暂停/恢复机制重写：引擎保存真实 task 列表到 gob，修复并发下载产生文件空洞的损坏问题
+- `download_task` 失败时仅重试未写入部分（`TaskError` 格式），修复 `bytes_written` 重复计数
+- `Range: bytes=X-Y` 收到 HTTP 200 时按致命错误处理（服务器忽略 Range 时全量写入错误偏移）
+- 移除客户端级 120 秒整请求超时，改为 per-request 超时（慢速下载不会超时断开）
+- `delete_download` 中 `.pdm` 路径计算修正（`with_extension` → `format!("{}.pdm")`）
+- worker 清理竞态修复：用 `Arc::ptr_eq` 校验 entry 归属，暂停→恢复不会误删新 worker
+- 前端 `listDownloads` 归一化 status 字段（`failed:<msg>` → `failed`），修复 failed 状态匹配
+- `start_download` 与 `redownload_download` 先插 DB 再 spawn worker，消除僵尸任务竞态
+- `WorkerPool` 满时 `try_acquire_owned` 立即返回错误而非无限挂起
+- `SingleDownloader` 取消时保存进度状态，支持单线程下载的断点续传
+- 日志截断改用 `char_indices` 安全边界，修复多字节字符 panic
+- 前端连接选项移除 64（后端上限 32），两上限统一
+- `check_update` 修复硬编码 UA 版本号 + 添加 30s 超时
+
 ## [0.6.1] - 2026-07-09
 
 ### Fixed
@@ -17,6 +35,20 @@
 - `pause_download` 发送前端事件 `download-paused`，不再依赖 1s 轮询
 - `resume_download` 从 DB 读取 `resumable` 字段决定引擎选择，不再硬编码 `supports_range: true`
 - 新增 `WorkerPool::cancel_and_wait` 方法，确保取消后 worker 完全停止
+- ConcurrentDownloader 暂停/取消时保存真实 task 列表到 gob 状态，修复恢复后文件空洞损坏问题
+- SingleDownloader 取消时也保存进度状态，支持单线程下载的断点续传
+- download_task 失败时仅重试未写入部分（TaskError 格式），修复 bytes_written 重复计数
+- 完整性检查改为队列空 + 字节计数双重校验
+- 移除客户端级 120 秒整请求超时，改用 per-request timeout（probe 30s/test_proxy 10s/check_update 30s）
+- check_update 修复硬编码 UA 版本号 + 添加 30s 超时
+- 前端 `listDownloads` 归一化 status 字段（`failed:<msg>` → `failed`），修复 failed 状态匹配
+- 修复 `delete_download` 中 `.pdm` 路径计算（`with_extension` → `{path}.pdm` 拼接）
+- 前端连接选项移除 64（后端上限 32），两端统一
+- 修复 worker 清理竞态：用 `Arc::ptr_eq` 校验 entry 归属，暂停→恢复不会误删新 worker
+- WorkerPool 满时 `try_acquire_owned` 立即返回错误而非无限挂起
+- `start_download` 先插 DB 记录再 spawn worker，修复下载完成早于 DB insert 导致的僵尸任务
+- `redownload_download` 同样修正 DB 插入顺序
+- 日志截断改用 `char_indices` 安全边界，修复多字节字符 panic
 - PropertiesDialog 和 DownloadDetailsWindow 中的长 URL 默认截断一行显示，右侧复制图标按钮可复制完整 URL
 - 修复 Windows 上「设置」保存按钮无响应的问题：`sync_autostart` 失败不再阻塞整个 save，改为日志记录
 
@@ -112,6 +144,7 @@
 - IDM 风格进度显示（流畅动画）
 - 右键菜单（停止、删除、打开、打开文件夹、重新下载、属性）
 
+[0.6.2]: https://github.com/fb0sh/ProxyDownloadManager/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/fb0sh/ProxyDownloadManager/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/fb0sh/ProxyDownloadManager/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/fb0sh/ProxyDownloadManager/compare/v0.4.1...v0.5.0

@@ -75,7 +75,41 @@ impl SingleDownloader {
         const BUF_SIZE: usize = 1024 * 1024; // 1MB buffer
         let mut buf = Vec::with_capacity(BUF_SIZE);
 
+        // Helper: save current progress for resume
+        let save_progress = |written: u64, total_size: u64, id: u64, cfg: &DownloadConfig| {
+            let remaining = total_size.saturating_sub(written);
+            if remaining > 0 {
+                let saved = crate::types::DownloadState {
+                    url: cfg.url.clone(),
+                    id,
+                    file_name: cfg.file_name.clone(),
+                    save_path: cfg.save_path.clone(),
+                    total_size,
+                    downloaded: written,
+                    tasks: vec![crate::types::Task { offset: written, length: remaining }],
+                    elapsed_secs: 0,
+                    chunk_bitmap: Vec::new(),
+                    actual_chunk_size: 0,
+                    proxy_name: cfg.proxy_name.clone(),
+                    workers: 1,
+                    min_chunk_size: 0,
+                };
+                let _ = crate::state::gob::save_state(id, &saved);
+            }
+        };
+
         loop {
+            // Check cancel between chunks for responsive pause
+            if cancel.load(Ordering::Relaxed) {
+                if !buf.is_empty() {
+                    let _ = file.write_all(&buf);
+                    total += buf.len() as u64;
+                    buf.clear();
+                }
+                save_progress(total, cfg.total_size, cfg.id, cfg);
+                return Err("Cancelled".to_string());
+            }
+
             let chunk_result = tokio::time::timeout(
                 std::time::Duration::from_secs(10), stream.next()
             ).await;
@@ -84,7 +118,12 @@ impl SingleDownloader {
                 Ok(None) => break,
                 Err(_elapsed) => {
                     if cancel.load(Ordering::Relaxed) {
-                        if !buf.is_empty() { let _ = file.write_all(&buf); }
+                        if !buf.is_empty() {
+                            let _ = file.write_all(&buf);
+                            total += buf.len() as u64;
+                            buf.clear();
+                        }
+                        save_progress(total, cfg.total_size, cfg.id, cfg);
                         return Err("Cancelled".to_string());
                     }
                     continue;

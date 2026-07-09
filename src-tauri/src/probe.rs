@@ -23,7 +23,7 @@ pub async fn probe(
     let mut first_err: Option<String> = None;
     for (i, ua) in user_agents.iter().chain(std::iter::once(&String::new())).enumerate() {
         eprintln!("[ProxyDM] probe attempt #{} ua_prefix={:?}...", i,
-            &ua[..ua.len().min(40)]);
+            &ua[..ua.char_indices().nth(40).map(|(i, _)| i).unwrap_or(ua.len())]);
         // Try Range first to detect 206 support
         let mut range_req = client.get(url);
         range_req = range_req.header("Range", "bytes=0-0");

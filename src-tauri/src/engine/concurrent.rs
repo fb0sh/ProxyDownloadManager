@@ -7,24 +7,24 @@ use std::sync::Arc;
 use std::error::Error;
 use tokio::sync::mpsc;
 
-/// Parse a SlowChunk error: "SlowChunk:offset:chunk_size:written"
-/// Returns a new Task for the remaining portion if valid.
-fn parse_slow_chunk(err: &str, orig: &Task) -> Option<Task> {
-    let parts: Vec<&str> = err.split(':').collect();
-    if parts.len() != 4 || parts[0] != "SlowChunk" {
+/// Parse a task error: "TaskError:offset:written:message"
+/// Returns (remaining_task, message) if valid.
+fn parse_task_error(err: &str, orig: &Task) -> Option<(Task, String)> {
+    let parts: Vec<&str> = err.splitn(4, ':').collect();
+    if parts.len() < 4 || parts[0] != "TaskError" {
         return None;
     }
-    let offset: u64 = parts[1].parse().ok()?;
-    let chunk_size: u64 = parts[2].parse().ok()?;
-    let written: u64 = parts[3].parse().ok()?;
-    let remaining = chunk_size.saturating_sub(written);
-    if remaining < 1024 * 1024 {
-        return None; // less than 1MB left, not worth splitting
+    let orig_offset: u64 = parts[1].parse().ok()?;
+    let written: u64 = parts[2].parse().ok()?;
+    let msg = parts[3].to_string();
+    let written = written.min(orig.length);
+    let remaining = orig.length.saturating_sub(written);
+    if remaining > 0 && written > 0 {
+        Some((Task { offset: orig_offset + written, length: remaining }, msg))
+    } else {
+        // Nothing remaining to re-queue, task is fully consumed
+        None
     }
-    Some(Task {
-        offset: offset + written,
-        length: remaining,
-    })
 }
 
 pub struct ConcurrentDownloader {
@@ -38,14 +38,36 @@ impl ConcurrentDownloader {
     }
 
     pub async fn download(&self, cfg: &DownloadConfig, limiter: Arc<MultiLimiter>, cancel: Arc<AtomicBool>) -> Result<(), String> {
-        // On resume, load saved progress to initialize bytes_written correctly
-        let resume_offset = if cfg.is_resume {
-            let saved = crate::state::gob::load_state(cfg.id).ok().flatten();
-            let off = saved.as_ref().map(|s| s.downloaded).unwrap_or(0);
-            eprintln!("[ProxyDM] concurrent id={} resume offset={}", cfg.id, off);
-            off
+        // On resume, load saved state — prefer real engine-saved tasks
+        let (tasks, resume_offset): (Vec<Task>, u64) = if cfg.is_resume {
+            if let Some(saved) = crate::state::gob::load_state(cfg.id).ok().flatten() {
+                if !saved.tasks.is_empty()
+                    && !(saved.tasks.len() == 1 && saved.tasks[0].offset == saved.downloaded)
+                {
+                    // Engine-saved tasks: use them directly
+                    eprintln!("[ProxyDM] concurrent id={} resume with {} engine tasks", cfg.id, saved.tasks.len());
+                    let off = saved.downloaded;
+                    (saved.tasks, off)
+                } else {
+                    // Legacy/fake single task — recompute from downloaded offset
+                    let off = saved.downloaded;
+                    let remaining = cfg.total_size.saturating_sub(off);
+                    if remaining == 0 {
+                        return Err(format!("Download {} already complete", cfg.id));
+                    }
+                    let num_conns = 4.max(cfg.connections);
+                    eprintln!("[ProxyDM] concurrent id={} resume recompute from offset={} ({} tasks from engine)",
+                        cfg.id, off, saved.tasks.len());
+                    (chunk::compute_chunks(remaining, num_conns, 0)
+                        .into_iter()
+                        .map(|mut t| { t.offset += off; t })
+                        .collect::<Vec<_>>(), off)
+                }
+            } else {
+                return Err(format!("Resume requested but no saved state for id={}", cfg.id));
+            }
         } else {
-            0
+            (chunk::compute_chunks(cfg.total_size, cfg.connections.max(1), 0), 0)
         };
         let bytes_written = Arc::new(AtomicU64::new(resume_offset));
 
@@ -54,19 +76,6 @@ impl ConcurrentDownloader {
         } else {
             let sqrt = (cfg.total_size as f64 / 1024.0 / 1024.0).sqrt() as u32;
             sqrt.max(1).min(32)
-        };
-
-        let tasks = if cfg.is_resume {
-            let remaining = cfg.total_size.saturating_sub(resume_offset);
-            if remaining == 0 {
-                return Err(format!("Download {} already complete", cfg.id));
-            }
-            chunk::compute_chunks(remaining, num_conns, 0)
-                .into_iter()
-                .map(|mut t| { t.offset += resume_offset; t })
-                .collect::<Vec<_>>()
-        } else {
-            chunk::compute_chunks(cfg.total_size, num_conns, 0)
         };
 
         if tasks.is_empty() {
@@ -140,10 +149,15 @@ impl ConcurrentDownloader {
                     match result {
                         Ok(_) => {}
                         Err(e) => {
-                            // SlowChunk: split remaining work for other workers
-                            if let Some(rest) = parse_slow_chunk(&e, &task) {
+                            // Try to parse as TaskError:offset:written:msg — re-queue only remaining portion
+                            if let Some((rest, _msg)) = parse_task_error(&e, &task) {
+                                eprintln!("[ProxyDM] task offset={} failed, re-queueing remaining {} bytes", task.offset, rest.length);
                                 queue.push(rest);
                                 continue;
+                            }
+                            // Plain error (e.g. Cancelled) — re-queue full task
+                            if e == "Cancelled" {
+                                return;
                             }
                             // Exponential backoff for network errors
                             let attempt = max_retries.saturating_sub(retries_left) + 1;
@@ -152,7 +166,6 @@ impl ConcurrentDownloader {
                             if retries_left > 0 {
                                 retries_left -= 1;
                             } else {
-                                // Keep retrying indefinitely (user can stop manually)
                                 retries_left = max_retries;
                             }
                             queue.push(task);
@@ -176,14 +189,33 @@ impl ConcurrentDownloader {
         // Sync file to ensure all writes are visible
         let _ = file.sync_all();
 
-        // If user canceled, don't finalize or emit completed
+        // If user canceled (pause/delete), save remaining tasks for resume
         if cancel.load(Ordering::Relaxed) {
+            let remaining_tasks = queue.drain();
+            if !remaining_tasks.is_empty() {
+                let saved = crate::types::DownloadState {
+                    url: cfg.url.clone(),
+                    id: cfg.id,
+                    file_name: cfg.file_name.clone(),
+                    save_path: cfg.save_path.clone(),
+                    total_size: cfg.total_size,
+                    downloaded: bytes_written.load(Ordering::Relaxed),
+                    tasks: remaining_tasks,
+                    elapsed_secs: 0,
+                    chunk_bitmap: Vec::new(),
+                    actual_chunk_size: 0,
+                    proxy_name: cfg.proxy_name.clone(),
+                    workers: num_workers,
+                    min_chunk_size: 0,
+                };
+                let _ = crate::state::gob::save_state(cfg.id, &saved);
+            }
             return Err("Cancelled".to_string());
         }
 
-        // Verify completeness
-        let downloaded = bytes_written.load(Ordering::Relaxed);
-        if downloaded < cfg.total_size {
+        // Verify completeness: queue must be empty AND total bytes written match
+        if !queue.is_empty() || bytes_written.load(Ordering::Relaxed) < cfg.total_size {
+            let downloaded = bytes_written.load(Ordering::Relaxed);
             return Err(format!("Download incomplete: {}/{} bytes", downloaded, cfg.total_size));
         }
 
@@ -253,6 +285,8 @@ async fn download_task(
     user_agent: &str,
     bytes_written: &AtomicU64,
 ) -> Result<(), String> {
+    // Pre-declare written counter so error path can report it
+    let mut written: u64 = 0;
     let range_end = if task.length == 0 {
         String::new()
     } else {
@@ -278,12 +312,18 @@ async fn download_task(
     })?;
 
     if cancel.load(Ordering::Relaxed) {
-        return Err("Cancelled".to_string());
+        return Err(format!("TaskError:{}:{}:Cancelled", task.offset, written));
     }
 
     let status = resp.status();
     eprintln!("[ProxyDM] concurrent_task offset={} HTTP {} (expected 206 or 200)", task.offset, status);
-    if status != reqwest::StatusCode::PARTIAL_CONTENT && status != reqwest::StatusCode::OK {
+
+    // For offset > 0: 200 means server ignored Range — fatal, don't retry same spot
+    if status == reqwest::StatusCode::OK {
+        if task.offset > 0 {
+            return Err(format!("Server ignored Range header (HTTP 200), offset={}", task.offset));
+        }
+    } else if status != reqwest::StatusCode::PARTIAL_CONTENT {
         return Err(format!("HTTP {}", status));
     }
 
@@ -291,7 +331,6 @@ async fn download_task(
     use futures_util::StreamExt;
     let mut stream = std::pin::pin!(stream);
     let base_offset = task.offset;
-    let mut written: u64 = 0; // relative offset within this task
     let chunk_size = task.length;
 
     const BUF_SIZE: usize = 1024 * 1024; // 1MB
@@ -303,7 +342,7 @@ async fn download_task(
     loop {
         // Check cancel (responsive Stop even during streaming)
         if cancel.load(Ordering::Relaxed) {
-            return Err("Cancelled".to_string());
+            return Err(format!("TaskError:{}:{}:Cancelled", base_offset, written));
         }
 
         // Abort slow chunks so other workers can steal remaining work
@@ -314,7 +353,7 @@ async fn download_task(
         {
             eprintln!("[ProxyDM] slow chunk offset={} written={}/{} after {}s, re-queuing",
                 base_offset, written, chunk_size, elapsed.as_secs());
-            return Err(format!("SlowChunk:{}:{}:{}", base_offset, chunk_size, written));
+            return Err(format!("TaskError:{}:{}:SlowChunk", base_offset, written));
         }
 
         let chunk_result = tokio::time::timeout(
@@ -322,12 +361,9 @@ async fn download_task(
         ).await;
         let chunk = match chunk_result {
             Ok(Some(Ok(c))) => c,
-            Ok(Some(Err(e))) => return Err(format!("Stream error: {}", e)),
+            Ok(Some(Err(e))) => return Err(format!("TaskError:{}:{}:Stream error: {}", base_offset, written, e)),
             Ok(None) => {
                 if !buf.is_empty() {
-                    if cancel.load(Ordering::Relaxed) {
-                        return Err("Cancelled".to_string());
-                    }
                     write_at(file, &buf, base_offset + written)
                         .map_err(|e| format!("write_at error: {}", e))?;
                     written += buf.len() as u64;
@@ -337,7 +373,7 @@ async fn download_task(
             }
             Err(_elapsed) => {
                 if cancel.load(Ordering::Relaxed) {
-                    return Err("Cancelled".to_string());
+                    return Err(format!("TaskError:{}:{}:Cancelled", base_offset, written));
                 }
                 continue;
             }
@@ -347,9 +383,6 @@ async fn download_task(
         buf.extend_from_slice(&chunk);
 
         if buf.len() >= BUF_SIZE {
-            if cancel.load(Ordering::Relaxed) {
-                return Err("Cancelled".to_string());
-            }
             write_at(file, &buf, base_offset + written)
                 .map_err(|e| format!("write_at error: {}", e))?;
             written += buf.len() as u64;
