@@ -5,7 +5,11 @@
 
 ## [Unreleased]
 
-## [0.5.1] - 2026-07-08
+## [0.6.0] - 2026-07-08
+
+### Added
+
+- 全局快捷键 `Ctrl+Super+J` 呼出主窗口（macOS: Control+Command+J，Linux/Win: Ctrl+Win+J）
 
 ### Fixed
 
