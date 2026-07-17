@@ -2,8 +2,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { DownloadItem, Settings } from "../types";
 
-
-
 export function useTauriCommands() {
   return {
     listDownloads: async () => {
@@ -21,8 +19,6 @@ export function useTauriCommands() {
       invoke<void>("delete_download", { id, deleteFile }),
     getSettings: () => invoke<Settings>("get_settings"),
     saveSettings: (settings: Settings) => invoke<void>("save_settings", { settings }),
-    cancelDownload: (id: number) => invoke<void>("cancel_download", { id }),
     redownloadDownload: (id: number) => invoke<number>("redownload_download", { id }),
-    testProxy: (proxyName: string) => invoke<{ok: boolean; latency_ms: number; status?: number; error?: string}>("test_proxy", { proxyName }),
   };
 }

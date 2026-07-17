@@ -3,7 +3,6 @@ use crate::network::limiter::MultiLimiter;
 use crate::types::{Event, EventKind, DownloadConfig};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::error::Error;
 use tokio::sync::mpsc;
 
 pub struct SingleDownloader {
@@ -16,7 +15,7 @@ impl SingleDownloader {
         Self { pool, event_tx }
     }
 
-    pub async fn download(&self, cfg: &DownloadConfig, limiter: Arc<MultiLimiter>, cancel: Arc<AtomicBool>) -> Result<(), String> {
+    pub async fn download(&self, cfg: &DownloadConfig, limiter: Arc<MultiLimiter>, cancel: Arc<AtomicBool>, on_cancelled: &crate::engine::OnCancelled) -> Result<(), String> {
         eprintln!("[ProxyDM] single id={} url={}", cfg.id, cfg.url);
         let mut req = self.pool
             .get_client(if cfg.proxy_name.is_empty() { None } else { Some(&cfg.proxy_name) })
@@ -75,7 +74,7 @@ impl SingleDownloader {
         const BUF_SIZE: usize = 1024 * 1024; // 1MB buffer
         let mut buf = Vec::with_capacity(BUF_SIZE);
 
-        // Helper: save current progress for resume
+        // Helper: save current progress for resume via callback
         let save_progress = |written: u64, total_size: u64, id: u64, cfg: &DownloadConfig| {
             let remaining = total_size.saturating_sub(written);
             if remaining > 0 {
@@ -87,14 +86,10 @@ impl SingleDownloader {
                     total_size,
                     downloaded: written,
                     tasks: vec![crate::types::Task { offset: written, length: remaining }],
-                    elapsed_secs: 0,
-                    chunk_bitmap: Vec::new(),
-                    actual_chunk_size: 0,
                     proxy_name: cfg.proxy_name.clone(),
                     workers: 1,
-                    min_chunk_size: 0,
                 };
-                let _ = crate::state::gob::save_state(id, &saved);
+                on_cancelled(id, &saved);
             }
         };
 

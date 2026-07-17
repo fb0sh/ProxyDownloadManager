@@ -7,6 +7,7 @@ import { useDownloadSpeed, computeETA } from "../hooks/useDownloadSpeed";
 import { useFileIcons, iconFor } from "../hooks/useFileIcons";
 import { formatBytes } from "../types";
 import { t } from "../i18n";
+import { applyFilter, formatTimestamp } from "../utils/download";
 import type { DownloadItem } from "../types";
 
 interface DownloadTableProps {
@@ -17,25 +18,6 @@ interface DownloadTableProps {
   onDelete: (ids: number[]) => void;
   onProperties: (id: number) => void;
   onRedownload: (item: DownloadItem) => void;
-}
-
-function applyFilter(items: DownloadItem[], f: "all" | "completed" | "incomplete") {
-  if (f === "all") return items;
-  if (f === "completed") return items.filter((d) => d.status === "completed");
-  return items.filter((d) => d.status === "downloading" || d.status === "paused" || d.status === "queued");
-}
-
-function formatTimestamp(ts: string): string {
-  if (!ts) return "—";
-  const secs = Number(ts);
-  if (!Number.isFinite(secs) || secs <= 0) return ts;
-  try {
-    const d = new Date(secs * 1000);
-    const pad = (n: number) => String(n).padStart(2, "0");
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-  } catch {
-    return ts;
-  }
 }
 
 export default function DownloadTable({
@@ -49,6 +31,13 @@ export default function DownloadTable({
   const icons = useFileIcons(filtered);
   const [menuState, setMenuState] = useState<{ id: number; x: number; y: number } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+
+  // Wraps any cell content with right-click context menu support
+  const ctx = (row: DownloadItem, content: React.ReactNode) => (
+    <div onContextMenu={(e) => handleContext(e, row.id)} style={{ cursor: "context-menu" }}>
+      {content}
+    </div>
+  );
 
   // Close context menu on click outside
   useEffect(() => {
@@ -192,7 +181,7 @@ export default function DownloadTable({
       id: "size",
       header: t("downloadTable.size"),
       width: "auto" as const,
-      renderCell: (row: DownloadItem) => (
+      renderCell: (row: DownloadItem) => ctx(row,
         <Text size="small" style={{ whiteSpace: "nowrap" }}>
           {row.total_size === 0 ? "—" : row.status === "completed" ? formatBytes(row.total_size) : `${formatBytes(row.downloaded)} / ${formatBytes(row.total_size)}`}
         </Text>
@@ -205,18 +194,18 @@ export default function DownloadTable({
       renderCell: (row: DownloadItem) => {
         const pct = row.total_size > 0 ? Math.round((row.downloaded / row.total_size) * 100) : 0;
         if (row.total_size === 0) {
-          return <Text size="small" style={{ color: "var(--fgColor-muted, #656d76)" }}>—</Text>;
+          return ctx(row, <Text size="small" style={{ color: "var(--fgColor-muted, #656d76)" }}>—</Text>);
         }
         if (row.status === "downloading") {
-          return <Text size="small">{pct}{t("progress.percent")}</Text>;
+          return ctx(row, <Text size="small">{pct}{t("progress.percent")}</Text>);
         }
         if (row.status === "paused") {
-          return <Text size="small">Paused ({pct}{t("progress.percent")})</Text>;
+          return ctx(row, <Text size="small">Paused ({pct}{t("progress.percent")})</Text>);
         }
         if (row.status === "completed") {
-          return <Text size="small">Completed</Text>;
+          return ctx(row, <Text size="small">Completed</Text>);
         }
-        return <Text size="small">{row.status}</Text>;
+        return ctx(row, <Text size="small">{row.status}</Text>);
       },
     },
     {
@@ -230,7 +219,7 @@ export default function DownloadTable({
       },
       renderCell: (row: DownloadItem) => {
         const info = speeds.get(row.id);
-        return (
+        return ctx(row,
           <Text size="small" style={{ whiteSpace: "nowrap" }}>
             {info?.display ?? "—"}
           </Text>
@@ -242,9 +231,9 @@ export default function DownloadTable({
       header: t("downloadTable.remain"),
       width: "auto" as const,
       renderCell: (row: DownloadItem) => {
-        if (row.status !== "downloading") return <Text size="small" style={{ color: "var(--fgColor-muted, #656d76)" }}>—</Text>;
+        if (row.status !== "downloading") return ctx(row, <Text size="small" style={{ color: "var(--fgColor-muted, #656d76)" }}>—</Text>);
         const info = speeds.get(row.id);
-        return (
+        return ctx(row,
           <Text size="small">
             {info ? computeETA(row, info.bps) : "—"}
           </Text>
@@ -255,7 +244,7 @@ export default function DownloadTable({
       id: "threads",
       header: t("downloadTable.threads"),
       width: "auto" as const,
-      renderCell: (row: DownloadItem) => (
+      renderCell: (row: DownloadItem) => ctx(row,
         <Text size="small">{row.connections}</Text>
       ),
     },
@@ -263,7 +252,7 @@ export default function DownloadTable({
       id: "proxy",
       header: t("downloadTable.proxy"),
       width: "auto" as const,
-      renderCell: (row: DownloadItem) => (
+      renderCell: (row: DownloadItem) => ctx(row,
         <Text size="small">{row.proxy_name || "—"}</Text>
       ),
     },
@@ -271,7 +260,7 @@ export default function DownloadTable({
       id: "resume",
       header: t("downloadTable.resume"),
       width: "auto" as const,
-      renderCell: (row: DownloadItem) => (
+      renderCell: (row: DownloadItem) => ctx(row,
         <Text size="small">
           {row.resumable === true ? t("properties.yes") : row.resumable === false ? t("properties.no") : t("properties.unknown")}
         </Text>
@@ -282,7 +271,7 @@ export default function DownloadTable({
       header: t("downloadTable.lastTry"),
       width: "auto" as const,
       minWidth: 140,
-      renderCell: (row: DownloadItem) => (
+      renderCell: (row: DownloadItem) => ctx(row,
         <Text size="small" style={{ whiteSpace: "nowrap" }}>{formatTimestamp(row.last_try)}</Text>
       ),
     },

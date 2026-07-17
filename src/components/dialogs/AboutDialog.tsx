@@ -10,7 +10,7 @@ import {
 import { Dialog } from "@primer/react/experimental";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
-import { useSettingsStore } from "../../stores/settingsStore";
+import { useSettings } from "../../query/downloadQueries";
 import { t } from "../../i18n";
 import type { UpdateInfo } from "../../types";
 
@@ -29,7 +29,8 @@ export default function AboutDialog({ onClose, onDownloadUpdate }: AboutDialogPr
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [errorMsg, setErrorMsg] = useState("");
 
-  const proxies = useSettingsStore((s) => s.settings.proxies);
+  const { settings: loadedSettings } = useSettings();
+  const proxies = loadedSettings?.proxies ?? {};
 
   useEffect(() => {
     getVersion().then(setVersion).catch(() => setVersion("?"));

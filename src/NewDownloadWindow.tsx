@@ -2,29 +2,8 @@ import { useState, useCallback, useEffect } from "react";
 import { TextInput, Button, FormControl, Select } from "@primer/react";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useStartDownload, useSettings } from "./query/downloadQueries";
-import { useSettingsStore } from "./stores/settingsStore";
 import { setLanguage, t } from "./i18n";
-
-const DOWNLOAD_EXTENSIONS = [
-  ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar", ".iso",
-  ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
-  ".mp3", ".mp4", ".avi", ".mkv", ".mov", ".wmv", ".flv",
-  ".exe", ".msi", ".dmg", ".pkg", ".deb", ".rpm",
-  ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp",
-  ".dll", ".so", ".dylib", ".bin", ".dat",
-  ".csv", ".json", ".xml", ".sql", ".db",
-  ".apk", ".ipa", ".appimage", ".flatpak", ".snap",
-];
-
-function looksLikeDownloadUrl(text: string): boolean {
-  try {
-    const url = new URL(text);
-    const path = url.pathname.toLowerCase();
-    return DOWNLOAD_EXTENSIONS.some((ext) => path.endsWith(ext));
-  } catch {
-    return false;
-  }
-}
+import { looksLikeDownloadUrl, extractFilename } from "./utils/download";
 
 async function readClipboardUrl(): Promise<string | null> {
   try {
@@ -35,48 +14,6 @@ async function readClipboardUrl(): Promise<string | null> {
     }
   } catch {}
   return null;
-}
-
-function extractFilename(url: string): string {
-  try {
-    const u = new URL(url);
-
-    // Strategy 1: extract from URL path (most common case)
-    // e.g. https://example.com/files/photo.jpg → photo.jpg
-    const path = u.pathname;
-    const segments = path.split("/").filter(Boolean);
-    if (segments.length > 0) {
-      const last = segments[segments.length - 1];
-      if (last.includes(".") && !last.endsWith(".")) return decodeURIComponent(last);
-    }
-
-    // Strategy 2: search ALL query param values for filename=xxx
-    // CDN URLs embed the filename in params like:
-    //   ?rscd=attachment%3B+filename%3Dfile.zip  (Azure CDN)
-    //   ?response-content-disposition=attachment%3B%20filename%3Dfile.zip
-    //   ?download_fname=file.zip  (other CDNs)
-    // We don't hardcode param names — we regex-search every param's decoded value.
-    for (const [_, val] of u.searchParams) {
-      if (!val) continue;
-      const decoded = decodeURIComponent(val);
-      // Match: filename="xxx" | filename=xxx | filename*=UTF-8''xxx
-      const m = decoded.match(/filename\s*=\*?(?:UTF-8''|"|)([^";\s]+)/i);
-      if (m) return m[1];
-    }
-
-    // Strategy 3: scan the full URL for the last name.extension pattern
-    // Covers URLs like https://example.com/dl?file=photo.jpg where the
-    // filename is in a query value but without a "filename=" prefix.
-    // Requires ≥2 chars before the dot to avoid matching version numbers (v1.2).
-    const pattern = /([^\/?#&=\s]{2,})\.(\w{2,5})(?=[\/?#&\s]|$)/g;
-    const matches = [...url.matchAll(pattern)];
-    if (matches.length > 0) {
-      const last = matches[matches.length - 1];
-      return last[1] + "." + last[2];
-    }
-
-    return "";
-  } catch { return ""; }
 }
 
 const sectionCard: React.CSSProperties = {
@@ -92,29 +29,26 @@ const sectionBody: React.CSSProperties = {
 };
 
 export default function NewDownloadWindow() {
-  console.log('[ProxyDM FE] NewDownloadWindow mount');
-  const settings = useSettingsStore((s) => s.settings);
-  const proxies = settings.proxies;
-  const startDownload = useStartDownload();
   const { settings: loadedSettings } = useSettings();
-  const setSettings = useSettingsStore((s) => s.setSettings);
+  const settings = loadedSettings;
+  const proxies = settings?.proxies ?? {};
+  const startDownload = useStartDownload();
   const [url, setUrl] = useState("");
   const [filename, setFilename] = useState("");
   const [autoFilled, setAutoFilled] = useState(false);
-  const [proxyName, setProxyName] = useState(settings.default_proxy);
-  const [connections, setConnections] = useState(0); // 0 = auto (backend picks based on file size)
-  const [savePath, setSavePath] = useState(settings.download_dir);
+  const [proxyName, setProxyName] = useState(settings?.default_proxy ?? "");
+  const [connections, setConnections] = useState(0);
+  const [savePath, setSavePath] = useState(settings?.download_dir ?? "");
 
   // Sync backend settings
   useEffect(() => {
     if (loadedSettings) {
-      setSettings(loadedSettings);
       setLanguage(loadedSettings.language || "en");
       setProxyName(loadedSettings.default_proxy);
       setConnections(loadedSettings.max_connections);
       setSavePath(loadedSettings.download_dir);
     }
-  }, [loadedSettings, setSettings]);
+  }, [loadedSettings]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);

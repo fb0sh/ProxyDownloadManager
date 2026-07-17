@@ -13,7 +13,6 @@ pub struct DownloadItem {
     pub proxy_name: String,
     pub connections: u32,
     pub resumable: Option<bool>,
-    pub merge_progress: f64,
     pub created_at: String,
     pub last_try: String,
 }
@@ -129,6 +128,8 @@ pub struct DownloadConfig {
     pub connections: u32,
     pub max_retries: u32,
     pub user_agent: String,
+    #[serde(default)]
+    pub resume_tasks: Vec<Task>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -140,12 +141,8 @@ pub struct DownloadState {
     pub total_size: u64,
     pub downloaded: u64,
     pub tasks: Vec<Task>,
-    pub elapsed_secs: u64,
-    pub chunk_bitmap: Vec<bool>,
-    pub actual_chunk_size: u64,
     pub proxy_name: String,
     pub workers: u32,
-    pub min_chunk_size: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

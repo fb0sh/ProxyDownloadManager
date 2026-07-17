@@ -10,10 +10,6 @@ fn detail_path(id: u64) -> PathBuf {
     state_dir().join(format!("detail-{}.json", id))
 }
 
-fn master_path() -> PathBuf {
-    state_dir().join("master.json")
-}
-
 fn pending_path() -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
     home.join(".ProxyDM/pending_new_download.json")
@@ -45,26 +41,6 @@ pub fn delete_state(id: u64) -> Result<(), String> {
         std::fs::remove_file(&path).map_err(|e| e.to_string())?;
     }
     Ok(())
-}
-
-pub fn save_master(ids: &[u64]) -> Result<(), String> {
-    let path = master_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    let json = serde_json::to_string_pretty(ids).map_err(|e| e.to_string())?;
-    std::fs::write(&path, json).map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-pub fn load_master() -> Result<Vec<u64>, String> {
-    let path = master_path();
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let json = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let ids: Vec<u64> = serde_json::from_str(&json).map_err(|e| e.to_string())?;
-    Ok(ids)
 }
 
 /// Write pending download request for IPC between main and new-download-window processes.
@@ -109,12 +85,8 @@ mod tests {
             total_size: 1000,
             downloaded: 500,
             tasks: vec![Task { offset: 500, length: 500 }],
-            elapsed_secs: 10,
-            chunk_bitmap: vec![true, false],
-            actual_chunk_size: 256,
             proxy_name: "".to_string(),
             workers: 4,
-            min_chunk_size: 2048,
         }
     }
 
@@ -138,14 +110,6 @@ mod tests {
     #[test]
     fn test_delete_nonexistent() {
         delete_state(9999).unwrap();
-    }
-
-    #[test]
-    fn test_master_save_and_load() {
-        save_master(&[1, 2, 3]).unwrap();
-        let ids = load_master().unwrap();
-        assert_eq!(ids, vec![1u64, 2, 3]);
-        save_master(&[]).unwrap();
     }
 
     #[test]

@@ -10,11 +10,12 @@ mod ws;
 mod cmd;
 mod tray;
 mod icons;
+mod filename;
+mod download_manager;
 
 use crate::cmd::AppState;
-use crate::log::Logger;
+use crate::download_manager::DownloadManager;
 use std::sync::Arc;
-use std::sync::Mutex;
 use tauri::Manager;
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 use tokio::sync::mpsc;
@@ -26,8 +27,6 @@ pub fn run() {
     let silent_start = std::env::args().any(|arg| arg == SILENT_START_ARG);
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
     let (request_tx, mut request_rx) = mpsc::unbounded_channel::<crate::types::PendingDownloadRequest>();
-
-    let logger = Mutex::new(Logger::new().expect("Failed to initialize logger"));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -61,7 +60,7 @@ pub fn run() {
                 .build(),
         )
         .setup(move |app| {
-            // macOS: deploy bundled browser extensions to ~/Library/Application Support/<id>/extensions/
+            // macOS: deploy bundled browser extensions
             #[cfg(target_os = "macos")]
             if let Err(e) = crate::cmd::deploy_extensions(app.handle()) {
                 eprintln!("[ProxyDM] Failed to deploy browser extensions: {}", e);
@@ -76,19 +75,23 @@ pub fn run() {
             app.manage(icon_cache);
 
             let danger_accept_invalid_certs = settings.danger_accept_invalid_certs;
-            // Start ID counter from DB's highest existing ID + 1 so restarts don't
-            // cause PRIMARY KEY conflicts on INSERT (silently swallowed by let _).
             let next_id_start = db.max_id().unwrap_or(0) + 1;
             let worker_pool = crate::worker::WorkerPool::new(8, event_tx.clone(), danger_accept_invalid_certs, next_id_start);
-            let state = Arc::new(AppState {
+            let logger = crate::log::Logger::new().expect("Failed to initialize logger");
+
+            let dm = Arc::new(DownloadManager::new(
                 db,
                 worker_pool,
                 logger,
+                crate::state::runtime::DownloadManagerState::new(),
+            ));
+
+            let state = Arc::new(AppState {
+                dm: dm.clone(),
                 app_handle: app.handle().clone(),
-                runtime: crate::state::runtime::DownloadManagerState::new(),
             });
             let ev_state = state.clone();
-            let flush_state = state.clone();
+            let flush_dm = dm.clone();
             app.manage(state);
 
             // Hide from Dock (macOS menu-bar only app)
@@ -98,7 +101,6 @@ pub fn run() {
                 use objc2::runtime::Object;
                 let cls = objc2::class!(NSApplication);
                 let ns_app: *mut Object = unsafe { msg_send![cls, sharedApplication] };
-                // NSApplicationActivationPolicyAccessory = 1 (no Dock icon)
                 let _: () = unsafe { msg_send![ns_app, setActivationPolicy: 1i64] };
             }
 
@@ -128,10 +130,15 @@ pub fn run() {
                 }
             }
 
-            // Spawn event handler: listens for download events, updates DB
+            // Spawn event handler: listens for download events, updates DB, emits to frontend
+            let app_handle_for_events = app.handle().clone();
             tauri::async_runtime::spawn(async move {
+                use tauri::Emitter;
                 while let Some(event) = event_rx.recv().await {
-                    ev_state.handle_event(event).await;
+                    let emitted = ev_state.dm.handle_event(event);
+                    for e in emitted {
+                        let _ = app_handle_for_events.emit(&e.name, e.payload);
+                    }
                 }
             });
 
@@ -142,10 +149,6 @@ pub fn run() {
                 while let Some(req) = request_rx.recv().await {
                     eprintln!("[ProxyDM consumer] Received request_rx: url={}", req.url);
 
-                    // Activate app before emitting so the new window can
-                    // steal focus from the browser.
-                    // macOS needs NSApp activation (strict focus policy).
-                    // Windows/Linux handle this via the normal window creation path.
                     #[cfg(target_os = "macos")]
                     {
                         use objc2::msg_send;
@@ -170,13 +173,11 @@ pub fn run() {
                 }
             });
 
-            let recovery_state = flush_state.clone();
-
             // Background task: flush runtime progress to DB every 5 seconds
             tauri::async_runtime::spawn(async move {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                    let flushed = flush_state.runtime.flush_to_db(&flush_state.db);
+                    let flushed = flush_dm.facade.flush();
                     if flushed > 0 {
                         eprintln!("[ProxyDM] Flushed {} progress entries to DB", flushed);
                     }
@@ -185,12 +186,12 @@ pub fn run() {
 
             // Crash recovery: re-queue all incomplete downloads
             {
-                if let Ok(items) = recovery_state.db.list_downloads() {
+                if let Ok(items) = dm.facade.list_items() {
                     let mut changed = false;
                     for mut item in items.into_iter() {
                         if matches!(item.status, crate::types::DownloadStatus::Downloading) {
                             item.status = crate::types::DownloadStatus::Paused;
-                            let _ = recovery_state.db.update_download(&item);
+                            let _ = dm.facade.update_item(&item);
                             changed = true;
                         }
                     }

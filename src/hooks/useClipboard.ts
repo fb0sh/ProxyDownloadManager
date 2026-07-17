@@ -1,26 +1,6 @@
 // src/hooks/useClipboard.ts
 import { useEffect, useRef, useState } from "react";
-
-const DOWNLOAD_EXTENSIONS = [
-  ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar", ".iso",
-  ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
-  ".mp3", ".mp4", ".avi", ".mkv", ".mov", ".wmv", ".flv",
-  ".exe", ".msi", ".dmg", ".pkg", ".deb", ".rpm",
-  ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp",
-  ".dll", ".so", ".dylib", ".bin", ".dat",
-  ".csv", ".json", ".xml", ".sql", ".db",
-  ".apk", ".ipa", ".appimage", ".flatpak", ".snap",
-];
-
-function looksLikeDownloadUrl(text: string): boolean {
-  try {
-    const url = new URL(text);
-    const path = url.pathname.toLowerCase();
-    return DOWNLOAD_EXTENSIONS.some((ext) => path.endsWith(ext));
-  } catch {
-    return false;
-  }
-}
+import { looksLikeDownloadUrl } from "../utils/download";
 
 export function useClipboardDetection(onUrlDetected: (url: string) => void) {
   const [lastText, setLastText] = useState("");

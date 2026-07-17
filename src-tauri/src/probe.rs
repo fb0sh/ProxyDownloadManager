@@ -96,56 +96,10 @@ pub async fn probe(
         };
 
         // Detect filename from Content-Disposition or URL
-        let file_name = resp.headers().get("content-disposition")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| {
-                s.split(';').find_map(|part| {
-                    let p = part.trim();
-                    p.strip_prefix("filename=").or_else(|| p.strip_prefix("filename*=UTF-8''"))
-                })
-            })
-            .map(|s| s.trim_matches('"').to_string())
-            .unwrap_or_else(|| {
-                // Strategy 2: search ALL query param values for filename=xxx
-                if let Ok(parsed) = url::Url::parse(url) {
-                    for (_, val) in parsed.query_pairs() {
-                        let lower = val.to_lowercase();
-                        if let Some(pos) = lower.find("filename=") {
-                            let after = &val[pos + 9..];
-                            let trimmed = after
-                                .trim_start_matches('*')
-                                .trim_start_matches("UTF-8''")
-                                .trim_matches('"')
-                                .trim();
-                            let name = trimmed.split(|c: char| c == ';' || c.is_whitespace())
-                                .next().unwrap_or(trimmed);
-                            if !name.is_empty() && name.contains('.') {
-                                return name.to_string();
-                            }
-                        }
-                    }
-                }
-                // Strategy 3: scan the full URL for the last name.ext pattern
-                // by splitting on delimiters, checking the last dot for 2-5 alpha ext
-                {
-                    let mut last = String::new();
-                    for token in url.split(|c: char| c == '/' || c == '?' || c == '#' || c == '&' || c == '=' || c.is_whitespace()) {
-                        if token.len() < 5 || !token.contains('.') || token.ends_with('.') { continue; }
-                        if let Some(dot) = token.rfind('.') {
-                            if dot < 2 { continue; }
-                            let ext = &token[dot + 1..];
-                            if ext.len() >= 2 && ext.len() <= 5 && ext.bytes().all(|b| b.is_ascii_alphabetic()) {
-                                last = token.to_string();
-                            }
-                        }
-                    }
-                    if !last.is_empty() { return last; }
-                }
-                std::path::Path::new(url)
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "download".to_string())
-            });
+        let cd_header = resp.headers().get("content-disposition")
+            .and_then(|v| v.to_str().ok());
+        let file_name = crate::filename::extract_filename(url, cd_header)
+            .unwrap_or_else(|| "download".to_string());
 
         eprintln!("[ProxyDM] probe SUCCESS ua#{} range={} size={} name={}", i, supports_range, file_size, file_name);
         return Ok(ProbeResult {

@@ -44,26 +44,14 @@ pub fn compute_chunks(file_size: u64, num_chunks: u32, _min_chunk_size: u64) -> 
     tasks
 }
 
-pub fn split_task(task: &Task, split_point: u64) -> (Task, Task) {
-    let split = align_down(split_point.max(task.offset + ALIGN).min(task.offset + task.length - ALIGN));
-    let left_len = split - task.offset;
-    let right_len = task.length - left_len;
-    (
-        Task { offset: task.offset, length: left_len },
-        Task { offset: split, length: right_len },
-    )
-}
-
 pub struct ChunkQueue {
     tasks: Mutex<VecDeque<Task>>,
-    closed: Mutex<bool>,
 }
 
 impl ChunkQueue {
     pub fn new(tasks: Vec<Task>) -> Self {
         Self {
             tasks: Mutex::new(VecDeque::from(tasks)),
-            closed: Mutex::new(false),
         }
     }
 
@@ -81,10 +69,6 @@ impl ChunkQueue {
     pub fn drain(&self) -> Vec<Task> {
         let mut tasks = self.tasks.lock().unwrap();
         tasks.drain(..).collect()
-    }
-
-    pub fn close(&self) {
-        *self.closed.lock().unwrap() = true;
     }
 
     pub fn is_empty(&self) -> bool {
@@ -151,26 +135,6 @@ mod tests {
         for t in &tasks {
             assert_eq!(t.offset % ALIGN, 0, "offset {} not aligned", t.offset);
         }
-    }
-
-    #[test]
-    fn test_split_task() {
-        let task = Task { offset: 0, length: 10_000_000 };
-        let (left, right) = split_task(&task, 5_000_000);
-        assert_eq!(left.offset, 0);
-        assert_eq!(right.offset, left.length);
-        assert_eq!(left.length + right.length, task.length);
-        assert_eq!(right.offset % ALIGN, 0);
-    }
-
-    #[test]
-    fn test_split_task_boundary() {
-        let task = Task { offset: 0, length: 4096 };
-        let (left, right) = split_task(&task, 2048);
-        // For ALIGN-sized tasks, split returns (empty, original) since
-        // split_point + ALIGN > offset + length - ALIGN
-        assert_eq!(left.length, 0);
-        assert_eq!(right.length, 4096);
     }
 
     #[test]

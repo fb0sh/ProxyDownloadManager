@@ -4,18 +4,8 @@ import { CopyIcon } from "@primer/octicons-react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { formatBytes } from "./types";
+import { formatTimestamp, statusColor } from "./utils/download";
 import type { DownloadItem } from "./types";
-
-function fmt(ts: string): string {
-  if (!ts) return "—";
-  const s = Number(ts);
-  if (!Number.isFinite(s) || s <= 0) return ts;
-  try {
-    const d = new Date(s * 1000);
-    const p = (n: number) => String(n).padStart(2, "0");
-    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-  } catch { return ts; }
-}
 
 const card: React.CSSProperties = {
   border: "1px solid var(--borderColor-muted, #d8dee4)", borderRadius: 6,
@@ -39,16 +29,6 @@ const l: React.CSSProperties = {
 const v: React.CSSProperties = {
   flex: 1, minWidth: 0, wordBreak: "break-all", color: "var(--fgColor-default, #1f2328)",
 };
-
-function statusColor(s: string): "success" | "danger" | "attention" | "accent" | "default" {
-  switch (s) {
-    case "completed": return "success";
-    case "failed": return "danger";
-    case "paused": return "attention";
-    case "downloading": return "accent";
-    default: return "default";
-  }
-}
 
 export default function DownloadDetailsWindow() {
   console.log('[ProxyDM FE] DownloadDetailsWindow mount');
@@ -156,7 +136,7 @@ export default function DownloadDetailsWindow() {
           <div style={bd}>
             <div style={r}><span style={l}>Size</span><span style={v}>{formatBytes(item.total_size)}</span></div>
             <div style={r}><span style={l}>Saved</span><span style={v}>{item.save_path || "—"}</span></div>
-            <div style={r}><span style={l}>Created</span><span style={v}>{fmt(item.created_at)}</span></div>
+            <div style={r}><span style={l}>Created</span><span style={v}>{formatTimestamp(item.created_at)}</span></div>
           </div>
         </div>
 
@@ -166,7 +146,7 @@ export default function DownloadDetailsWindow() {
           <div style={bd}>
             <div style={r}><span style={l}>Status</span><span style={v}>{item.status}</span></div>
             <div style={r}><span style={l}>Resume</span><span style={v}>{resumable}</span></div>
-            <div style={r}><span style={l}>Last try</span><span style={v}>{fmt(item.last_try)}</span></div>
+            <div style={r}><span style={l}>Last try</span><span style={v}>{formatTimestamp(item.last_try)}</span></div>
           </div>
         </div>
 

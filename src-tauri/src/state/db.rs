@@ -3,6 +3,41 @@ use rusqlite::{params, Connection};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+fn row_to_item(row: &rusqlite::Row) -> rusqlite::Result<DownloadItem> {
+    let id: u64 = row.get(0)?;
+    let url: String = row.get(1)?;
+    let file_name: String = row.get(2)?;
+    let save_path: String = row.get(3)?;
+    let total_size: u64 = row.get(4)?;
+    let downloaded: u64 = row.get(5)?;
+    let status_str: String = row.get(6)?;
+    let last_try: String = row.get(7)?;
+    let created_at: String = row.get(8)?;
+    let proxy_name: String = row.get(9)?;
+    let connections: u32 = row.get(10)?;
+    let parts_str: String = row.get(11)?;
+    let resumable: Option<i32> = row.get(12)?;
+
+    let parts: Vec<DownloadPart> = serde_json::from_str(&parts_str).unwrap_or_default();
+    let status = parse_status(&status_str);
+
+    Ok(DownloadItem {
+        id,
+        url,
+        file_name,
+        save_path,
+        total_size,
+        downloaded,
+        status,
+        parts,
+        proxy_name,
+        connections,
+        resumable: resumable.map(|v| v != 0),
+        created_at,
+        last_try,
+    })
+}
+
 pub struct Db {
     conn: Mutex<Connection>,
 }
@@ -19,7 +54,7 @@ impl Db {
     }
 
     /// Test helper — create Db at specific path
-    fn from_path(path: &std::path::Path) -> Result<Self, String> {
+    pub(crate) fn from_path(path: &std::path::Path) -> Result<Self, String> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
@@ -76,41 +111,7 @@ impl Db {
             .map_err(|e| e.to_string())?;
 
         let rows = stmt
-            .query_map([], |row| {
-                let id: u64 = row.get(0)?;
-                let url: String = row.get(1)?;
-                let file_name: String = row.get(2)?;
-                let save_path: String = row.get(3)?;
-                let total_size: u64 = row.get(4)?;
-                let downloaded: u64 = row.get(5)?;
-                let status_str: String = row.get(6)?;
-                let last_try: String = row.get(7)?;
-                let created_at: String = row.get(8)?;
-                let proxy_name: String = row.get(9)?;
-                let connections: u32 = row.get(10)?;
-                let parts_str: String = row.get(11)?;
-                let resumable: Option<i32> = row.get(12)?;
-
-                let parts: Vec<DownloadPart> = serde_json::from_str(&parts_str).unwrap_or_default();
-                let status = parse_status(&status_str);
-
-                Ok(DownloadItem {
-                    id,
-                    url,
-                    file_name,
-                    save_path,
-                    total_size,
-                    downloaded,
-                    status,
-                    parts,
-                    proxy_name,
-                    connections,
-                    resumable: resumable.map(|v| v != 0),
-                    merge_progress: 0.0,
-                    created_at,
-                    last_try,
-                })
-            })
+            .query_map([], |row| row_to_item(row))
             .map_err(|e| e.to_string())?;
 
         let mut items = Vec::new();
@@ -156,30 +157,7 @@ impl Db {
             )
             .map_err(|e| e.to_string())?;
 
-        let mut rows = stmt.query_map(params![id], |row| {
-            let id: u64 = row.get(0)?;
-            let url: String = row.get(1)?;
-            let file_name: String = row.get(2)?;
-            let save_path: String = row.get(3)?;
-            let total_size: u64 = row.get(4)?;
-            let downloaded: u64 = row.get(5)?;
-            let status_str: String = row.get(6)?;
-            let last_try: String = row.get(7)?;
-            let created_at: String = row.get(8)?;
-            let proxy_name: String = row.get(9)?;
-            let connections: u32 = row.get(10)?;
-            let parts_str: String = row.get(11)?;
-            let resumable: Option<i32> = row.get(12)?;
-
-            let parts: Vec<DownloadPart> = serde_json::from_str(&parts_str).unwrap_or_default();
-            let status = parse_status(&status_str);
-
-            Ok(DownloadItem {
-                id, url, file_name, save_path, total_size, downloaded, status, parts,
-                proxy_name, connections, resumable: resumable.map(|v| v != 0),
-                merge_progress: 0.0, created_at, last_try,
-            })
-        }).map_err(|e| e.to_string())?;
+        let mut rows = stmt.query_map(params![id], |row| row_to_item(row)).map_err(|e| e.to_string())?;
 
         match rows.next() {
             Some(Ok(item)) => Ok(Some(item)),
@@ -231,37 +209,6 @@ impl Db {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute("DELETE FROM downloads WHERE id=?1", params![id])
             .map_err(|e| e.to_string())?;
-        Ok(())
-    }
-
-    pub fn replace_all(&self, items: &[DownloadItem]) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        conn.execute("DELETE FROM downloads", [])
-            .map_err(|e| e.to_string())?;
-        for item in items {
-            let parts_str = serde_json::to_string(&item.parts).map_err(|e| e.to_string())?;
-            conn.execute(
-                "INSERT INTO downloads (id, url, file_name, save_path, total_size, downloaded, status, last_try,
-                                        created_at, proxy_name, connections, parts, resumable)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-                params![
-                    item.id,
-                    item.url,
-                    item.file_name,
-                    item.save_path,
-                    item.total_size,
-                    item.downloaded,
-                    status_to_string(&item.status),
-                    item.last_try,
-                    item.created_at,
-                    item.proxy_name,
-                    item.connections,
-                    parts_str,
-                    item.resumable.map(|v| if v { 1 } else { 0 }),
-                ],
-            )
-            .map_err(|e| e.to_string())?;
-        }
         Ok(())
     }
 }
@@ -319,7 +266,6 @@ mod tests {
             proxy_name: "".to_string(),
             connections: 4,
             resumable: Some(true),
-            merge_progress: 0.0,
             created_at: "2026-01-01".to_string(),
             last_try: "".to_string(),
         }
@@ -357,16 +303,6 @@ mod tests {
         let items = db.list_downloads().unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].id, 2);
-    }
-
-    #[test]
-    fn test_replace_all() {
-        let db = test_db();
-        db.insert_download(&sample_item(1)).unwrap();
-        let new_items = vec![sample_item(2), sample_item(3)];
-        db.replace_all(&new_items).unwrap();
-        let items = db.list_downloads().unwrap();
-        assert_eq!(items.len(), 2);
     }
 
     #[test]

@@ -10,7 +10,6 @@ export interface DownloadItem {
   proxy_name: string;
   connections: number;
   resumable: boolean | null;
-  merge_progress: number;
   created_at: string;
   last_try: string;
 }
@@ -61,29 +60,6 @@ export interface Settings {
   danger_accept_invalid_certs: boolean;
   global_shortcut: string;
 }
-
-export interface PendingDownloadRequest {
-  url: string;
-  filename: string;
-  proxy_name: string;
-  connections: number;
-}
-
-export interface Event {
-  kind: EventKind;
-  download_id: number;
-  data?: string;
-}
-
-export type EventKind =
-  | "DownloadStarted"
-  | "DownloadProgress"
-  | "DownloadCompleted"
-  | "DownloadPaused"
-  | "DownloadResumed"
-  | "DownloadErrored"
-  | "DownloadRemoved"
-  | "DownloadQueued";
 
 export interface AssetInfo {
   name: string;

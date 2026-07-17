@@ -4,7 +4,6 @@ use crate::engine::chunk::{self, ChunkQueue};
 use crate::types::{Task, Event, EventKind, DownloadConfig};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::error::Error;
 use tokio::sync::mpsc;
 
 /// Parse a task error: "TaskError:offset:written:message"
@@ -37,35 +36,18 @@ impl ConcurrentDownloader {
         Self { pool, event_tx }
     }
 
-    pub async fn download(&self, cfg: &DownloadConfig, limiter: Arc<MultiLimiter>, cancel: Arc<AtomicBool>) -> Result<(), String> {
-        // On resume, load saved state — prefer real engine-saved tasks
-        let (tasks, resume_offset): (Vec<Task>, u64) = if cfg.is_resume {
-            if let Some(saved) = crate::state::gob::load_state(cfg.id).ok().flatten() {
-                if !saved.tasks.is_empty()
-                    && !(saved.tasks.len() == 1 && saved.tasks[0].offset == saved.downloaded)
-                {
-                    // Engine-saved tasks: use them directly
-                    eprintln!("[ProxyDM] concurrent id={} resume with {} engine tasks", cfg.id, saved.tasks.len());
-                    let off = saved.downloaded;
-                    (saved.tasks, off)
-                } else {
-                    // Legacy/fake single task — recompute from downloaded offset
-                    let off = saved.downloaded;
-                    let remaining = cfg.total_size.saturating_sub(off);
-                    if remaining == 0 {
-                        return Err(format!("Download {} already complete", cfg.id));
-                    }
-                    let num_conns = 4.max(cfg.connections);
-                    eprintln!("[ProxyDM] concurrent id={} resume recompute from offset={} ({} tasks from engine)",
-                        cfg.id, off, saved.tasks.len());
-                    (chunk::compute_chunks(remaining, num_conns, 0)
-                        .into_iter()
-                        .map(|mut t| { t.offset += off; t })
-                        .collect::<Vec<_>>(), off)
-                }
-            } else {
-                return Err(format!("Resume requested but no saved state for id={}", cfg.id));
-            }
+    pub async fn download(&self, cfg: &DownloadConfig, limiter: Arc<MultiLimiter>, cancel: Arc<AtomicBool>, on_cancelled: &crate::engine::OnCancelled) -> Result<(), String> {
+        // On resume, use tasks passed via config instead of reading gob directly
+        let (tasks, resume_offset): (Vec<Task>, u64) = if cfg.is_resume && !cfg.resume_tasks.is_empty() {
+            eprintln!("[ProxyDM] concurrent id={} resume with {} engine tasks", cfg.id, cfg.resume_tasks.len());
+            let off = cfg.resume_tasks.iter().map(|t| t.offset + t.length).max().unwrap_or(0);
+            (cfg.resume_tasks.clone(), off)
+        } else if cfg.is_resume {
+            // No saved tasks — compute from scratch using total_size
+            let remaining = cfg.total_size;
+            let num_conns = 4.max(cfg.connections);
+            eprintln!("[ProxyDM] concurrent id={} resume recompute from scratch", cfg.id);
+            (chunk::compute_chunks(remaining, num_conns, 0), 0)
         } else {
             (chunk::compute_chunks(cfg.total_size, cfg.connections.max(1), 0), 0)
         };
@@ -189,7 +171,7 @@ impl ConcurrentDownloader {
         // Sync file to ensure all writes are visible
         let _ = file.sync_all();
 
-        // If user canceled (pause/delete), save remaining tasks for resume
+        // If user canceled (pause/delete), save remaining tasks for resume via callback
         if cancel.load(Ordering::Relaxed) {
             let remaining_tasks = queue.drain();
             if !remaining_tasks.is_empty() {
@@ -201,14 +183,10 @@ impl ConcurrentDownloader {
                     total_size: cfg.total_size,
                     downloaded: bytes_written.load(Ordering::Relaxed),
                     tasks: remaining_tasks,
-                    elapsed_secs: 0,
-                    chunk_bitmap: Vec::new(),
-                    actual_chunk_size: 0,
                     proxy_name: cfg.proxy_name.clone(),
                     workers: num_workers,
-                    min_chunk_size: 0,
                 };
-                let _ = crate::state::gob::save_state(cfg.id, &saved);
+                on_cancelled(cfg.id, &saved);
             }
             return Err("Cancelled".to_string());
         }

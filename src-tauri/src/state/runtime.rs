@@ -77,17 +77,9 @@ impl DownloadManagerState {
         count
     }
 
-    /// Get the current downloaded bytes for a download (for reporting).
-    #[allow(dead_code)]
-    pub fn get_downloaded(&self, id: u64) -> Option<u64> {
+    pub(crate) fn get_downloaded(&self, id: u64) -> Option<u64> {
         self.inner.lock().ok().and_then(|map| {
             map.get(&id).map(|rt| rt.downloaded)
         })
-    }
-
-    /// Number of active entries.
-    #[allow(dead_code)]
-    pub fn active_count(&self) -> usize {
-        self.inner.lock().map(|m| m.len()).unwrap_or(0)
     }
 }

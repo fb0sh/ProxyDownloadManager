@@ -31,14 +31,6 @@ impl WorkerPool {
         self.next_id.fetch_add(1, Ordering::Relaxed)
     }
 
-    pub async fn add(&self, mut cfg: DownloadConfig) -> Result<u64, String> {
-        let permit = self.semaphore.clone().try_acquire_owned().map_err(|_| "Too many concurrent downloads (max 8) — wait for one to finish first.".to_string())?;
-        let id = self.next_id();
-        cfg.id = id;
-        self.spawn_task(cfg, permit, id).await;
-        Ok(id)
-    }
-
     pub async fn add_with_id(&self, cfg: DownloadConfig, id: u64) -> Result<u64, String> {
         let permit = self.semaphore.clone().try_acquire_owned().map_err(|_| "Too many concurrent downloads — try again later.".to_string())?;
         self.spawn_task(cfg, permit, id).await;
@@ -61,7 +53,9 @@ impl WorkerPool {
                 cfg.rate_limit_bps,
             ));
 
-            let result = engine::run_download(cfg, pool, event_tx.clone(), limiter, cancel_for_task.clone()).await;
+            let result = engine::run_download(cfg, pool, event_tx.clone(), limiter, cancel_for_task.clone(),
+                Box::new(|id, state| { let _ = crate::state::gob::save_state(id, state); })
+            ).await;
 
             match &result {
                 Ok(_) => eprintln!("[ProxyDM] worker id={} completed OK", id),
@@ -122,10 +116,6 @@ impl WorkerPool {
             let _ = handle.await;
             eprintln!("[ProxyDM] worker cancel_and_wait id={} worker fully stopped", id);
         }
-    }
-
-    pub async fn active_count(&self) -> usize {
-        self.active.lock().await.len()
     }
 
     pub fn pool_ref(&self) -> Arc<NetworkPool> {
