@@ -8,9 +8,10 @@ use crate::state::runtime::DownloadManagerState;
 use std::sync::Mutex;
 
 pub struct DownloadManager {
-    pub facade: DownloadStateFacade,
-    pub worker_pool: WorkerPool,
-    pub logger: Mutex<Logger>,
+    pub(crate) facade: DownloadStateFacade,
+    pub(crate) worker_pool: WorkerPool,
+    logger: Mutex<Logger>,
+    settings: Mutex<Settings>,
 }
 
 impl DownloadManager {
@@ -20,10 +21,22 @@ impl DownloadManager {
         logger: Logger,
         runtime: DownloadManagerState,
     ) -> Self {
+        let settings = config::load();
         Self {
             facade: DownloadStateFacade::new(db, runtime),
             worker_pool,
             logger: Mutex::new(logger),
+            settings: Mutex::new(settings),
+        }
+    }
+
+    pub fn get_settings(&self) -> Settings {
+        self.settings.lock().map(|s| s.clone()).unwrap_or_default()
+    }
+
+    pub fn reload_settings(&self) {
+        if let Ok(mut s) = self.settings.lock() {
+            *s = config::load();
         }
     }
 
@@ -37,6 +50,24 @@ impl DownloadManager {
         if let Ok(l) = self.logger.lock() {
             l.warn(msg);
         }
+    }
+
+    // ── Delegate methods (encapsulate facade/worker_pool access) ──
+
+    pub fn list_items(&self) -> Result<Vec<DownloadItem>, String> {
+        self.facade.list_items()
+    }
+
+    pub fn update_item(&self, item: &DownloadItem) -> Result<(), String> {
+        self.facade.update_item(item)
+    }
+
+    pub fn flush(&self) -> usize {
+        self.facade.flush()
+    }
+
+    pub fn clear_client_pool(&self) {
+        self.worker_pool.clear_clients();
     }
 
     /// Handle an event from the download engine.
@@ -113,7 +144,7 @@ impl DownloadManager {
         let proxy_url_str = resolve_proxy_url(&proxy_name);
         let proxy_opt = proxy_url_str.as_deref();
 
-        let settings = config::load();
+        let settings = self.get_settings();
         let user_agents = vec![
             settings.user_agent.clone(),
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36".to_string(),
@@ -140,7 +171,6 @@ impl DownloadManager {
             }
         };
 
-        let settings = config::load();
         let max_conns = settings.max_connections.max(1).min(32);
 
         let connections = if connections > 0 {
@@ -257,7 +287,7 @@ impl DownloadManager {
         let headers = std::collections::HashMap::new();
         let proxy_url = resolve_proxy_url(&existing.proxy_name).unwrap_or_default();
         let proxy_opt = if proxy_url.is_empty() { None } else { Some(proxy_url.as_str()) };
-        let settings = config::load();
+        let settings = self.get_settings();
         let user_agents = vec![
             settings.user_agent.clone(),
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36".to_string(),
@@ -366,7 +396,7 @@ impl DownloadManager {
                 rate_limit_bps: 0,
                 connections: saved_state.workers,
                 max_retries: 3,
-                user_agent: config::load().user_agent,
+                user_agent: self.get_settings().user_agent,
                 resume_tasks: saved_state.tasks,
             };
             self.worker_pool.add_with_id(cfg, id).await?;
@@ -378,7 +408,7 @@ impl DownloadManager {
                 updated.last_try = now_str();
                 let _ = self.facade.update_item(&updated);
 
-                let settings = config::load();
+                let settings = self.get_settings();
                 let proxy_url = resolve_proxy_url(&item.proxy_name).unwrap_or_default();
                 let cfg = DownloadConfig {
                     url: item.url,

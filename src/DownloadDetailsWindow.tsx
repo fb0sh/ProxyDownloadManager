@@ -4,7 +4,7 @@ import { CopyIcon } from "@primer/octicons-react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { formatBytes } from "./types";
-import { formatTimestamp, statusColor } from "./utils/download";
+import { formatTimestamp, statusColor, openFile, openFolder } from "./utils/download";
 import type { DownloadItem } from "./types";
 
 const card: React.CSSProperties = {
@@ -60,22 +60,14 @@ export default function DownloadDetailsWindow() {
 
   const closeWindow = () => { getCurrentWebviewWindow().close(); };
 
-  const openFile = async () => {
+  const handleOpenFile = async () => {
     if (!item) return;
-    try { await invoke("open_file", { path: item.save_path }); }
-    catch (e) { console.error("[ProxyDM] open file error:", e); }
+    await openFile(item.save_path);
     closeWindow();
   };
-  const openFolder = async () => {
+  const handleOpenFolder = async () => {
     if (!item) return;
-    try {
-      const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
-      await revealItemInDir(item.save_path);
-    }
-    catch {
-      try { await invoke("open_file", { path: item.save_path.replace(/[/\\][^/\\]*$/, "") || "." }); }
-      catch (e) { console.error(e); }
-    }
+    await openFolder(item.save_path);
     closeWindow();
   };
 
@@ -99,8 +91,8 @@ export default function DownloadDetailsWindow() {
         <Label variant={statusColor(item.status)} style={{ fontSize: 11 }}>{item.status}</Label>
         {item.status === "completed" && (
           <>
-            <Button size="small" onClick={openFile}>Open</Button>
-            <Button size="small" onClick={openFolder}>Folder</Button>
+            <Button size="small" onClick={handleOpenFile}>Open</Button>
+            <Button size="small" onClick={handleOpenFolder}>Folder</Button>
           </>
         )}
       </div>

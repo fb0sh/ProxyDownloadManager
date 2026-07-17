@@ -77,6 +77,22 @@ export function useDownloadEvents({
     return () => { unlisten.then((f) => f()); };
   }, [queryClient]);
 
+  // download-resumed
+  useEffect(() => {
+    const unlisten = listen<number>("download-resumed", () => {
+      queryClient.invalidateQueries({ queryKey: ["downloads"] });
+    });
+    return () => { unlisten.then((f) => f()); };
+  }, [queryClient]);
+
+  // download-cancelled
+  useEffect(() => {
+    const unlisten = listen<number>("download-cancelled", () => {
+      queryClient.invalidateQueries({ queryKey: ["downloads"] });
+    });
+    return () => { unlisten.then((f) => f()); };
+  }, [queryClient]);
+
   // download-progress (optimistic update)
   useEffect(() => {
     const unlisten = listen<{ id: number; downloaded: number }>("download-progress", (event) => {

@@ -15,7 +15,7 @@ pub struct AppState {
 
 #[tauri::command]
 pub fn list_downloads(state: State<'_, Arc<AppState>>) -> Result<Vec<DownloadItem>, String> {
-    state.dm.facade.list_items()
+    state.dm.list_items()
 }
 
 #[tauri::command]
@@ -47,12 +47,15 @@ pub async fn pause_download(state: State<'_, Arc<AppState>>, id: u64) -> Result<
 
 #[tauri::command]
 pub async fn resume_download(state: State<'_, Arc<AppState>>, id: u64) -> Result<(), String> {
-    state.dm.resume_download(id).await
+    state.dm.resume_download(id).await?;
+    let _ = state.app_handle.emit("download-resumed", serde_json::json!({ "id": id }));
+    Ok(())
 }
 
 #[tauri::command]
 pub async fn cancel_download(state: State<'_, Arc<AppState>>, id: u64) -> Result<(), String> {
     state.dm.cancel_download(id).await;
+    let _ = state.app_handle.emit("download-cancelled", serde_json::json!({ "id": id }));
     Ok(())
 }
 
@@ -77,16 +80,17 @@ pub fn save_settings(state: State<'_, Arc<AppState>>, settings: Settings) -> Res
     eprintln!("[ProxyDM] save_settings lang={} dl_dir={} max_conns={} tls_invalid={}",
         settings.language, settings.download_dir, settings.max_connections, settings.danger_accept_invalid_certs);
     state.dm.log_info(&format!("Settings saved: language={} download_dir={}", settings.language, settings.download_dir));
-    let old = crate::config::load();
+    let old = state.dm.get_settings();
     let tls_changed = old.danger_accept_invalid_certs != settings.danger_accept_invalid_certs;
     let shortcut_changed = old.global_shortcut != settings.global_shortcut;
     crate::config::save(&settings)?;
+    state.dm.reload_settings();
     if let Err(e) = sync_autostart(&state.app_handle, settings.launch_at_startup, settings.silent_startup) {
         eprintln!("[ProxyDM] Failed to sync autostart: {}", e);
     }
     if tls_changed {
         eprintln!("[ProxyDM] TLS cert validation changed, clearing client pool");
-        state.dm.worker_pool.clear_clients();
+        state.dm.clear_client_pool();
     }
     #[cfg(desktop)]
     if shortcut_changed {

@@ -132,6 +132,30 @@ pub struct DownloadConfig {
     pub resume_tasks: Vec<Task>,
 }
 
+impl DownloadConfig {
+    /// Create a DownloadConfig from a DownloadItem and settings.
+    /// Used for resume, redownload, and fresh start — eliminates 4x duplicate construction.
+    pub fn from_item(item: &DownloadItem, proxy_url: &str, user_agent: &str, is_resume: bool) -> Self {
+        DownloadConfig {
+            url: item.url.clone(),
+            output_path: item.save_path.clone(),
+            save_path: item.save_path.clone(),
+            id: item.id,
+            file_name: item.file_name.clone(),
+            is_resume,
+            headers: std::collections::HashMap::new(),
+            proxy_name: proxy_url.to_string(),
+            total_size: item.total_size,
+            supports_range: item.resumable.unwrap_or(true),
+            rate_limit_bps: 0,
+            connections: item.connections,
+            max_retries: 3,
+            user_agent: user_agent.to_string(),
+            resume_tasks: vec![],
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadState {
     pub url: String,

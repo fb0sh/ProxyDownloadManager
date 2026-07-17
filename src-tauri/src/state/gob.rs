@@ -43,6 +43,7 @@ pub fn delete_state(id: u64) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
 /// Write pending download request for IPC between main and new-download-window processes.
 /// Destructive read: reads then deletes the file.
 pub fn write_pending_request(req: &PendingDownloadRequest) -> Result<(), String> {
@@ -55,6 +56,7 @@ pub fn write_pending_request(req: &PendingDownloadRequest) -> Result<(), String>
     Ok(())
 }
 
+#[cfg(test)]
 pub fn take_pending_request() -> Result<Option<PendingDownloadRequest>, String> {
     let path = pending_path();
     if !path.exists() {

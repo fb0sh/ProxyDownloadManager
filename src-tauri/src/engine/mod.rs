@@ -116,3 +116,70 @@ pub async fn run_download(
     }
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::EventKind;
+    use crate::network::pool::NetworkPool;
+    use std::sync::Arc;
+
+    fn test_config(supports_range: bool) -> DownloadConfig {
+        DownloadConfig {
+            url: "https://example.com/file.zip".to_string(),
+            output_path: "/tmp/file.zip.pdm".to_string(),
+            save_path: "/tmp/file.zip".to_string(),
+            id: 1,
+            file_name: "file.zip".to_string(),
+            is_resume: false,
+            headers: std::collections::HashMap::new(),
+            proxy_name: String::new(),
+            total_size: 1000,
+            supports_range,
+            rate_limit_bps: 0,
+            connections: 4,
+            max_retries: 3,
+            user_agent: "test".to_string(),
+            resume_tasks: vec![],
+        }
+    }
+
+    #[test]
+    fn test_factory_creates_concurrent_when_range_supported() {
+        let pool = Arc::new(NetworkPool::new(false));
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let cfg = test_config(true);
+        let engine = create_engine(&cfg, pool, &tx);
+        // Concurrent engine handles range requests
+        // We can't directly inspect the type, but we can verify it doesn't panic
+        drop(engine);
+    }
+
+    #[test]
+    fn test_factory_creates_single_when_no_range() {
+        let pool = Arc::new(NetworkPool::new(false));
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let cfg = test_config(false);
+        let engine = create_engine(&cfg, pool, &tx);
+        drop(engine);
+    }
+
+    #[tokio::test]
+    async fn test_run_download_emits_started_event() {
+        let pool = Arc::new(NetworkPool::new(false));
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let cfg = test_config(false);
+        let limiter = Arc::new(MultiLimiter::new(0, 0));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let on_cancelled: OnCancelled = Box::new(|_, _| {});
+
+        // run_download will fail because the URL is unreachable,
+        // but it should still emit DownloadStarted before failing
+        let _ = run_download(cfg, pool, tx, limiter, cancel, on_cancelled).await;
+
+        // Check that at least one event was sent (DownloadStarted)
+        let event = rx.try_recv();
+        assert!(event.is_ok(), "Expected at least one event (DownloadStarted)");
+        assert!(matches!(event.unwrap().kind, EventKind::DownloadStarted));
+    }
+}

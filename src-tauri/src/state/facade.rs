@@ -42,15 +42,6 @@ impl DownloadStateFacade {
         self.db.delete_download(id)
     }
 
-    /// Update only the status of a download item.
-    pub fn set_status(&self, id: u64, status: DownloadStatus) -> Result<(), String> {
-        if let Some(mut item) = self.db.get_by_id(id)? {
-            item.status = status;
-            self.db.update_download(&item)?;
-        }
-        Ok(())
-    }
-
     // ── Lifecycle events ──
 
     /// Initialize runtime for a newly started download.
@@ -104,11 +95,6 @@ impl DownloadStateFacade {
         }
     }
 
-    /// Remove runtime tracking for a canceled/removed download.
-    pub fn on_removed(&self, id: u64) {
-        self.runtime.remove(id);
-    }
-
     // ── gob accessors ──
 
     /// Save gob state for non-resumable downloads (single engine).
@@ -143,11 +129,6 @@ impl DownloadStateFacade {
     /// Save gob state directly (used by engine cancel callbacks).
     pub fn save_gob(&self, id: u64, state: &DownloadState) {
         let _ = gob::save_state(id, state);
-    }
-
-    /// Load gob state directly (used by engine resume).
-    pub fn load_gob_raw(&self, id: u64) -> Option<DownloadState> {
-        gob::load_state(id).ok().flatten()
     }
 
     // ── Flush ──

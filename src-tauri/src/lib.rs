@@ -177,7 +177,7 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                    let flushed = flush_dm.facade.flush();
+                    let flushed = flush_dm.flush();
                     if flushed > 0 {
                         eprintln!("[ProxyDM] Flushed {} progress entries to DB", flushed);
                     }
@@ -186,12 +186,12 @@ pub fn run() {
 
             // Crash recovery: re-queue all incomplete downloads
             {
-                if let Ok(items) = dm.facade.list_items() {
+                if let Ok(items) = dm.list_items() {
                     let mut changed = false;
                     for mut item in items.into_iter() {
                         if matches!(item.status, crate::types::DownloadStatus::Downloading) {
                             item.status = crate::types::DownloadStatus::Paused;
-                            let _ = dm.facade.update_item(&item);
+                            let _ = dm.update_item(&item);
                             changed = true;
                         }
                     }
