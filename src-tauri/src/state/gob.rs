@@ -1,4 +1,4 @@
-use crate::types::{DownloadState, PendingDownloadRequest, Task};
+use crate::types::{DownloadState, PendingDownloadRequest};
 use std::path::PathBuf;
 
 fn state_dir() -> PathBuf {
@@ -10,6 +10,7 @@ fn detail_path(id: u64) -> PathBuf {
     state_dir().join(format!("detail-{}.json", id))
 }
 
+#[cfg(test)]
 fn pending_path() -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
     home.join(".ProxyDM/pending_new_download.json")
@@ -71,6 +72,7 @@ pub fn take_pending_request() -> Result<Option<PendingDownloadRequest>, String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::Task;
 
     fn test_dir() -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("pdm_gob_{}", std::process::id()));

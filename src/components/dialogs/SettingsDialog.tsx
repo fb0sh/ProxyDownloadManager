@@ -5,6 +5,7 @@ import { useSettings } from "../../query/downloadQueries";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { t, setLanguage } from "../../i18n";
+import { sectionCard, sectionHeader, sectionBody } from "../../utils/styles";
 import type { Settings } from "../../types";
 
 const THREAD_OPTIONS = [0, 4, 8, 16, 32];
@@ -25,30 +26,6 @@ interface ProxyForm {
 function emptyProxy(): ProxyForm {
   return { name: "", protocol: "socks5", host: "127.0.0.1", port: 1080 };
 }
-
-const sectionCard: React.CSSProperties = {
-  border: "1px solid var(--borderColor-muted, #d8dee4)",
-  borderRadius: 6,
-  overflow: "hidden",
-};
-
-const sectionHeader: React.CSSProperties = {
-  padding: "8px 12px",
-  fontSize: 12,
-  fontWeight: 600,
-  color: "var(--fgColor-muted, #656d76)",
-  borderBottom: "1px solid var(--borderColor-muted, #d8dee4)",
-  background: "var(--bgColor-subtle, #f6f8fa)",
-  textTransform: "uppercase",
-  letterSpacing: "0.05em",
-};
-
-const sectionBody: React.CSSProperties = {
-  padding: "12px 16px",
-  display: "flex",
-  flexDirection: "column",
-  gap: 12,
-};
 
 const fieldRow: React.CSSProperties = {
   display: "flex",

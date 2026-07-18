@@ -1,13 +1,12 @@
 import { useState, useRef, useEffect } from "react";
 import { Text, Checkbox } from "@primer/react";
 import { DataTable, Table } from "@primer/react/experimental";
-import { invoke } from "@tauri-apps/api/core";
 import { useDownloads } from "../query/downloadQueries";
 import { useDownloadSpeed, computeETA } from "../hooks/useDownloadSpeed";
 import { useFileIcons, iconFor } from "../hooks/useFileIcons";
 import { formatBytes } from "../types";
 import { t } from "../i18n";
-import { applyFilter, formatTimestamp } from "../utils/download";
+import { applyFilter, formatTimestamp, statusString, openFile, openFolder } from "../utils/download";
 import type { DownloadItem } from "../types";
 
 interface DownloadTableProps {
@@ -77,20 +76,12 @@ export default function DownloadTable({
 
   const handleOpen = async (path: string) => {
     closeMenu();
-    try { await invoke("open_file", { path }); }
-    catch (e) { console.error("open failed:", e); }
+    await openFile(path);
   };
 
   const handleOpenFolder = async (path: string) => {
     closeMenu();
-    try {
-      const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
-      await revealItemInDir(path);
-    }
-    catch {
-      try { await invoke("open_file", { path: path.replace(/[/\\][^/\\]*$/, "") || "." }); }
-      catch (e) { console.error("open folder failed:", e); }
-    }
+    await openFolder(path);
   };
 
   const menuItem = (label: string, onClick: () => void, danger?: boolean) => (
@@ -205,7 +196,7 @@ export default function DownloadTable({
         if (row.status === "completed") {
           return ctx(row, <Text size="small">Completed</Text>);
         }
-        return ctx(row, <Text size="small">{row.status}</Text>);
+        return ctx(row, <Text size="small">{statusString(row.status)}</Text>);
       },
     },
     {

@@ -1,7 +1,6 @@
 import { useEffect, useCallback } from "react";
 import type { QueryClient } from "@tanstack/react-query";
 import type { PluginListener } from "@tauri-apps/api/core";
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -23,14 +22,7 @@ async function sendDownloadNotification(id: number, title: string, body?: string
       const perm = await requestPermission();
       if (perm !== "granted") return;
     }
-    let fileName: string | undefined = body;
-    if (!fileName) {
-      try {
-        const items = await invoke("list_downloads") as Array<{ file_name: string; id: number }>;
-        fileName = items.find((d) => d.id === id)?.file_name;
-      } catch {}
-    }
-    sendNotification({ title, body: fileName ?? `Download #${id}` });
+    sendNotification({ title, body: body ?? `Download #${id}` });
   } catch {
     try {
       if (window.Notification.permission === "granted") {
@@ -39,6 +31,13 @@ async function sendDownloadNotification(id: number, title: string, body?: string
     } catch {}
   }
 }
+
+/** Events that simply invalidate the downloads query. */
+const INVALIDATE_EVENTS = [
+  "download-paused",
+  "download-resumed",
+  "download-cancelled",
+];
 
 export function useDownloadEvents({
   queryClient,
@@ -57,40 +56,25 @@ export function useDownloadEvents({
     return () => { unlisten.then((f) => f()); };
   }, [onUrlDetected]);
 
-  // download-created
+  // All invalidation events in one subscription
   useEffect(() => {
-    const unlisten = listen("download-created", async () => {
+    const unlisteners = INVALIDATE_EVENTS.map((eventName) =>
+      listen(eventName, () => {
+        queryClient.invalidateQueries({ queryKey: ["downloads"] });
+      })
+    );
+    // download-created also invalidates but has extra side effects
+    const createdUnlisten = listen("download-created", async () => {
       queryClient.invalidateQueries({ queryKey: ["downloads"] });
       try {
         const mainWin = await WebviewWindow.getByLabel("main");
         if (mainWin) { await mainWin.show(); await mainWin.setFocus(); }
       } catch {}
     });
-    return () => { unlisten.then((f) => f()); };
-  }, [queryClient]);
-
-  // download-paused
-  useEffect(() => {
-    const unlisten = listen<number>("download-paused", () => {
-      queryClient.invalidateQueries({ queryKey: ["downloads"] });
-    });
-    return () => { unlisten.then((f) => f()); };
-  }, [queryClient]);
-
-  // download-resumed
-  useEffect(() => {
-    const unlisten = listen<number>("download-resumed", () => {
-      queryClient.invalidateQueries({ queryKey: ["downloads"] });
-    });
-    return () => { unlisten.then((f) => f()); };
-  }, [queryClient]);
-
-  // download-cancelled
-  useEffect(() => {
-    const unlisten = listen<number>("download-cancelled", () => {
-      queryClient.invalidateQueries({ queryKey: ["downloads"] });
-    });
-    return () => { unlisten.then((f) => f()); };
+    return () => {
+      unlisteners.forEach((u) => u.then((f) => f()));
+      createdUnlisten.then((f) => f());
+    };
   }, [queryClient]);
 
   // download-progress (optimistic update)
@@ -115,9 +99,10 @@ export function useDownloadEvents({
 
   // download-completed
   useEffect(() => {
-    const unlisten = listen<number>("download-completed", async (event) => {
-      await sendDownloadNotification(event.payload, "Download Complete", undefined, "completed");
-      openDownloadDetailsWindow(event.payload);
+    const unlisten = listen<{ id: number; file_name: string }>("download-completed", async (event) => {
+      const { id, file_name } = event.payload;
+      await sendDownloadNotification(id, "Download Complete", file_name, "completed");
+      openDownloadDetailsWindow(id);
     });
     return () => { unlisten.then((f) => f()); };
   }, [openDownloadDetailsWindow]);

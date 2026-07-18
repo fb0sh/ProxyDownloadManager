@@ -1,13 +1,13 @@
 // src/query/downloadQueries.ts
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useTauriCommands } from "../hooks/useTauriCommands";
+import { tauriCommands } from "../hooks/useTauriCommands";
 import type { Settings } from "../types";
 
 const DOWNLOADS_KEY = ["downloads"] as const;
 const SETTINGS_KEY = ["settings"] as const;
 
 export function useDownloads() {
-  const { listDownloads } = useTauriCommands();
+  const { listDownloads } = tauriCommands();
   return useQuery({
     queryKey: DOWNLOADS_KEY,
     queryFn: listDownloads,
@@ -23,7 +23,7 @@ export function useDownload(id: number | undefined) {
 
 export function useStartDownload() {
   const queryClient = useQueryClient();
-  const { startDownload } = useTauriCommands();
+  const { startDownload } = tauriCommands();
   return useMutation({
     mutationFn: ({ url, filename, proxyName, connections, savePath }: {
       url: string; filename: string; proxyName: string; connections: number; savePath: string;
@@ -34,7 +34,7 @@ export function useStartDownload() {
 
 export function usePauseDownload() {
   const queryClient = useQueryClient();
-  const { pauseDownload } = useTauriCommands();
+  const { pauseDownload } = tauriCommands();
   return useMutation({
     mutationFn: (id: number) => pauseDownload(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: DOWNLOADS_KEY }),
@@ -43,7 +43,7 @@ export function usePauseDownload() {
 
 export function useResumeDownload() {
   const queryClient = useQueryClient();
-  const { resumeDownload } = useTauriCommands();
+  const { resumeDownload } = tauriCommands();
   return useMutation({
     mutationFn: (id: number) => resumeDownload(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: DOWNLOADS_KEY }),
@@ -52,7 +52,7 @@ export function useResumeDownload() {
 
 export function useDeleteDownload() {
   const queryClient = useQueryClient();
-  const { deleteDownload } = useTauriCommands();
+  const { deleteDownload } = tauriCommands();
   return useMutation({
     mutationFn: ({ id, deleteFile }: { id: number; deleteFile: boolean }) =>
       deleteDownload(id, deleteFile),
@@ -61,7 +61,7 @@ export function useDeleteDownload() {
 }
 
 export function useSettings() {
-  const { getSettings, saveSettings } = useTauriCommands();
+  const { getSettings, saveSettings } = tauriCommands();
   const queryClient = useQueryClient();
 
   const query = useQuery({
@@ -79,7 +79,7 @@ export function useSettings() {
 
 export function useRedownloadDownload() {
   const queryClient = useQueryClient();
-  const { redownloadDownload } = useTauriCommands();
+  const { redownloadDownload } = tauriCommands();
   return useMutation({
     mutationFn: (id: number) => redownloadDownload(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: DOWNLOADS_KEY }),

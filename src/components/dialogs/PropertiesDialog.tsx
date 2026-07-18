@@ -4,29 +4,14 @@ import { CopyIcon } from "@primer/octicons-react";
 import { Dialog } from "@primer/react/experimental";
 import { useDownload } from "../../query/downloadQueries";
 import { formatBytes } from "../../types";
+import { statusColor, statusString } from "../../utils/download";
+import { sectionCard, sectionHeader } from "../../utils/styles";
 import { t } from "../../i18n";
 
 interface PropertiesDialogProps {
   id: number;
   onClose: () => void;
 }
-
-const sectionStyle: React.CSSProperties = {
-  border: "1px solid var(--borderColor-muted, #d8dee4)",
-  borderRadius: 6,
-  overflow: "hidden",
-};
-
-const sectionHeader: React.CSSProperties = {
-  padding: "8px 12px",
-  fontSize: 12,
-  fontWeight: 600,
-  color: "var(--fgColor-muted, #656d76)",
-  borderBottom: "1px solid var(--borderColor-muted, #d8dee4)",
-  background: "var(--bgColor-subtle, #f6f8fa)",
-  textTransform: "uppercase",
-  letterSpacing: "0.05em",
-};
 
 const gridRow: React.CSSProperties = {
   display: "flex",
@@ -65,16 +50,6 @@ function InfoRow({ label, value, last }: { label: string; value: string; last?: 
   );
 }
 
-function statusColor(status: string): "success" | "danger" | "attention" | "default" | "accent" {
-  switch (status) {
-    case "completed": return "success";
-    case "failed": return "danger";
-    case "paused": return "attention";
-    case "downloading": return "accent";
-    default: return "default";
-  }
-}
-
 export default function PropertiesDialog({ id, onClose }: PropertiesDialogProps) {
   const item = useDownload(id);
   const [urlCopied, setUrlCopied] = useState(false);
@@ -101,7 +76,7 @@ export default function PropertiesDialog({ id, onClose }: PropertiesDialogProps)
             <Text weight="semibold" size="medium" style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {item.file_name}
             </Text>
-            <Label variant={statusColor(item.status)}>{item.status}</Label>
+            <Label variant={statusColor(item.status)}>{statusString(item.status)}</Label>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 4 }}>
             <Text size="small" style={{
@@ -134,7 +109,7 @@ export default function PropertiesDialog({ id, onClose }: PropertiesDialogProps)
         </div>
 
         <div style={{ padding: "12px 20px" }}>
-          <div style={sectionStyle}>
+          <div style={sectionCard}>
             <div style={sectionHeader}>{t("properties.file")}</div>
             <InfoRow label={t("properties.size")} value={formatBytes(item.total_size)} />
             <InfoRow label={t("properties.downloaded")} value={`${formatBytes(item.downloaded)} (${progress > 0 ? Math.round(progress) + "%" : "0%"})`} />
@@ -144,16 +119,16 @@ export default function PropertiesDialog({ id, onClose }: PropertiesDialogProps)
         </div>
 
         <div style={{ padding: "0 20px 12px" }}>
-          <div style={sectionStyle}>
+          <div style={sectionCard}>
             <div style={sectionHeader}>{t("properties.download")}</div>
-            <InfoRow label={t("properties.status")} value={item.status} />
+            <InfoRow label={t("properties.status")} value={statusString(item.status)} />
             <InfoRow label={t("properties.resumable")} value={resumable} />
             <InfoRow label={t("properties.lastTry")} value={item.last_try || "—"} last />
           </div>
         </div>
 
         <div style={{ padding: "0 20px 16px" }}>
-          <div style={sectionStyle}>
+          <div style={sectionCard}>
             <div style={sectionHeader}>{t("properties.network")}</div>
             <InfoRow label={t("properties.connections")} value={String(item.connections)} />
             <InfoRow label={t("properties.proxy")} value={item.proxy_name || t("properties.none")} last />

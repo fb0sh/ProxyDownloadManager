@@ -17,10 +17,6 @@ impl RateLimiter {
         }
     }
 
-    pub fn set_rate(&self, bps: u64) {
-        self.bps.store(bps, Ordering::Relaxed);
-    }
-
     pub fn wait_n(&self, n: u64) {
         let bps = self.bps.load(Ordering::Relaxed);
         if bps == 0 {
@@ -74,14 +70,6 @@ mod tests {
         let limiter = RateLimiter::new(0);
         // Should return immediately when bps is 0
         limiter.wait_n(10_000_000);
-    }
-
-    #[test]
-    fn test_rate_limiter_set_rate() {
-        let limiter = RateLimiter::new(1000);
-        assert_eq!(limiter.bps.load(Ordering::Relaxed), 1000);
-        limiter.set_rate(2000);
-        assert_eq!(limiter.bps.load(Ordering::Relaxed), 2000);
     }
 
     #[test]

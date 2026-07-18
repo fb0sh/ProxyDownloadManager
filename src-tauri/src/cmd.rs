@@ -71,8 +71,8 @@ pub async fn delete_download(
 // ── Settings ──
 
 #[tauri::command]
-pub fn get_settings() -> Result<Settings, String> {
-    Ok(crate::config::load())
+pub fn get_settings(state: State<'_, Arc<AppState>>) -> Result<Settings, String> {
+    Ok(state.dm.get_settings())
 }
 
 #[tauri::command]
@@ -80,27 +80,22 @@ pub fn save_settings(state: State<'_, Arc<AppState>>, settings: Settings) -> Res
     eprintln!("[ProxyDM] save_settings lang={} dl_dir={} max_conns={} tls_invalid={}",
         settings.language, settings.download_dir, settings.max_connections, settings.danger_accept_invalid_certs);
     state.dm.log_info(&format!("Settings saved: language={} download_dir={}", settings.language, settings.download_dir));
-    let old = state.dm.get_settings();
-    let tls_changed = old.danger_accept_invalid_certs != settings.danger_accept_invalid_certs;
-    let shortcut_changed = old.global_shortcut != settings.global_shortcut;
-    crate::config::save(&settings)?;
-    state.dm.reload_settings();
-    if let Err(e) = sync_autostart(&state.app_handle, settings.launch_at_startup, settings.silent_startup) {
+
+    let flags = state.dm.save_settings(&settings)?;
+
+    if let Err(e) = sync_autostart(&state.app_handle, flags.launch_at_startup, flags.silent_startup) {
         eprintln!("[ProxyDM] Failed to sync autostart: {}", e);
     }
-    if tls_changed {
-        eprintln!("[ProxyDM] TLS cert validation changed, clearing client pool");
-        state.dm.clear_client_pool();
-    }
+
     #[cfg(desktop)]
-    if shortcut_changed {
+    if flags.shortcut_changed {
         use tauri_plugin_global_shortcut::GlobalShortcutExt;
         let app = &state.app_handle;
-        if !old.global_shortcut.is_empty() {
-            let _ = app.global_shortcut().unregister(old.global_shortcut.as_str());
+        if !flags.old_shortcut.is_empty() {
+            let _ = app.global_shortcut().unregister(flags.old_shortcut.as_str());
         }
-        if !settings.global_shortcut.is_empty() {
-            if let Err(e) = app.global_shortcut().register(settings.global_shortcut.as_str()) {
+        if !flags.new_shortcut.is_empty() {
+            if let Err(e) = app.global_shortcut().register(flags.new_shortcut.as_str()) {
                 eprintln!("[ProxyDM] Failed to update global shortcut: {}", e);
             }
         }
@@ -212,28 +207,12 @@ struct GithubAsset {
 }
 
 #[tauri::command]
-pub async fn check_update(proxy_name: String) -> Result<UpdateInfo, String> {
-    let proxy_url = crate::download_manager::resolve_proxy_url(&proxy_name);
-    let settings = crate::config::load();
-    let pool = crate::network::pool::NetworkPool::new(settings.danger_accept_invalid_certs);
-    let client = pool.get_client(proxy_url.as_deref());
-
-    let resp = client
-        .get("https://api.github.com/repos/fb0sh/ProxyDownloadManager/releases/latest")
-        .header("User-Agent", concat!("ProxyDM/", env!("CARGO_PKG_VERSION")))
-        .header("Accept", "application/vnd.github.v3+json")
-        .timeout(std::time::Duration::from_secs(30))
-        .send()
-        .await
-        .map_err(|e| format!("Failed to check update: {}", e))?;
-
-    if !resp.status().is_success() {
-        return Err(format!("GitHub API responded with status {}", resp.status()));
-    }
-
-    let release: GithubRelease = resp
-        .json()
-        .await
+pub async fn check_update(
+    state: State<'_, Arc<AppState>>,
+    proxy_name: String,
+) -> Result<UpdateInfo, String> {
+    let release_value: serde_json::Value = state.dm.check_update(&proxy_name).await?;
+    let release: GithubRelease = serde_json::from_value(release_value)
         .map_err(|e| format!("Failed to parse release info: {}", e))?;
 
     let current_version = format!("v{}", env!("CARGO_PKG_VERSION"));
@@ -262,40 +241,10 @@ pub async fn check_update(proxy_name: String) -> Result<UpdateInfo, String> {
 
 #[tauri::command]
 pub async fn test_proxy(
-    _state: State<'_, Arc<AppState>>,
+    state: State<'_, Arc<AppState>>,
     proxy_name: String,
 ) -> Result<serde_json::Value, String> {
-    let proxy_url = crate::download_manager::resolve_proxy_url(&proxy_name);
-    let settings = crate::config::load();
-    let pool = crate::network::pool::NetworkPool::new(settings.danger_accept_invalid_certs);
-    let client = pool.get_client(proxy_url.as_deref());
-
-    let start = std::time::Instant::now();
-    match client
-        .get("https://www.google.com")
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await
-    {
-        Ok(resp) => {
-            let latency_ms = start.elapsed().as_millis() as u64;
-            let ok = resp.status().is_success();
-            let status = resp.status().as_u16();
-            Ok(serde_json::json!({
-                "ok": ok,
-                "latency_ms": latency_ms,
-                "status": status,
-            }))
-        }
-        Err(e) => {
-            let latency_ms = start.elapsed().as_millis() as u64;
-            Ok(serde_json::json!({
-                "ok": false,
-                "latency_ms": latency_ms,
-                "error": format!("{}", e),
-            }))
-        }
-    }
+    state.dm.test_proxy(&proxy_name).await
 }
 
 // ── Internal helpers ──

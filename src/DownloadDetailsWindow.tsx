@@ -1,11 +1,10 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { Text, Label, Button } from "@primer/react";
 import { CopyIcon } from "@primer/octicons-react";
-import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { formatBytes } from "./types";
-import { formatTimestamp, statusColor, openFile, openFolder } from "./utils/download";
-import type { DownloadItem } from "./types";
+import { formatTimestamp, statusColor, statusString, openFile, openFolder } from "./utils/download";
+import { useDownload } from "./query/downloadQueries";
 
 const card: React.CSSProperties = {
   border: "1px solid var(--borderColor-muted, #d8dee4)", borderRadius: 6,
@@ -31,9 +30,10 @@ const v: React.CSSProperties = {
 };
 
 export default function DownloadDetailsWindow() {
-  console.log('[ProxyDM FE] DownloadDetailsWindow mount');
-  const [item, setItem] = useState<DownloadItem | null>(null);
-  const [loading, setLoading] = useState(true);
+  const p = new URLSearchParams(window.location.search);
+  const idParam = p.get("id");
+  const id = idParam ? Number(idParam) : undefined;
+  const item = useDownload(id);
   const [urlCopied, setUrlCopied] = useState(false);
 
   const handleCopyUrl = async () => {
@@ -43,20 +43,6 @@ export default function DownloadDetailsWindow() {
       setTimeout(() => setUrlCopied(false), 2000);
     } catch {} // clipboard not available
   };
-
-  useEffect(() => {
-    const p = new URLSearchParams(window.location.search);
-    const id = p.get("id");
-    console.log('[ProxyDM FE] DownloadDetailsWindow id=', id);
-    if (id) invoke<DownloadItem[]>("list_downloads")
-      .then((items) => {
-        const found = items.find((d) => d.id === Number(id)) ?? null;
-        console.log('[ProxyDM FE] DownloadDetailsWindow found:', found?.file_name, found?.status);
-        setItem(found); setLoading(false);
-      })
-      .catch(() => setLoading(false));
-    else setLoading(false);
-  }, []);
 
   const closeWindow = () => { getCurrentWebviewWindow().close(); };
 
@@ -71,8 +57,8 @@ export default function DownloadDetailsWindow() {
     closeWindow();
   };
 
-  if (loading) return <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100vh" }}><Text>Loading...</Text></div>;
-  if (!item) return <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100vh" }}><Text>Not found</Text></div>;
+  if (!idParam) return <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100vh" }}><Text>No download ID provided</Text></div>;
+  if (!item) return <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100vh" }}><Text>Loading...</Text></div>;
 
   const yes = "Yes", no = "No", uk = "Unknown";
   const resumable = item.resumable === true ? yes : item.resumable === false ? no : uk;
@@ -88,7 +74,7 @@ export default function DownloadDetailsWindow() {
         <Text weight="semibold" size="small" style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {item.file_name}
         </Text>
-        <Label variant={statusColor(item.status)} style={{ fontSize: 11 }}>{item.status}</Label>
+        <Label variant={statusColor(item.status)} style={{ fontSize: 11 }}>{statusString(item.status)}</Label>
         {item.status === "completed" && (
           <>
             <Button size="small" onClick={handleOpenFile}>Open</Button>
@@ -136,7 +122,7 @@ export default function DownloadDetailsWindow() {
         <div style={card}>
           <div style={hdr}>Download</div>
           <div style={bd}>
-            <div style={r}><span style={l}>Status</span><span style={v}>{item.status}</span></div>
+            <div style={r}><span style={l}>Status</span><span style={v}>{statusString(item.status)}</span></div>
             <div style={r}><span style={l}>Resume</span><span style={v}>{resumable}</span></div>
             <div style={r}><span style={l}>Last try</span><span style={v}>{formatTimestamp(item.last_try)}</span></div>
           </div>

@@ -16,17 +16,7 @@ async function readClipboardUrl(): Promise<string | null> {
   return null;
 }
 
-const sectionCard: React.CSSProperties = {
-  border: "1px solid var(--borderColor-muted, #d8dee4)", borderRadius: 6, overflow: "hidden",
-};
-const sectionHeader: React.CSSProperties = {
-  padding: "8px 12px", fontSize: 12, fontWeight: 600, color: "var(--fgColor-muted, #656d76)",
-  borderBottom: "1px solid var(--borderColor-muted, #d8dee4)",
-  background: "var(--bgColor-subtle, #f6f8fa)", textTransform: "uppercase", letterSpacing: "0.05em",
-};
-const sectionBody: React.CSSProperties = {
-  padding: "12px 16px", display: "flex", flexDirection: "column", gap: 12,
-};
+import { sectionCard, sectionHeader, sectionBody } from "./utils/styles";
 
 export default function NewDownloadWindow() {
   const { settings: loadedSettings } = useSettings();

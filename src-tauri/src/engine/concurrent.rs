@@ -6,24 +6,17 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-/// Parse a task error: "TaskError:offset:written:message"
-/// Returns (remaining_task, message) if valid.
-fn parse_task_error(err: &str, orig: &Task) -> Option<(Task, String)> {
-    let parts: Vec<&str> = err.splitn(4, ':').collect();
-    if parts.len() < 4 || parts[0] != "TaskError" {
-        return None;
-    }
-    let orig_offset: u64 = parts[1].parse().ok()?;
-    let written: u64 = parts[2].parse().ok()?;
-    let msg = parts[3].to_string();
-    let written = written.min(orig.length);
-    let remaining = orig.length.saturating_sub(written);
-    if remaining > 0 && written > 0 {
-        Some((Task { offset: orig_offset + written, length: remaining }, msg))
-    } else {
-        // Nothing remaining to re-queue, task is fully consumed
-        None
-    }
+/// Outcome of a single chunk download attempt.
+#[derive(Debug, PartialEq)]
+enum TaskResult {
+    /// Chunk fully downloaded.
+    Complete,
+    /// Partial progress: remaining bytes should be re-queued.
+    Partial { remaining: Task },
+    /// User cancelled.
+    Cancelled,
+    /// Unrecoverable error — don't retry this chunk.
+    Fatal(String),
 }
 
 pub struct ConcurrentDownloader {
@@ -75,7 +68,8 @@ impl ConcurrentDownloader {
         let file = Arc::new(file);
         eprintln!("[ProxyDM] concurrent id={} file created: {}.pdm", cfg.id, cfg.output_path);
 
-        let client = self.pool.get_client(if cfg.proxy_name.is_empty() { None } else { Some(&cfg.proxy_name) });
+        let client = self.pool.get_client(if cfg.proxy_name.is_empty() { None } else { Some(&cfg.proxy_name) })
+            .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
         let mut handles = Vec::new();
         let download_id = cfg.id;
@@ -129,28 +123,33 @@ impl ConcurrentDownloader {
                     ).await;
 
                     match result {
-                        Ok(_) => {}
-                        Err(e) => {
-                            // Try to parse as TaskError:offset:written:msg — re-queue only remaining portion
-                            if let Some((rest, _msg)) = parse_task_error(&e, &task) {
-                                eprintln!("[ProxyDM] task offset={} failed, re-queueing remaining {} bytes", task.offset, rest.length);
-                                queue.push(rest);
-                                continue;
-                            }
-                            // Plain error (e.g. Cancelled) — re-queue full task
-                            if e == "Cancelled" {
-                                return;
-                            }
-                            // Exponential backoff for network errors
+                        TaskResult::Complete => {
+                            retries_left = max_retries;
+                        }
+                        TaskResult::Partial { remaining } => {
+                            eprintln!("[ProxyDM] task offset={} partial, re-queueing {} bytes", task.offset, remaining.length);
+                            queue.push(remaining);
+                            retries_left = max_retries;
+                        }
+                        TaskResult::Cancelled => {
+                            return;
+                        }
+                        TaskResult::Fatal(msg) => {
                             let attempt = max_retries.saturating_sub(retries_left) + 1;
                             let backoff_secs = 2u64.pow(attempt.min(5) as u32).min(30);
                             tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
                             if retries_left > 0 {
                                 retries_left -= 1;
+                                queue.push(task);
                             } else {
-                                retries_left = max_retries;
+                                eprintln!("[ProxyDM] worker retries exhausted for offset={}, stopping", task.offset);
+                                let _ = event_tx.send(crate::types::Event {
+                                    kind: crate::types::EventKind::DownloadErrored,
+                                    download_id,
+                                    data: Some(format!("Retries exhausted: {}", msg)),
+                                });
+                                return;
                             }
-                            queue.push(task);
                         }
                     }
                 }
@@ -262,8 +261,7 @@ async fn download_task(
     limiter: &MultiLimiter,
     user_agent: &str,
     bytes_written: &AtomicU64,
-) -> Result<(), String> {
-    // Pre-declare written counter so error path can report it
+) -> TaskResult {
     let mut written: u64 = 0;
     let range_end = if task.length == 0 {
         String::new()
@@ -278,31 +276,33 @@ async fn download_task(
         req = req.header("User-Agent", user_agent);
     }
     eprintln!("[ProxyDM] concurrent_task offset={} range_end={}", task.offset, range_end);
-    let resp = req.send().await.map_err(|e| {
-        let mut msg = format!("Request failed: {}", e);
-        let mut src = std::error::Error::source(&e);
-        while let Some(s) = src {
-            msg.push_str(&format!(": {}", s));
-            src = s.source();
+    let resp = match req.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            let mut msg = format!("Request failed: {}", e);
+            let mut src = std::error::Error::source(&e);
+            while let Some(s) = src {
+                msg.push_str(&format!(": {}", s));
+                src = s.source();
+            }
+            eprintln!("[ProxyDM] concurrent_task REQUEST ERROR offset={}: {}", task.offset, msg);
+            return TaskResult::Fatal(msg);
         }
-        eprintln!("[ProxyDM] concurrent_task REQUEST ERROR offset={}: {}", task.offset, msg);
-        msg
-    })?;
+    };
 
     if cancel.load(Ordering::Relaxed) {
-        return Err(format!("TaskError:{}:{}:Cancelled", task.offset, written));
+        return TaskResult::Cancelled;
     }
 
     let status = resp.status();
     eprintln!("[ProxyDM] concurrent_task offset={} HTTP {} (expected 206 or 200)", task.offset, status);
 
-    // For offset > 0: 200 means server ignored Range — fatal, don't retry same spot
-    if status == reqwest::StatusCode::OK {
-        if task.offset > 0 {
-            return Err(format!("Server ignored Range header (HTTP 200), offset={}", task.offset));
-        }
-    } else if status != reqwest::StatusCode::PARTIAL_CONTENT {
-        return Err(format!("HTTP {}", status));
+    // For offset > 0: 200 means server ignored Range — fatal
+    if status == reqwest::StatusCode::OK && task.offset > 0 {
+        return TaskResult::Fatal(format!("Server ignored Range header (HTTP 200), offset={}", task.offset));
+    }
+    if status != reqwest::StatusCode::OK && status != reqwest::StatusCode::PARTIAL_CONTENT {
+        return TaskResult::Fatal(format!("HTTP {}", status));
     }
 
     let stream = resp.bytes_stream();
@@ -320,7 +320,7 @@ async fn download_task(
     loop {
         // Check cancel (responsive Stop even during streaming)
         if cancel.load(Ordering::Relaxed) {
-            return Err(format!("TaskError:{}:{}:Cancelled", base_offset, written));
+            return TaskResult::Cancelled;
         }
 
         // Abort slow chunks so other workers can steal remaining work
@@ -331,7 +331,10 @@ async fn download_task(
         {
             eprintln!("[ProxyDM] slow chunk offset={} written={}/{} after {}s, re-queuing",
                 base_offset, written, chunk_size, elapsed.as_secs());
-            return Err(format!("TaskError:{}:{}:SlowChunk", base_offset, written));
+            let remaining = chunk_size.saturating_sub(written);
+            return TaskResult::Partial {
+                remaining: Task { offset: base_offset + written, length: remaining },
+            };
         }
 
         let chunk_result = tokio::time::timeout(
@@ -339,11 +342,20 @@ async fn download_task(
         ).await;
         let chunk = match chunk_result {
             Ok(Some(Ok(c))) => c,
-            Ok(Some(Err(e))) => return Err(format!("TaskError:{}:{}:Stream error: {}", base_offset, written, e)),
+            Ok(Some(Err(e))) => {
+                let remaining = chunk_size.saturating_sub(written);
+                if remaining > 0 && written > 0 {
+                    return TaskResult::Partial {
+                        remaining: Task { offset: base_offset + written, length: remaining },
+                    };
+                }
+                return TaskResult::Fatal(format!("Stream error: {}", e));
+            }
             Ok(None) => {
                 if !buf.is_empty() {
-                    write_at(file, &buf, base_offset + written)
-                        .map_err(|e| format!("write_at error: {}", e))?;
+                    if let Err(e) = write_at(file, &buf, base_offset + written) {
+                        return TaskResult::Fatal(format!("write_at error: {}", e));
+                    }
                     written += buf.len() as u64;
                     bytes_written.fetch_add(buf.len() as u64, Ordering::Relaxed);
                 }
@@ -351,7 +363,7 @@ async fn download_task(
             }
             Err(_elapsed) => {
                 if cancel.load(Ordering::Relaxed) {
-                    return Err(format!("TaskError:{}:{}:Cancelled", base_offset, written));
+                    return TaskResult::Cancelled;
                 }
                 continue;
             }
@@ -361,13 +373,47 @@ async fn download_task(
         buf.extend_from_slice(&chunk);
 
         if buf.len() >= BUF_SIZE {
-            write_at(file, &buf, base_offset + written)
-                .map_err(|e| format!("write_at error: {}", e))?;
+            if let Err(e) = write_at(file, &buf, base_offset + written) {
+                return TaskResult::Fatal(format!("write_at error: {}", e));
+            }
             written += buf.len() as u64;
             bytes_written.fetch_add(buf.len() as u64, Ordering::Relaxed);
             buf.clear();
         }
     }
 
-    Ok(())
+    TaskResult::Complete
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn task_result_complete_is_not_partial() {
+        assert_eq!(TaskResult::Complete, TaskResult::Complete);
+        assert_ne!(TaskResult::Complete, TaskResult::Cancelled);
+    }
+
+    #[test]
+    fn task_result_partial_has_remaining() {
+        let remaining = Task { offset: 3000, length: 2000 };
+        let r = TaskResult::Partial { remaining: remaining.clone() };
+        if let TaskResult::Partial { remaining } = r {
+            assert_eq!(remaining.offset, 3000);
+            assert_eq!(remaining.length, 2000);
+        } else {
+            panic!("expected Partial");
+        }
+    }
+
+    #[test]
+    fn task_result_fatal_contains_message() {
+        let r = TaskResult::Fatal("HTTP 403".to_string());
+        if let TaskResult::Fatal(msg) = r {
+            assert_eq!(msg, "HTTP 403");
+        } else {
+            panic!("expected Fatal");
+        }
+    }
 }

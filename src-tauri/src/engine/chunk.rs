@@ -4,10 +4,6 @@ use std::sync::Mutex;
 
 const ALIGN: u64 = 4096;
 
-pub fn align_down(v: u64) -> u64 {
-    v & !(ALIGN - 1)
-}
-
 pub fn align_up(v: u64) -> u64 {
     (v + ALIGN - 1) & !(ALIGN - 1)
 }
@@ -96,14 +92,6 @@ mod tests {
         assert_eq!(align_up(1), 4096);
         assert_eq!(align_up(4096), 4096);
         assert_eq!(align_up(4097), 8192);
-    }
-
-    #[test]
-    fn test_align_down() {
-        assert_eq!(align_down(0), 0);
-        assert_eq!(align_down(1), 0);
-        assert_eq!(align_down(4096), 4096);
-        assert_eq!(align_down(5000), 4096);
     }
 
     #[test]

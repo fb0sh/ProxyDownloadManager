@@ -22,11 +22,126 @@ use tokio::sync::mpsc;
 
 pub(crate) const SILENT_START_ARG: &str = "--silent";
 
+/// Hide from Dock on macOS (menu-bar only app).
+#[cfg(target_os = "macos")]
+fn hide_from_dock() {
+    use objc2::msg_send;
+    use objc2::runtime::Object;
+    let cls = objc2::class!(NSApplication);
+    let ns_app: *mut Object = unsafe { msg_send![cls, sharedApplication] };
+    let _: () = unsafe { msg_send![ns_app, setActivationPolicy: 1i64] };
+}
+
+/// Configure main window: title, close-to-tray, initial visibility.
+fn setup_window(app: &tauri::App, silent_start: bool) {
+    let handle = app.handle();
+    let Some(window) = handle.get_webview_window("main") else { return };
+    let _ = window.set_title(&format!("ProxyDownloadManager {}", handle.package_info().version));
+    if !silent_start {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+    let win = window.clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            let _ = win.hide();
+        }
+    });
+}
+
+/// Spawn the event handler: receives download events from engines, updates DB, emits to frontend.
+fn spawn_event_handler(
+    dm: Arc<DownloadManager>,
+    app_handle: tauri::AppHandle,
+    mut event_rx: mpsc::UnboundedReceiver<crate::types::Event>,
+) {
+    tauri::async_runtime::spawn(async move {
+        use tauri::Emitter;
+        while let Some(event) = event_rx.recv().await {
+            let emitted = dm.handle_event(event);
+            for e in emitted {
+                let _ = app_handle.emit(&e.name, e.payload);
+            }
+        }
+    });
+}
+
+/// Spawn the WebSocket request forwarder: receives download requests from browser extensions,
+/// activates the app, and emits to the frontend.
+fn spawn_ws_forwarder(
+    app_handle: tauri::AppHandle,
+    mut request_rx: mpsc::UnboundedReceiver<crate::types::PendingDownloadRequest>,
+) {
+    tauri::async_runtime::spawn(async move {
+        use tauri::Emitter;
+        while let Some(req) = request_rx.recv().await {
+            eprintln!("[ProxyDM consumer] Received request_rx: url={}", req.url);
+
+            #[cfg(target_os = "macos")]
+            {
+                use objc2::msg_send;
+                use objc2::runtime::Object;
+                let cls = objc2::class!(NSApplication);
+                let ns_app: *mut Object = unsafe { msg_send![cls, sharedApplication] };
+                let _: () = unsafe { msg_send![ns_app, activateIgnoringOtherApps: true] };
+            }
+
+            let result = app_handle.emit("browser-download-url", &req.url);
+            eprintln!("[ProxyDM consumer] emit result: {:?}", result);
+        }
+        eprintln!("[ProxyDM consumer] request_rx stream ended!");
+    });
+}
+
+/// Start the WebSocket server in a dedicated thread.
+fn start_ws_server(
+    event_tx: mpsc::UnboundedSender<crate::types::Event>,
+    request_tx: mpsc::UnboundedSender<crate::types::PendingDownloadRequest>,
+) {
+    std::thread::spawn(move || {
+        let mut server = crate::ws::server::WsServer::new(event_tx, request_tx);
+        if let Err(e) = server.start("127.0.0.1:18999") {
+            eprintln!("WS server error: {}", e);
+        }
+    });
+}
+
+/// Spawn the background DB flush loop (every 5 seconds).
+fn spawn_flush_loop(dm: Arc<DownloadManager>) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            let flushed = dm.flush();
+            if flushed > 0 {
+                eprintln!("[ProxyDM] Flushed {} progress entries to DB", flushed);
+            }
+        }
+    });
+}
+
+/// Crash recovery: mark stale "downloading" entries as "paused".
+fn crash_recovery(dm: &DownloadManager) {
+    if let Ok(items) = dm.list_items() {
+        let mut changed = false;
+        for mut item in items.into_iter() {
+            if matches!(item.status, crate::types::DownloadStatus::Downloading) {
+                item.status = crate::types::DownloadStatus::Paused;
+                let _ = dm.update_item(&item);
+                changed = true;
+            }
+        }
+        if changed {
+            eprintln!("[ProxyDM] Crash recovery: paused stale downloads");
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let silent_start = std::env::args().any(|arg| arg == SILENT_START_ARG);
-    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-    let (request_tx, mut request_rx) = mpsc::unbounded_channel::<crate::types::PendingDownloadRequest>();
+    let (event_tx, event_rx) = mpsc::unbounded_channel();
+    let (request_tx, request_rx) = mpsc::unbounded_channel::<crate::types::PendingDownloadRequest>();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -90,36 +205,13 @@ pub fn run() {
                 dm: dm.clone(),
                 app_handle: app.handle().clone(),
             });
-            let ev_state = state.clone();
-            let flush_dm = dm.clone();
             app.manage(state);
 
-            // Hide from Dock (macOS menu-bar only app)
+            // Platform-specific setup
             #[cfg(target_os = "macos")]
-            {
-                use objc2::msg_send;
-                use objc2::runtime::Object;
-                let cls = objc2::class!(NSApplication);
-                let ns_app: *mut Object = unsafe { msg_send![cls, sharedApplication] };
-                let _: () = unsafe { msg_send![ns_app, setActivationPolicy: 1i64] };
-            }
+            hide_from_dock();
 
-            // Set window title and intercept close → hide to tray
-            let handle = app.handle();
-            if let Some(window) = handle.get_webview_window("main") {
-                let _ = window.set_title(&format!("ProxyDownloadManager {}", handle.package_info().version));
-                if !silent_start {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
-                let win = window.clone();
-                window.on_window_event(move |event| {
-                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                        api.prevent_close();
-                        let _ = win.hide();
-                    }
-                });
-            }
+            setup_window(app, silent_start);
 
             // Register global shortcut from settings
             let shortcut_key = settings.global_shortcut.clone();
@@ -130,76 +222,12 @@ pub fn run() {
                 }
             }
 
-            // Spawn event handler: listens for download events, updates DB, emits to frontend
-            let app_handle_for_events = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                use tauri::Emitter;
-                while let Some(event) = event_rx.recv().await {
-                    let emitted = ev_state.dm.handle_event(event);
-                    for e in emitted {
-                        let _ = app_handle_for_events.emit(&e.name, e.payload);
-                    }
-                }
-            });
-
-            // Forward WebSocket download requests to main window
-            let app_handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                use tauri::Emitter;
-                while let Some(req) = request_rx.recv().await {
-                    eprintln!("[ProxyDM consumer] Received request_rx: url={}", req.url);
-
-                    #[cfg(target_os = "macos")]
-                    {
-                        use objc2::msg_send;
-                        use objc2::runtime::Object;
-                        let cls = objc2::class!(NSApplication);
-                        let ns_app: *mut Object = unsafe { msg_send![cls, sharedApplication] };
-                        let _: () = unsafe { msg_send![ns_app, activateIgnoringOtherApps: true] };
-                    }
-
-                    let result = app_handle.emit("browser-download-url", &req.url);
-                    eprintln!("[ProxyDM consumer] emit result: {:?}", result);
-                }
-                eprintln!("[ProxyDM consumer] request_rx stream ended!");
-            });
-
-            let ev_tx = event_tx;
-            let req_tx = request_tx;
-            std::thread::spawn(move || {
-                let mut server = crate::ws::server::WsServer::new(ev_tx, req_tx);
-                if let Err(e) = server.start("127.0.0.1:18999") {
-                    eprintln!("WS server error: {}", e);
-                }
-            });
-
-            // Background task: flush runtime progress to DB every 5 seconds
-            tauri::async_runtime::spawn(async move {
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                    let flushed = flush_dm.flush();
-                    if flushed > 0 {
-                        eprintln!("[ProxyDM] Flushed {} progress entries to DB", flushed);
-                    }
-                }
-            });
-
-            // Crash recovery: re-queue all incomplete downloads
-            {
-                if let Ok(items) = dm.list_items() {
-                    let mut changed = false;
-                    for mut item in items.into_iter() {
-                        if matches!(item.status, crate::types::DownloadStatus::Downloading) {
-                            item.status = crate::types::DownloadStatus::Paused;
-                            let _ = dm.update_item(&item);
-                            changed = true;
-                        }
-                    }
-                    if changed {
-                        eprintln!("[ProxyDM] Crash recovery: paused stale downloads");
-                    }
-                }
-            }
+            // Spawn background tasks
+            spawn_event_handler(dm.clone(), app.handle().clone(), event_rx);
+            spawn_ws_forwarder(app.handle().clone(), request_rx);
+            start_ws_server(event_tx, request_tx);
+            spawn_flush_loop(dm.clone());
+            crash_recovery(&dm);
 
             Ok(())
         })

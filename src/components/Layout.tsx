@@ -3,6 +3,7 @@ import { DownloadIcon, CheckIcon, PauseIcon } from "@primer/octicons-react";
 import Toolbar from "./Toolbar";
 import DownloadTable from "./DownloadTable";
 import { useDownloads } from "../query/downloadQueries";
+import { isFailed } from "../utils/download";
 import { t } from "../i18n";
 
 interface LayoutProps {
@@ -42,7 +43,7 @@ export default function Layout({
   const hasDownloadingSelected = selectedDownloadStatuses.some((s) => s === "downloading");
   const hasPausedSelected = selectedDownloadStatuses.some((s) => s === "paused");
   const hasCompletedSelected = selectedDownloadStatuses.some((s) => s === "completed");
-  const hasFailedSelected = selectedDownloadStatuses.some((s) => s.startsWith("failed"));
+  const hasFailedSelected = selectedDownloadStatuses.some((s) => isFailed(s));
 
   const counts = {
     all: downloads.length,

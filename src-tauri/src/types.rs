@@ -39,28 +39,62 @@ pub enum DownloadStatus {
 
 impl Serialize for DownloadStatus {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        let v = match self {
-            DownloadStatus::Downloading => "downloading".to_string(),
-            DownloadStatus::Paused => "paused".to_string(),
-            DownloadStatus::Completed => "completed".to_string(),
-            DownloadStatus::Failed(msg) => format!("failed:{}", msg),
-            DownloadStatus::Queued => "queued".to_string(),
-        };
-        s.serialize_str(&v)
+        use serde::ser::SerializeMap;
+        match self {
+            DownloadStatus::Failed(msg) => {
+                let mut map = s.serialize_map(Some(1))?;
+                map.serialize_entry("failed", msg)?;
+                map.end()
+            }
+            other => {
+                let v = match other {
+                    DownloadStatus::Downloading => "downloading",
+                    DownloadStatus::Paused => "paused",
+                    DownloadStatus::Completed => "completed",
+                    DownloadStatus::Queued => "queued",
+                    DownloadStatus::Failed(_) => unreachable!(),
+                };
+                s.serialize_str(v)
+            }
+        }
     }
 }
 
 impl<'de> Deserialize<'de> for DownloadStatus {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let v = String::deserialize(d)?;
-        Ok(match v.as_str() {
-            "downloading" => DownloadStatus::Downloading,
-            "paused" => DownloadStatus::Paused,
-            "completed" => DownloadStatus::Completed,
-            "queued" => DownloadStatus::Queued,
-            s if s.starts_with("failed:") => DownloadStatus::Failed(s[7..].to_string()),
-            _ => DownloadStatus::Queued,
-        })
+        use serde::de;
+
+        struct DownloadStatusVisitor;
+
+        impl<'de> de::Visitor<'de> for DownloadStatusVisitor {
+            type Value = DownloadStatus;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a string or {\"failed\":\"message\"}")
+            }
+
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                Ok(match v {
+                    "downloading" => DownloadStatus::Downloading,
+                    "paused" => DownloadStatus::Paused,
+                    "completed" => DownloadStatus::Completed,
+                    "queued" => DownloadStatus::Queued,
+                    s if s.starts_with("failed:") => DownloadStatus::Failed(s[7..].to_string()),
+                    _ => DownloadStatus::Queued,
+                })
+            }
+
+            fn visit_map<M: de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                while let Some((key, value)) = map.next_entry::<String, String>()? {
+                    if key == "failed" {
+                        return Ok(DownloadStatus::Failed(value));
+                    }
+                }
+                Ok(DownloadStatus::Queued)
+            }
+        }
+
+        d.deserialize_any(DownloadStatusVisitor)
     }
 }
 
@@ -134,8 +168,7 @@ pub struct DownloadConfig {
 
 impl DownloadConfig {
     /// Create a DownloadConfig from a DownloadItem and settings.
-    /// Used for resume, redownload, and fresh start — eliminates 4x duplicate construction.
-    pub fn from_item(item: &DownloadItem, proxy_url: &str, user_agent: &str, is_resume: bool) -> Self {
+    pub fn from_item(item: &DownloadItem, proxy_url: &str, user_agent: &str, is_resume: bool, max_retries: u32) -> Self {
         DownloadConfig {
             url: item.url.clone(),
             output_path: item.save_path.clone(),
@@ -149,9 +182,30 @@ impl DownloadConfig {
             supports_range: item.resumable.unwrap_or(true),
             rate_limit_bps: 0,
             connections: item.connections,
-            max_retries: 3,
+            max_retries,
             user_agent: user_agent.to_string(),
             resume_tasks: vec![],
+        }
+    }
+
+    /// Create a DownloadConfig from a DownloadState (gob resume) and settings.
+    pub fn from_state(state: &DownloadState, proxy_url: &str, user_agent: &str, supports_range: bool, max_retries: u32) -> Self {
+        DownloadConfig {
+            url: state.url.clone(),
+            output_path: state.save_path.clone(),
+            save_path: state.save_path.clone(),
+            id: state.id,
+            file_name: state.file_name.clone(),
+            is_resume: true,
+            headers: std::collections::HashMap::new(),
+            proxy_name: proxy_url.to_string(),
+            total_size: state.total_size,
+            supports_range,
+            rate_limit_bps: 0,
+            connections: state.workers,
+            max_retries,
+            user_agent: user_agent.to_string(),
+            resume_tasks: state.tasks.clone(),
         }
     }
 }
@@ -169,7 +223,7 @@ pub struct DownloadState {
     pub workers: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Task {
     pub offset: u64,
     pub length: u64,
@@ -247,11 +301,8 @@ pub enum EventKind {
     DownloadStarted,
     DownloadProgress,
     DownloadCompleted,
-    DownloadPaused,
-    DownloadResumed,
     DownloadErrored,
     DownloadRemoved,
-    DownloadQueued,
 }
 
 #[cfg(test)]
@@ -270,7 +321,7 @@ mod tests {
     fn test_download_status_serde_failed() {
         let s = DownloadStatus::Failed("connection refused".to_string());
         let json = serde_json::to_string(&s).unwrap();
-        assert_eq!(json, "\"failed:connection refused\"");
+        assert_eq!(json, r#"{"failed":"connection refused"}"#);
         let back: DownloadStatus = serde_json::from_str(&json).unwrap();
         assert!(matches!(back, DownloadStatus::Failed(msg) if msg == "connection refused"));
     }

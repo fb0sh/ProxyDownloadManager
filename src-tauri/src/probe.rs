@@ -6,7 +6,6 @@ pub struct ProbeResult {
     pub supports_range: bool,
     pub file_size: u64,
     pub file_name: String,
-    pub accept_ranges: bool,
 }
 
 pub async fn probe(
@@ -16,7 +15,7 @@ pub async fn probe(
     pool: &NetworkPool,
     user_agents: &[String],
 ) -> Result<ProbeResult, String> {
-    let client = pool.get_client(proxy);
+    let client = pool.get_client(proxy).map_err(|e| format!("Failed to create HTTP client: {}", e))?;
     eprintln!("[ProxyDM] probe start url={} proxy={:?} uas={}", url, proxy, user_agents.len());
 
     // Try each UA, return first success
@@ -56,24 +55,18 @@ pub async fn probe(
 
         let supports_range = status == reqwest::StatusCode::PARTIAL_CONTENT;
 
-        let (file_size, accept_ranges) = if supports_range {
-            let cr = resp.headers().get("content-range")
+        let file_size = if supports_range {
+            resp.headers().get("content-range")
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| {
                     s.split('/').nth(1).and_then(|n| n.trim().parse::<u64>().ok())
                 })
-                .unwrap_or(0);
-            let ar = resp.headers().get("accept-ranges")
-                .and_then(|v| v.to_str().ok())
-                .map(|v| v.contains("bytes"))
-                .unwrap_or(false);
-            (cr, ar)
+                .unwrap_or(0)
         } else if status == reqwest::StatusCode::OK {
-            let size = resp.headers().get("content-length")
+            resp.headers().get("content-length")
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(0);
-            (size, false)
+                .unwrap_or(0)
         } else if status == reqwest::StatusCode::FORBIDDEN || status == reqwest::StatusCode::METHOD_NOT_ALLOWED {
             // Try fallback GET without Range (no UA switch yet, skip to next UA on retry)
             let mut get_req = client.get(url);
@@ -83,11 +76,10 @@ pub async fn probe(
             }
             match get_req.send().await {
                 Ok(r2) if r2.status().is_success() => {
-                    let size = r2.headers().get("content-length")
+                    r2.headers().get("content-length")
                         .and_then(|v| v.to_str().ok())
                         .and_then(|s| s.parse::<u64>().ok())
-                        .unwrap_or(0);
-                    (size, false)
+                        .unwrap_or(0)
                 }
                 _ => continue, // try next UA
             }
@@ -106,7 +98,6 @@ pub async fn probe(
             supports_range,
             file_size,
             file_name,
-            accept_ranges,
         });
     }
 

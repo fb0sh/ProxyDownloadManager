@@ -29,7 +29,8 @@ export type DownloadStatus =
   | "paused"
   | "completed"
   | "failed"
-  | "queued";
+  | "queued"
+  | { failed: string };
 
 export type PartStatus =
   | "pending"

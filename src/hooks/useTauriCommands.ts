@@ -1,14 +1,14 @@
-// src/hooks/useTauriCommands.ts
+// src/hooks/useTauriCommands.ts — plain function, not a React hook
 import { invoke } from "@tauri-apps/api/core";
 import type { DownloadItem, Settings } from "../types";
 
-export function useTauriCommands() {
+export function tauriCommands() {
   return {
     listDownloads: async () => {
       const items: any[] = await invoke<DownloadItem[]>("list_downloads");
       return items.map((item) => ({
         ...item,
-        status: item.status && item.status.startsWith("failed") ? "failed" : item.status || "queued",
+        status: item.status || "queued",
       })) as DownloadItem[];
     },
     startDownload: (url: string, filename: string, proxyName: string, connections: number, savePath: string) =>

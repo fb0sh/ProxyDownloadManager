@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use tungstenite::Message;
 
-use crate::types::{Event, EventKind, PendingDownloadRequest};
+use crate::types::{Event, PendingDownloadRequest};
 
 pub struct WsServer {
     event_tx: tokio::sync::mpsc::UnboundedSender<Event>,
@@ -159,16 +159,7 @@ impl WsServer {
                         break;
                     }
 
-                    eprintln!("[ProxyDM WS] request_tx.send OK, now event_tx...");
-                    let event = Event {
-                        kind: EventKind::DownloadQueued,
-                        download_id: 0,
-                        data: None,
-                    };
-                    if let Err(e) = event_tx.send(event) {
-                        eprintln!("[ProxyDM WS] event_tx.send ERROR: {:?}", e);
-                        break;
-                    }
+                    eprintln!("[ProxyDM WS] request_tx.send OK");
 
                     eprintln!("[ProxyDM WS] event_tx OK, sending ack...");
                     if let Err(e) = ws.send(Message::Text(r#"{"status":"ok"}"#.into())) {

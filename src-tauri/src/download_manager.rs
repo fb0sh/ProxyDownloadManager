@@ -14,6 +14,16 @@ pub struct DownloadManager {
     settings: Mutex<Settings>,
 }
 
+/// Flags indicating which Tauri-specific side effects the caller should trigger.
+pub struct SettingsChangeFlags {
+    pub tls_changed: bool,
+    pub shortcut_changed: bool,
+    pub old_shortcut: String,
+    pub new_shortcut: String,
+    pub launch_at_startup: bool,
+    pub silent_startup: bool,
+}
+
 impl DownloadManager {
     pub fn new(
         db: Db,
@@ -40,10 +50,41 @@ impl DownloadManager {
         }
     }
 
+    /// Resolve a proxy name to a URL using cached settings.
+    pub fn resolve_proxy_url(&self, proxy_name: &str) -> Option<String> {
+        let settings = self.get_settings();
+        resolve_proxy_url_from(proxy_name, &settings)
+    }
+
     pub fn log_info(&self, msg: &str) {
         if let Ok(l) = self.logger.lock() {
             l.info(msg);
         }
+    }
+
+    /// Save settings: persist to disk, reload cache, clear pool if TLS changed.
+    /// Returns change flags for the caller to handle Tauri-specific side effects.
+    pub fn save_settings(&self, new_settings: &Settings) -> Result<SettingsChangeFlags, String> {
+        let old = self.get_settings();
+        let tls_changed = old.danger_accept_invalid_certs != new_settings.danger_accept_invalid_certs;
+        let shortcut_changed = old.global_shortcut != new_settings.global_shortcut;
+
+        config::save(new_settings)?;
+        self.reload_settings();
+
+        if tls_changed {
+            eprintln!("[ProxyDM] TLS cert validation changed, clearing client pool");
+            self.clear_client_pool();
+        }
+
+        Ok(SettingsChangeFlags {
+            tls_changed,
+            shortcut_changed,
+            old_shortcut: old.global_shortcut,
+            new_shortcut: new_settings.global_shortcut.clone(),
+            launch_at_startup: new_settings.launch_at_startup,
+            silent_startup: new_settings.silent_startup,
+        })
     }
 
     pub fn log_warn(&self, msg: &str) {
@@ -68,6 +109,17 @@ impl DownloadManager {
 
     pub fn clear_client_pool(&self) {
         self.worker_pool.clear_clients();
+    }
+
+    /// Build the user-agent fallback list: configured UA + browser defaults.
+    fn build_user_agents(&self) -> Vec<String> {
+        let settings = self.get_settings();
+        vec![
+            settings.user_agent,
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36".to_string(),
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36".to_string(),
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:127.0) Gecko/20100101 Firefox/127.0".to_string(),
+        ]
     }
 
     /// Handle an event from the download engine.
@@ -101,10 +153,15 @@ impl DownloadManager {
                 });
             }
             EventKind::DownloadCompleted => {
+                let file_name = self.facade.get_item(id)
+                    .ok()
+                    .flatten()
+                    .map(|item| item.file_name)
+                    .unwrap_or_default();
                 self.facade.on_completed(id);
                 emitted.push(EmittedEvent {
                     name: "download-completed".to_string(),
-                    payload: serde_json::json!(id),
+                    payload: serde_json::json!({ "id": id, "file_name": file_name }),
                 });
             }
             EventKind::DownloadErrored => {
@@ -141,16 +198,11 @@ impl DownloadManager {
 
         let pool = self.worker_pool.pool_ref();
         let headers = std::collections::HashMap::new();
-        let proxy_url_str = resolve_proxy_url(&proxy_name);
+        let proxy_url_str = self.resolve_proxy_url(&proxy_name);
         let proxy_opt = proxy_url_str.as_deref();
 
         let settings = self.get_settings();
-        let user_agents = vec![
-            settings.user_agent.clone(),
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36".to_string(),
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36".to_string(),
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:127.0) Gecko/20100101 Firefox/127.0".to_string(),
-        ];
+        let user_agents = self.build_user_agents();
 
         let probe_result = crate::probe::probe(&url, &headers, proxy_opt, &pool, &user_agents).await;
 
@@ -253,23 +305,8 @@ impl DownloadManager {
         };
         self.facade.insert_item(&item)?;
 
-        let cfg = DownloadConfig {
-            url,
-            output_path: full_path.clone(),
-            save_path: full_path.clone(),
-            id,
-            file_name,
-            is_resume: false,
-            headers: std::collections::HashMap::new(),
-            proxy_name: proxy_url_str.clone().unwrap_or_default(),
-            total_size: file_size,
-            supports_range,
-            rate_limit_bps: 0,
-            connections,
-            max_retries: 3,
-            user_agent: settings.user_agent.clone(),
-            resume_tasks: vec![],
-        };
+        let mut cfg = DownloadConfig::from_item(&item, &proxy_url_str.clone().unwrap_or_default(), &settings.user_agent, false, settings.max_retries);
+        cfg.id = id;
         self.worker_pool.add_with_id(cfg, id).await?;
 
         Ok(id)
@@ -285,15 +322,10 @@ impl DownloadManager {
 
         let pool = self.worker_pool.pool_ref();
         let headers = std::collections::HashMap::new();
-        let proxy_url = resolve_proxy_url(&existing.proxy_name).unwrap_or_default();
+        let proxy_url = self.resolve_proxy_url(&existing.proxy_name).unwrap_or_default();
         let proxy_opt = if proxy_url.is_empty() { None } else { Some(proxy_url.as_str()) };
         let settings = self.get_settings();
-        let user_agents = vec![
-            settings.user_agent.clone(),
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36".to_string(),
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36".to_string(),
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:127.0) Gecko/20100101 Firefox/127.0".to_string(),
-        ];
+        let user_agents = self.build_user_agents();
 
         let probe_result = crate::probe::probe(&existing.url, &headers, proxy_opt, &pool, &user_agents).await;
 
@@ -327,23 +359,7 @@ impl DownloadManager {
         };
         self.facade.insert_item(&new_item)?;
 
-        let cfg = DownloadConfig {
-            url: existing.url,
-            output_path: existing.save_path.clone(),
-            save_path: existing.save_path,
-            id: new_id,
-            file_name: existing.file_name,
-            is_resume: false,
-            headers: std::collections::HashMap::new(),
-            proxy_name: proxy_url,
-            total_size: file_size,
-            supports_range,
-            rate_limit_bps: 0,
-            connections: existing.connections,
-            max_retries: 3,
-            user_agent: settings.user_agent,
-            resume_tasks: vec![],
-        };
+        let cfg = DownloadConfig::from_item(&new_item, &proxy_url, &settings.user_agent, false, settings.max_retries);
         self.worker_pool.add_with_id(cfg, new_id).await?;
 
         Ok(new_id)
@@ -381,24 +397,9 @@ impl DownloadManager {
                 true
             };
 
-            let proxy_url = resolve_proxy_url(&saved_state.proxy_name).unwrap_or_default();
-            let cfg = DownloadConfig {
-                url: saved_state.url,
-                output_path: saved_state.save_path.clone(),
-                save_path: saved_state.save_path,
-                id,
-                file_name: saved_state.file_name,
-                is_resume: true,
-                headers: std::collections::HashMap::new(),
-                proxy_name: proxy_url,
-                total_size: saved_state.total_size,
-                supports_range,
-                rate_limit_bps: 0,
-                connections: saved_state.workers,
-                max_retries: 3,
-                user_agent: self.get_settings().user_agent,
-                resume_tasks: saved_state.tasks,
-            };
+            let proxy_url = self.resolve_proxy_url(&saved_state.proxy_name).unwrap_or_default();
+            let s = self.get_settings();
+            let cfg = DownloadConfig::from_state(&saved_state, &proxy_url, &s.user_agent, supports_range, s.max_retries);
             self.worker_pool.add_with_id(cfg, id).await?;
         } else {
             if let Ok(Some(item)) = self.facade.get_item(id) {
@@ -409,24 +410,8 @@ impl DownloadManager {
                 let _ = self.facade.update_item(&updated);
 
                 let settings = self.get_settings();
-                let proxy_url = resolve_proxy_url(&item.proxy_name).unwrap_or_default();
-                let cfg = DownloadConfig {
-                    url: item.url,
-                    output_path: item.save_path.clone(),
-                    save_path: item.save_path,
-                    id,
-                    file_name: item.file_name,
-                    is_resume: false,
-                    headers: std::collections::HashMap::new(),
-                    proxy_name: proxy_url,
-                    total_size: item.total_size,
-                    supports_range: item.resumable.unwrap_or(true),
-                    rate_limit_bps: 0,
-                    connections: item.connections,
-                    max_retries: 3,
-                    user_agent: settings.user_agent,
-                    resume_tasks: vec![],
-                };
+                let proxy_url = self.resolve_proxy_url(&item.proxy_name).unwrap_or_default();
+                let cfg = DownloadConfig::from_item(&item, &proxy_url, &settings.user_agent, false, settings.max_retries);
                 self.worker_pool.add_with_id(cfg, id).await?;
             }
         }
@@ -466,6 +451,65 @@ impl DownloadManager {
     pub async fn cancel_download(&self, id: u64) {
         self.worker_pool.cancel(id).await;
     }
+
+    /// Check for application updates from GitHub.
+    pub async fn check_update(&self, proxy_name: &str) -> Result<serde_json::Value, String> {
+        let proxy_url = self.resolve_proxy_url(proxy_name);
+        let pool = self.worker_pool.pool_ref();
+        let client = pool.get_client(proxy_url.as_deref())?;
+
+        let resp = client
+            .get("https://api.github.com/repos/fb0sh/ProxyDownloadManager/releases/latest")
+            .header("User-Agent", concat!("ProxyDM/", env!("CARGO_PKG_VERSION")))
+            .header("Accept", "application/vnd.github.v3+json")
+            .timeout(std::time::Duration::from_secs(30))
+            .send()
+            .await
+            .map_err(|e| format!("Failed to check update: {}", e))?;
+
+        if !resp.status().is_success() {
+            return Err(format!("GitHub API responded with status {}", resp.status()));
+        }
+
+        let body = resp.text().await
+            .map_err(|e| format!("Failed to read response: {}", e))?;
+        Ok(serde_json::from_str(&body)
+            .map_err(|e| format!("Failed to parse release info: {}", e))?)
+    }
+
+    /// Test proxy connectivity.
+    pub async fn test_proxy(&self, proxy_name: &str) -> Result<serde_json::Value, String> {
+        let proxy_url = self.resolve_proxy_url(proxy_name);
+        let pool = self.worker_pool.pool_ref();
+        let client = pool.get_client(proxy_url.as_deref())?;
+
+        let start = std::time::Instant::now();
+        match client
+            .get("https://www.google.com")
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                let latency_ms = start.elapsed().as_millis() as u64;
+                let ok = resp.status().is_success();
+                let status = resp.status().as_u16();
+                Ok(serde_json::json!({
+                    "ok": ok,
+                    "latency_ms": latency_ms,
+                    "status": status,
+                }))
+            }
+            Err(e) => {
+                let latency_ms = start.elapsed().as_millis() as u64;
+                Ok(serde_json::json!({
+                    "ok": false,
+                    "latency_ms": latency_ms,
+                    "error": format!("{}", e),
+                }))
+            }
+        }
+    }
 }
 
 /// An event to be emitted to the frontend.
@@ -474,11 +518,11 @@ pub struct EmittedEvent {
     pub payload: serde_json::Value,
 }
 
-pub fn resolve_proxy_url(proxy_name: &str) -> Option<String> {
+/// Resolve a proxy name to a URL using the given settings.
+pub(crate) fn resolve_proxy_url_from(proxy_name: &str, settings: &Settings) -> Option<String> {
     if proxy_name.is_empty() {
         return None;
     }
-    let settings = config::load();
     let proxy = settings.proxies.get(proxy_name)?;
     let protocol = match proxy.protocol {
         ProxyProtocol::Http => "http",
@@ -530,11 +574,13 @@ mod tests {
 
     #[test]
     fn test_resolve_proxy_url_empty() {
-        assert!(resolve_proxy_url("").is_none());
+        let settings = Settings::default();
+        assert!(resolve_proxy_url_from("", &settings).is_none());
     }
 
     #[test]
     fn test_resolve_proxy_url_missing() {
-        assert!(resolve_proxy_url("nonexistent").is_none());
+        let settings = Settings::default();
+        assert!(resolve_proxy_url_from("nonexistent", &settings).is_none());
     }
 }

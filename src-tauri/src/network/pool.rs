@@ -16,11 +16,11 @@ impl NetworkPool {
         }
     }
 
-    pub fn get_client(&self, proxy_url: Option<&str>) -> reqwest::Client {
+    pub fn get_client(&self, proxy_url: Option<&str>) -> Result<reqwest::Client, String> {
         let key = proxy_url.unwrap_or("direct").to_string();
-        let mut map = self.clients.lock().unwrap();
+        let mut map = self.clients.lock().map_err(|e| e.to_string())?;
         if let Some(client) = map.get(&key) {
-            return client.clone();
+            return Ok(client.clone());
         }
         eprintln!("[ProxyDM] pool creating new client for proxy={}", key);
         let mut builder = reqwest::Client::builder()
@@ -37,9 +37,9 @@ impl NetworkPool {
             }
         }
 
-        let client = builder.build().expect("Failed to build reqwest Client");
+        let client = builder.build().map_err(|e| format!("Failed to build HTTP client: {}", e))?;
         map.insert(key, client.clone());
-        client
+        Ok(client)
     }
 
     /// Clear cached clients so next get_client() rebuilds with current settings

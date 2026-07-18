@@ -8,6 +8,7 @@ import ExtensionDialog from "./components/dialogs/ExtensionDialog";
 import { useClipboardDetection } from "./hooks/useClipboard";
 import { usePauseDownload, useResumeDownload, useDownloads, useSettings, useRedownloadDownload } from "./query/downloadQueries";
 import { useDownloadEvents } from "./hooks/useDownloadEvents";
+import { isFailed } from "./utils/download";
 import { useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -123,7 +124,7 @@ function App() {
   const clearSelection = () => setSelectedIds(new Set());
 
   const selectedForRedownload = selectedIds.size === 1
-    ? downloads.find((d) => selectedIds.has(d.id) && (d.status === "completed" || d.status === "failed"))
+    ? downloads.find((d) => selectedIds.has(d.id) && (d.status === "completed" || isFailed(d.status)))
     : undefined;
 
   return (

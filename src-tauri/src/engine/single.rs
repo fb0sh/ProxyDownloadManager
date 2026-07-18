@@ -19,6 +19,7 @@ impl SingleDownloader {
         eprintln!("[ProxyDM] single id={} url={}", cfg.id, cfg.url);
         let mut req = self.pool
             .get_client(if cfg.proxy_name.is_empty() { None } else { Some(&cfg.proxy_name) })
+            .map_err(|e| format!("Failed to create HTTP client: {}", e))?
             .get(&cfg.url);
         if !cfg.user_agent.is_empty() {
             req = req.header("User-Agent", &cfg.user_agent);
@@ -63,8 +64,10 @@ impl SingleDownloader {
         }
 
         // Use std::fs::File (no tokio overhead for sequential write)
+        // Write to .pdm temp file for crash safety, rename on completion
+        let pdm_path = format!("{}.pdm", cfg.save_path);
         use std::io::Write;
-        let mut file = std::fs::File::create(&cfg.save_path)
+        let mut file = std::fs::File::create(&pdm_path)
             .map_err(|e| format!("Failed to create file: {}", e))?;
 
         let stream = resp.bytes_stream();
@@ -147,6 +150,11 @@ impl SingleDownloader {
             total += buf.len() as u64;
         }
         file.flush().map_err(|e| format!("Flush error: {}", e))?;
+        drop(file);
+
+        // Rename .pdm to final filename (matches concurrent engine convention)
+        tokio::fs::rename(&pdm_path, &cfg.save_path).await
+            .map_err(|e| format!("Failed to rename file: {}", e))?;
 
         eprintln!("[ProxyDM] single id={} done total={} bytes", cfg.id, total);
 

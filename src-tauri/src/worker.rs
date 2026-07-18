@@ -90,16 +90,24 @@ impl WorkerPool {
         }
     }
 
-    pub async fn cancel(&self, id: u64) {
+    /// Cancel a download by setting its cancel flag and removing it from the active map.
+    /// Returns the JoinHandle so the caller can optionally await task completion.
+    /// The semaphore permit is released when the task finishes (via `drop(permit)` in spawn_task).
+    pub async fn cancel(&self, id: u64) -> Option<tokio::task::JoinHandle<()>> {
         let mut active = self.active.lock().await;
-        if let Some((cancel, _handle)) = active.remove(&id) {
+        if let Some((cancel, handle)) = active.remove(&id) {
             eprintln!("[ProxyDM] worker cancel id={} (flag set)", id);
             cancel.store(true, Ordering::Relaxed);
+            Some(handle)
         } else {
             eprintln!("[ProxyDM] worker cancel id={} (not found, already done?)", id);
+            None
         }
     }
 
+    /// Cancel a download and wait for the task to fully stop.
+    /// Use this when you need the worker to be completely done before proceeding
+    /// (e.g. pause_download needs to flush progress before updating DB status).
     pub async fn cancel_and_wait(&self, id: u64) {
         let handle = {
             let mut active = self.active.lock().await;
