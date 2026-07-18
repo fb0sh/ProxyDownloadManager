@@ -73,7 +73,7 @@ pub fn get_settings(state: State<'_, Arc<AppState>>) -> Result<Settings, String>
 
 #[tauri::command]
 pub fn save_settings(state: State<'_, Arc<AppState>>, settings: Settings) -> Result<(), String> {
-    eprintln!("[ProxyDM] save_settings lang={} dl_dir={} max_conns={} tls_invalid={}",
+    log::info!("[ProxyDM] save_settings lang={} dl_dir={} max_conns={} tls_invalid={}",
         settings.language, settings.download_dir, settings.max_connections, settings.danger_accept_invalid_certs);
     state.dm.log_info(&format!("Settings saved: language={} download_dir={}", settings.language, settings.download_dir));
 
@@ -84,7 +84,7 @@ pub fn save_settings(state: State<'_, Arc<AppState>>, settings: Settings) -> Res
     }
 
     if let Err(e) = crate::platform::sync_autostart(&state.app_handle, result.launch_at_startup, result.silent_startup) {
-        eprintln!("[ProxyDM] Failed to sync autostart: {}", e);
+        log::error!("[ProxyDM] Failed to sync autostart: {}", e);
     }
 
     #[cfg(desktop)]
@@ -96,7 +96,7 @@ pub fn save_settings(state: State<'_, Arc<AppState>>, settings: Settings) -> Res
         }
         if !result.new_shortcut.is_empty() {
             if let Err(e) = app.global_shortcut().register(result.new_shortcut.as_str()) {
-                eprintln!("[ProxyDM] Failed to update global shortcut: {}", e);
+                log::error!("[ProxyDM] Failed to update global shortcut: {}", e);
             }
         }
     }
@@ -107,13 +107,13 @@ pub fn save_settings(state: State<'_, Arc<AppState>>, settings: Settings) -> Res
 
 #[tauri::command]
 pub fn exit_app(app: tauri::AppHandle) {
-    eprintln!("[ProxyDM] exit_app called");
+    log::info!("[ProxyDM] exit_app called");
     app.exit(0);
 }
 
 #[tauri::command]
 pub fn read_logs(max_lines: Option<usize>) -> Result<Vec<String>, String> {
-    crate::log::read_logs(max_lines.unwrap_or(30))
+    crate::logger::read_logs(max_lines.unwrap_or(30))
 }
 
 #[tauri::command]
@@ -167,8 +167,8 @@ pub fn open_extensions_folder(app: tauri::AppHandle) -> Result<(), String> {
 pub fn get_extensions_dir(app: tauri::AppHandle) -> Result<String, String> {
     let result = crate::platform::resolve_extensions_dir(&app);
     match &result {
-        Ok(p) => eprintln!("[ProxyDM] get_extensions_dir -> {}", p),
-        Err(e) => eprintln!("[ProxyDM] get_extensions_dir ERROR: {}", e),
+        Ok(p) => log::info!("[ProxyDM] get_extensions_dir -> {}", p),
+        Err(e) => log::error!("[ProxyDM] get_extensions_dir ERROR: {}", e),
     }
     result
 }

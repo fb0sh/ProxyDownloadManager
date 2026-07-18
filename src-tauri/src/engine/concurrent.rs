@@ -20,13 +20,13 @@ impl ConcurrentDownloader {
 
     pub async fn download(&self, cfg: &EngineConfig, limiter: Arc<MultiLimiter>, cancel: Arc<AtomicBool>, on_resume: &crate::engine::OnResumeState) -> PdmResult<()> {
         let (tasks, resume_offset): (Vec<Task>, u64) = if cfg.is_resume && !cfg.resume_tasks.is_empty() {
-            eprintln!("[ProxyDM] concurrent id={} resume with {} engine tasks", cfg.id, cfg.resume_tasks.len());
+            log::info!("[ProxyDM] concurrent id={} resume with {} engine tasks", cfg.id, cfg.resume_tasks.len());
             let off = cfg.resume_tasks.iter().map(|t| t.offset + t.length).max().unwrap_or(0);
             (cfg.resume_tasks.clone(), off)
         } else if cfg.is_resume {
             let remaining = cfg.total_size;
             let num_conns = 4.max(cfg.connections);
-            eprintln!("[ProxyDM] concurrent id={} resume recompute from scratch", cfg.id);
+            log::info!("[ProxyDM] concurrent id={} resume recompute from scratch", cfg.id);
             (chunk::compute_chunks(remaining, num_conns, 0), 0)
         } else {
             (chunk::compute_chunks(cfg.total_size, cfg.connections.max(1), 0), 0)
@@ -45,14 +45,14 @@ impl ConcurrentDownloader {
         }
 
         let num_workers = num_conns.min(tasks.len() as u32).max(1);
-        eprintln!("[ProxyDM] concurrent id={} workers={} chunks={} total_size={} is_resume={}",
+        log::info!("[ProxyDM] concurrent id={} workers={} chunks={} total_size={} is_resume={}",
             cfg.id, num_workers, tasks.len(), cfg.total_size, cfg.is_resume);
 
         let queue = Arc::new(ChunkQueue::new(tasks));
 
         let file = create_output_file(&cfg.save_path, cfg.total_size).await?;
         let file = Arc::new(file);
-        eprintln!("[ProxyDM] concurrent id={} file created: {}.pdm", cfg.id, cfg.save_path);
+        log::info!("[ProxyDM] concurrent id={} file created: {}.pdm", cfg.id, cfg.save_path);
 
         let client = self.pool.get_client(if cfg.proxy_url.is_empty() { None } else { Some(&cfg.proxy_url) })?;
 
@@ -111,7 +111,7 @@ impl ConcurrentDownloader {
                             retries_left = max_retries;
                         }
                         TaskResult::Partial { remaining } => {
-                            eprintln!("[ProxyDM] task offset={} partial, re-queueing {} bytes", task.offset, remaining.length);
+                            log::info!("[ProxyDM] task offset={} partial, re-queueing {} bytes", task.offset, remaining.length);
                             queue.push(remaining);
                             retries_left = max_retries;
                         }
@@ -126,7 +126,7 @@ impl ConcurrentDownloader {
                                 retries_left -= 1;
                                 queue.push(task);
                             } else {
-                                eprintln!("[ProxyDM] worker retries exhausted for offset={}, stopping", task.offset);
+                                log::error!("[ProxyDM] retries exhausted for offset={}, stopping", task.offset);
                                 let _ = event_tx.send(crate::types::Event {
                                     kind: crate::types::EventKind::DownloadErrored,
                                     download_id,
@@ -144,7 +144,7 @@ impl ConcurrentDownloader {
         for h in handles {
             let _ = h.await;
         }
-        eprintln!("[ProxyDM] concurrent id={} all workers done", cfg.id);
+        log::info!("[ProxyDM] concurrent id={} all workers done", cfg.id);
 
         reporter_stop.store(true, Ordering::Relaxed);
         let _ = reporter_handle.await;

@@ -1,11 +1,16 @@
+use log::{Level, LevelFilter, Log, Metadata, Record, set_logger, set_max_level};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+static LOGGER: Logger = Logger {
+    file: Mutex::new(None),
+};
+
 pub struct Logger {
-    file: Mutex<File>,
+    file: Mutex<Option<File>>,
 }
 
 impl Logger {
@@ -19,7 +24,7 @@ impl Logger {
             .append(true)
             .open(&path)
             .map_err(|e| e.to_string())?;
-        Ok(Self { file: Mutex::new(file) })
+        Ok(Self { file: Mutex::new(Some(file)) })
     }
 
     fn log_path() -> PathBuf {
@@ -33,9 +38,11 @@ impl Logger {
             .unwrap_or_default();
         let secs = now.as_secs();
         let line = format!("[{}] [{}] {}\n", Self::fmt_time(secs), level, msg);
-        if let Ok(mut f) = self.file.lock() {
-            let _ = f.write_all(line.as_bytes());
-            let _ = f.flush();
+        if let Ok(mut guard) = self.file.lock() {
+            if let Some(ref mut f) = *guard {
+                let _ = f.write_all(line.as_bytes());
+                let _ = f.flush();
+            }
         }
     }
 
@@ -50,7 +57,6 @@ impl Logger {
         let seconds = remaining % 60;
         let days_since_epoch = secs / 86400;
 
-        // Approximate date from Unix epoch using cumulative days per month
         let mut y = 1970i64;
         let mut remaining_days = days_since_epoch as i64;
 
@@ -79,6 +85,61 @@ impl Logger {
     }
 }
 
+impl Log for Logger {
+    fn enabled(&self, _metadata: &Metadata) -> bool { true }
+
+    fn log(&self, record: &Record) {
+        if !self.enabled(record.metadata()) { return; }
+        let level = match record.level() {
+            Level::Error => "ERROR",
+            Level::Warn => "WARN",
+            Level::Info => "INFO",
+            Level::Debug => "DEBUG",
+            Level::Trace => "TRACE",
+        };
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
+        let secs = now.as_secs();
+        let line = format!("[{}] [{}] [{}] {}\n",
+            Logger::fmt_time(secs), level,
+            record.module_path().unwrap_or("?"),
+            record.args());
+        if let Ok(mut guard) = self.file.lock() {
+            if let Some(ref mut f) = *guard {
+                let _ = f.write_all(line.as_bytes());
+                let _ = f.flush();
+            }
+        }
+    }
+
+    fn flush(&self) {
+        if let Ok(mut guard) = self.file.lock() {
+            if let Some(ref mut f) = *guard {
+                let _ = f.flush();
+            }
+        }
+    }
+}
+
+/// Initialize the global logger. Call once at startup.
+pub fn init_log() {
+    // Open the log file and store it in the static LOGGER
+    let path = Logger::log_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(file) = OpenOptions::new().create(true).append(true).open(&path) {
+        // We need to set the file in the static LOGGER. Since LOGGER.file is Mutex<Option<File>>,
+        // we can set it here.
+        if let Ok(mut guard) = LOGGER.file.lock() {
+            *guard = Some(file);
+        }
+    }
+    let _ = set_logger(&LOGGER);
+    set_max_level(LevelFilter::Info);
+}
+
 fn is_leap(year: i64) -> bool {
     (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
 }
@@ -95,7 +156,7 @@ pub fn read_logs(max_lines: usize) -> Result<Vec<String>, String> {
     }
     let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
     let lines: Vec<String> = content.lines().rev().take(max_lines).map(|l| l.to_string()).collect();
-    Ok(lines) // newest first
+    Ok(lines)
 }
 
 #[cfg(test)]
@@ -104,8 +165,6 @@ mod tests {
 
     #[test]
     fn test_logger_can_construct() {
-        // Logger::new() creates the file at ~/.ProxyDM/logs/proxydm.log
-        // This is a smoke test - in isolation it should succeed
         let logger = Logger::new();
         assert!(logger.is_ok());
     }

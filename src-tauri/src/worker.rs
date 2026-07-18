@@ -18,7 +18,7 @@ pub struct WorkerPool {
 
 impl WorkerPool {
     pub fn new(max_workers: u32, event_tx: mpsc::UnboundedSender<Event>, danger_accept_invalid_certs: bool, next_id_start: u64) -> Self {
-        eprintln!("[ProxyDM] WorkerPool starting next_id from {}", next_id_start);
+        log::info!("[ProxyDM] WorkerPool starting next_id from {}", next_id_start);
         Self {
             semaphore: Arc::new(Semaphore::new(max_workers as usize)),
             pool: Arc::new(NetworkPool::new(danger_accept_invalid_certs)),
@@ -40,7 +40,7 @@ impl WorkerPool {
 
     async fn spawn_task(&self, mut cfg: EngineConfig, permit: tokio::sync::OwnedSemaphorePermit, id: u64, on_resume: OnResumeState) {
         cfg.id = id;
-        eprintln!("[ProxyDM] worker spawn id={} url={} proxy={} conns={}",
+        log::info!("[ProxyDM] spawn id={} url={} proxy={} conns={}",
             id, cfg.url, cfg.proxy_url, cfg.connections);
         let cancel = Arc::new(AtomicBool::new(false));
         let cancel_for_task = cancel.clone();
@@ -59,9 +59,9 @@ impl WorkerPool {
             ).await;
 
             match &result {
-                Ok(_) => eprintln!("[ProxyDM] worker id={} completed OK", id),
+                Ok(_) => log::info!("[ProxyDM] id={} completed OK", id),
                 Err(e) => {
-                    eprintln!("[ProxyDM] worker id={} ERROR: {}", id, e);
+                    log::error!("[ProxyDM] id={} ERROR: {}", id, e);
                     if !matches!(e, crate::types::PdmError::Cancelled) {
                         let _ = event_tx.send(Event {
                             kind: crate::types::EventKind::DownloadErrored,
@@ -81,7 +81,7 @@ impl WorkerPool {
                         active.remove(&id);
                     }
                 }
-                eprintln!("[ProxyDM] worker id={} cleaned up, {} active remaining", id, active.len());
+                log::info!("[ProxyDM] id={} cleaned up, {} active remaining", id, active.len());
             }
             drop(permit);
         });
@@ -97,11 +97,11 @@ impl WorkerPool {
     pub async fn cancel(&self, id: u64) -> Option<tokio::task::JoinHandle<()>> {
         let mut active = self.active.lock().await;
         if let Some((cancel, handle)) = active.remove(&id) {
-            eprintln!("[ProxyDM] worker cancel id={} (flag set)", id);
+            log::info!("[ProxyDM] cancel id={} (flag set)", id);
             cancel.store(true, Ordering::Relaxed);
             Some(handle)
         } else {
-            eprintln!("[ProxyDM] worker cancel id={} (not found, already done?)", id);
+            log::info!("[ProxyDM] cancel id={} (not found, already done?)", id);
             None
         }
     }
@@ -113,17 +113,17 @@ impl WorkerPool {
         let handle = {
             let mut active = self.active.lock().await;
             if let Some((cancel, handle)) = active.remove(&id) {
-                eprintln!("[ProxyDM] worker cancel_and_wait id={} (flag set, waiting)", id);
+                log::info!("[ProxyDM] cancel_and_wait id={} (flag set, waiting)", id);
                 cancel.store(true, Ordering::Relaxed);
                 Some(handle)
             } else {
-                eprintln!("[ProxyDM] worker cancel_and_wait id={} (not found, already done?)", id);
+                log::info!("[ProxyDM] cancel_and_wait id={} (not found, already done?)", id);
                 None
             }
         };
         if let Some(handle) = handle {
             let _ = handle.await;
-            eprintln!("[ProxyDM] worker cancel_and_wait id={} worker fully stopped", id);
+            log::info!("[ProxyDM] cancel_and_wait id={} worker fully stopped", id);
         }
     }
 

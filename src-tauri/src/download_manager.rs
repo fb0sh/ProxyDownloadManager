@@ -4,7 +4,7 @@ use crate::state::facade::DownloadStateFacade;
 use crate::worker::WorkerPool;
 use crate::engine::OnResumeState;
 use crate::event_bus::{EventBus, FrontendEvent};
-use crate::log::Logger;
+use crate::logger::Logger;
 use crate::state::runtime::DownloadManagerState;
 use crate::services::{settings_service::SettingsService, network_service::NetworkService};
 use std::sync::{Arc, Mutex};

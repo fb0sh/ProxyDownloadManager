@@ -1,6 +1,6 @@
 mod types;
 mod config;
-mod log;
+mod logger;
 mod state;
 mod probe;
 mod engine;
@@ -76,7 +76,7 @@ fn spawn_ws_forwarder(
 ) {
     tauri::async_runtime::spawn(async move {
         while let Some(req) = request_rx.recv().await {
-            eprintln!("[ProxyDM consumer] Received request_rx: url={}", req.url);
+            log::info!("[ProxyDM consumer] Received request_rx: url={}", req.url);
 
             #[cfg(target_os = "macos")]
             {
@@ -89,7 +89,7 @@ fn spawn_ws_forwarder(
 
             bus.emit(crate::event_bus::FrontendEvent::BrowserDownloadUrl, req.url.clone());
         }
-        eprintln!("[ProxyDM consumer] request_rx stream ended!");
+        log::info!("[ProxyDM consumer] request_rx stream ended!");
     });
 }
 
@@ -101,7 +101,7 @@ fn start_ws_server(
     std::thread::spawn(move || {
         let mut server = crate::ws::server::WsServer::new(event_tx, request_tx);
         if let Err(e) = server.start("127.0.0.1:18999") {
-            eprintln!("WS server error: {}", e);
+            log::error!("WS server error: {}", e);
         }
     });
 }
@@ -113,7 +113,7 @@ fn spawn_flush_loop(dm: Arc<DownloadManager>) {
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             let flushed = dm.flush();
             if flushed > 0 {
-                eprintln!("[ProxyDM] Flushed {} progress entries to DB", flushed);
+                log::info!("[ProxyDM] Flushed {} progress entries to DB", flushed);
             }
         }
     });
@@ -131,7 +131,7 @@ fn crash_recovery(dm: &DownloadManager) {
             }
         }
         if changed {
-            eprintln!("[ProxyDM] Crash recovery: paused stale downloads");
+            log::error!("[ProxyDM] Crash recovery: paused stale downloads");
         }
     }
 }
@@ -164,7 +164,7 @@ pub fn run() {
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, shortcut, event| {
                     if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
-                        eprintln!("[ProxyDM] global shortcut pressed: {:?}", shortcut);
+                        log::info!("[ProxyDM] global shortcut pressed: {:?}", shortcut);
                         if let Some(window) = app.get_webview_window("main") {
                             let _ = window.show();
                             let _ = window.set_focus();
@@ -174,10 +174,12 @@ pub fn run() {
                 .build(),
         )
         .setup(move |app| {
+            crate::logger::init_log();
+            log::info!("ProxyDownloadManager starting");
             // macOS: deploy bundled browser extensions
             #[cfg(target_os = "macos")]
             if let Err(e) = crate::platform::deploy_extensions(app.handle()) {
-                eprintln!("[ProxyDM] Failed to deploy browser extensions: {}", e);
+                log::error!("[ProxyDM] Failed to deploy browser extensions: {}", e);
             }
 
             let db = crate::state::db::Db::new().expect("Failed to initialize database");
@@ -192,7 +194,7 @@ pub fn run() {
             let danger_accept_invalid_certs = settings.danger_accept_invalid_certs;
             let next_id_start = db.max_id().unwrap_or(0) + 1;
             let worker_pool = crate::worker::WorkerPool::new(8, event_tx.clone(), danger_accept_invalid_certs, next_id_start);
-            let logger = crate::log::Logger::new().expect("Failed to initialize logger");
+            let logger = crate::logger::Logger::new().expect("Failed to initialize logger");
 
             let network_svc = Arc::new(NetworkService::new(worker_pool.pool_ref()));
             let bus = Arc::new(crate::event_bus::EventBus::new(app.handle().clone()));
@@ -225,7 +227,7 @@ pub fn run() {
             #[cfg(desktop)]
             if !shortcut_key.is_empty() {
                 if let Err(e) = app.global_shortcut().register(shortcut_key.as_str()) {
-                    eprintln!("[ProxyDM] Failed to register global shortcut '{}': {}", shortcut_key, e);
+                    log::error!("[ProxyDM] Failed to register global shortcut '{}': {}", shortcut_key, e);
                 }
             }
 

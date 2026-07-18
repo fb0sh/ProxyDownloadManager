@@ -17,14 +17,14 @@ pub fn load() -> Settings {
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("[ProxyDM] Failed to read config at {:?}: {}", path, e);
+            log::error!("[ProxyDM] Failed to read config at {:?}: {}", path, e);
             return Settings::default();
         }
     };
     match toml::from_str(&content) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("[ProxyDM] Failed to parse config at {:?}: {}. Using defaults.", path, e);
+            log::error!("[ProxyDM] Failed to parse config at {:?}: {}. Using defaults.", path, e);
             Settings::default()
         }
     }
@@ -37,7 +37,7 @@ pub fn save(settings: &Settings) -> PdmResult<()> {
     }
     let content = toml::to_string(settings).map_err(|e| PdmError::Config(e.to_string()))?;
     std::fs::write(&path, content).map_err(|e| PdmError::Config(e.to_string()))?;
-    eprintln!("[ProxyDM] config saved to {:?}", path);
+    log::info!("[ProxyDM] config saved to {:?}", path);
     Ok(())
 }
 

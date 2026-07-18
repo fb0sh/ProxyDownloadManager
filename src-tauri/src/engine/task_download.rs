@@ -39,7 +39,7 @@ pub async fn download_task(
     if !user_agent.is_empty() {
         req = req.header("User-Agent", user_agent);
     }
-    eprintln!("[ProxyDM] concurrent_task offset={} range_end={}", task.offset, range_end);
+    log::info!("[ProxyDM] concurrent_task offset={} range_end={}", task.offset, range_end);
     let resp = match req.send().await {
         Ok(r) => r,
         Err(e) => {
@@ -49,7 +49,7 @@ pub async fn download_task(
                 msg.push_str(&format!(": {}", s));
                 src = s.source();
             }
-            eprintln!("[ProxyDM] concurrent_task REQUEST ERROR offset={}: {}", task.offset, msg);
+            log::error!("[ProxyDM] concurrent_task REQUEST ERROR offset={}: {}", task.offset, msg);
             return TaskResult::Fatal(msg);
         }
     };
@@ -59,7 +59,7 @@ pub async fn download_task(
     }
 
     let status = resp.status();
-    eprintln!("[ProxyDM] concurrent_task offset={} HTTP {} (expected 206 or 200)", task.offset, status);
+    log::info!("[ProxyDM] concurrent_task offset={} HTTP {} (expected 206 or 200)", task.offset, status);
 
     // For offset > 0: 200 means server ignored Range — fatal
     if status == reqwest::StatusCode::OK && task.offset > 0 {
@@ -93,7 +93,7 @@ pub async fn download_task(
             && chunk_size > 0
             && written < chunk_size / 10
         {
-            eprintln!("[ProxyDM] slow chunk offset={} written={}/{} after {}s, re-queuing",
+            log::info!("[ProxyDM] slow chunk offset={} written={}/{} after {}s, re-queuing",
                 base_offset, written, chunk_size, elapsed.as_secs());
             let remaining = chunk_size.saturating_sub(written);
             return TaskResult::Partial {

@@ -110,7 +110,7 @@ impl WsServer {
             match msg {
                 Message::Text(text) => {
                     let max_preview = text.char_indices().nth(200).map(|(i, _)| i).unwrap_or(text.len());
-                    eprintln!("[ProxyDM WS] Received: {}", &text[..max_preview]);
+                    log::info!("[ProxyDM WS] Received: {}", &text[..max_preview]);
 
                     // Try parsing as browser extension JSON first:
                     // { action: "add", url: "...", referrer, tab_title, filename, proxy_name, connections }
@@ -152,21 +152,21 @@ impl WsServer {
                             }
                         });
 
-                    eprintln!("[ProxyDM WS] Sending to request_tx... url={}", request.url);
+                    log::info!("[ProxyDM WS] Sending to request_tx... url={}", request.url);
 
                     if let Err(e) = request_tx.send(request) {
-                        eprintln!("[ProxyDM WS] request_tx.send ERROR: {:?}", e);
+                        log::error!("[ProxyDM WS] request_tx.send ERROR: {:?}", e);
                         break;
                     }
 
-                    eprintln!("[ProxyDM WS] request_tx.send OK");
+                    log::info!("[ProxyDM WS] request_tx.send OK");
 
-                    eprintln!("[ProxyDM WS] event_tx OK, sending ack...");
+                    log::info!("[ProxyDM WS] event_tx OK, sending ack...");
                     if let Err(e) = ws.send(Message::Text(r#"{"status":"ok"}"#.into())) {
-                        eprintln!("[ProxyDM WS] ack send ERROR: {:?}", e);
+                        log::error!("[ProxyDM WS] ack send ERROR: {:?}", e);
                         break;
                     }
-                    eprintln!("[ProxyDM WS] All done, connection handling complete.");
+                    log::info!("[ProxyDM WS] All done, connection handling complete.");
                 }
                 Message::Close(_) => {
                     log::info!("[WS] Peer requested close from {:?}", peer);

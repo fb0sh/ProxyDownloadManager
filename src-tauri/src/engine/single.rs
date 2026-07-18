@@ -16,7 +16,7 @@ impl SingleDownloader {
     }
 
     pub async fn download(&self, cfg: &EngineConfig, limiter: Arc<MultiLimiter>, cancel: Arc<AtomicBool>, on_resume: &crate::engine::OnResumeState) -> PdmResult<()> {
-        eprintln!("[ProxyDM] single id={} url={}", cfg.id, cfg.url);
+        log::info!("[ProxyDM] single id={} url={}", cfg.id, cfg.url);
         let mut req = self.pool
             .get_client(if cfg.proxy_url.is_empty() { None } else { Some(&cfg.proxy_url) })
             .map_err(|e| PdmError::ClientBuild(e.to_string()))?
@@ -28,7 +28,7 @@ impl SingleDownloader {
             .send()
             .await
             .map_err(|e| PdmError::Network(e.to_string()))?;
-        eprintln!("[ProxyDM] single id={} HTTP {} size={}", cfg.id, resp.status(),
+        log::info!("[ProxyDM] single id={} HTTP {} size={}", cfg.id, resp.status(),
             resp.headers().get("content-length").and_then(|v| v.to_str().ok()).unwrap_or("?"));
 
         if cancel.load(Ordering::Relaxed) {
@@ -147,7 +147,7 @@ impl SingleDownloader {
         tokio::fs::rename(&pdm_path, &cfg.save_path).await
             .map_err(|e| PdmError::Io(e.to_string()))?;
 
-        eprintln!("[ProxyDM] single id={} done total={} bytes", cfg.id, total);
+        log::info!("[ProxyDM] single id={} done total={} bytes", cfg.id, total);
 
         // Final progress update so UI reaches 100%
         let _ = self.event_tx.send(Event {

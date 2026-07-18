@@ -17,12 +17,12 @@ pub async fn probe(
     user_agents: &[String],
 ) -> PdmResult<ProbeResult> {
     let client = pool.get_client(proxy).map_err(|e| PdmError::ClientBuild(e.to_string()))?;
-    eprintln!("[ProxyDM] probe start url={} proxy={:?} uas={}", url, proxy, user_agents.len());
+    log::info!("[ProxyDM] probe start url={} proxy={:?} uas={}", url, proxy, user_agents.len());
 
     // Try each UA, return first success
     let mut first_err: Option<String> = None;
     for (i, ua) in user_agents.iter().chain(std::iter::once(&String::new())).enumerate() {
-        eprintln!("[ProxyDM] probe attempt #{} ua_prefix={:?}...", i,
+        log::info!("[ProxyDM] probe attempt #{} ua_prefix={:?}...", i,
             &ua[..ua.char_indices().nth(40).map(|(i, _)| i).unwrap_or(ua.len())]);
         // Try Range first to detect 206 support
         let mut range_req = client.get(url);
@@ -94,7 +94,7 @@ pub async fn probe(
         let file_name = crate::filename::extract_filename(url, cd_header)
             .unwrap_or_else(|| "download".to_string());
 
-        eprintln!("[ProxyDM] probe SUCCESS ua#{} range={} size={} name={}", i, supports_range, file_size, file_name);
+        log::info!("[ProxyDM] probe SUCCESS ua#{} range={} size={} name={}", i, supports_range, file_size, file_name);
         return Ok(ProbeResult {
             supports_range,
             file_size,
@@ -106,7 +106,7 @@ pub async fn probe(
         Some(ref e) => format!("All probe attempts failed (first error: {})", e),
         None => "All probe attempts failed".to_string(),
     };
-    eprintln!("[ProxyDM] probe FAILED: {}", err_msg);
+    log::error!("[ProxyDM] probe FAILED: {}", err_msg);
     Err(PdmError::Probe(err_msg))
 }
 

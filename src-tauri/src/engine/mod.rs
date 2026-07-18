@@ -79,7 +79,7 @@ pub async fn run_download(
     on_cancelled: OnResumeState,
 ) -> PdmResult<()> {
     let engine_kind = if cfg.supports_range { "concurrent" } else { "single" };
-    eprintln!("[ProxyDM] run_download id={} engine={} url={} size={} range={}",
+    log::info!("[ProxyDM] run_download id={} engine={} url={} size={} range={}",
         cfg.id, engine_kind, cfg.url, cfg.total_size, cfg.supports_range);
 
     let _ = event_tx.send(Event {
@@ -96,7 +96,7 @@ pub async fn run_download(
         Ok(()) => result,
         Err(ref e) if matches!(e, PdmError::Cancelled) => result,
         Err(e) => {
-            eprintln!("[ProxyDM] Concurrent id={} failed, degrading to Single: {}", cfg.id, e);
+            log::error!("[ProxyDM] Concurrent id={} failed, degrading to Single: {}", cfg.id, e);
             let pdm_path = format!("{}.pdm", cfg.save_path);
             let _ = std::fs::OpenOptions::new()
                 .write(true)
@@ -113,8 +113,8 @@ pub async fn run_download(
     };
 
     match &result {
-        Ok(_) => eprintln!("[ProxyDM] run_download id={} engine={} OK", cfg.id, engine_kind),
-        Err(e) => eprintln!("[ProxyDM] run_download id={} engine={} FAILED: {}", cfg.id, engine_kind, e),
+        Ok(_) => log::info!("[ProxyDM] run_download id={} engine={} OK", cfg.id, engine_kind),
+        Err(e) => log::error!("[ProxyDM] run_download id={} engine={} FAILED: {}", cfg.id, engine_kind, e),
     }
     result
 }
