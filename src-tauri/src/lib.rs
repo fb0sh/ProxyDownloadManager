@@ -12,6 +12,8 @@ mod tray;
 mod icons;
 mod filename;
 mod download_manager;
+mod update;
+mod platform;
 
 use crate::cmd::AppState;
 use crate::download_manager::DownloadManager;
@@ -177,7 +179,7 @@ pub fn run() {
         .setup(move |app| {
             // macOS: deploy bundled browser extensions
             #[cfg(target_os = "macos")]
-            if let Err(e) = crate::cmd::deploy_extensions(app.handle()) {
+            if let Err(e) = crate::platform::deploy_extensions(app.handle()) {
                 eprintln!("[ProxyDM] Failed to deploy browser extensions: {}", e);
             }
 
@@ -248,7 +250,7 @@ pub fn run() {
             cmd::get_file_icon,
             cmd::open_extensions_folder,
             cmd::get_extensions_dir,
-            cmd::check_update,
+            update::check_update,
             cmd::open_file,
         ])
         .run(tauri::generate_context!())
