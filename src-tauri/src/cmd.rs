@@ -1,5 +1,6 @@
 use crate::types::*;
 use crate::download_manager::DownloadManager;
+use crate::event_bus::{EventBus, FrontendEvent};
 use crate::icons::{IconCache, IconData};
 use std::process::Command as StdCommand;
 use std::sync::Arc;
@@ -8,6 +9,7 @@ use tauri::{Emitter, Manager, State};
 pub struct AppState {
     pub dm: Arc<DownloadManager>,
     pub app_handle: tauri::AppHandle,
+    pub bus: Arc<EventBus>,
 }
 
 // ── Tauri commands: thin adapters ──
@@ -40,21 +42,21 @@ pub async fn redownload_download(
 #[tauri::command]
 pub async fn pause_download(state: State<'_, Arc<AppState>>, id: u64) -> Result<(), String> {
     state.dm.pause_download(id).await.map_err(|e| e.to_string())?;
-    let _ = state.app_handle.emit("download-paused", serde_json::json!({ "id": id }));
+    state.bus.emit(FrontendEvent::DownloadPaused, serde_json::json!({ "id": id }));
     Ok(())
 }
 
 #[tauri::command]
 pub async fn resume_download(state: State<'_, Arc<AppState>>, id: u64) -> Result<(), String> {
     state.dm.resume_download(id).await.map_err(|e| e.to_string())?;
-    let _ = state.app_handle.emit("download-resumed", serde_json::json!({ "id": id }));
+    state.bus.emit(FrontendEvent::DownloadResumed, serde_json::json!({ "id": id }));
     Ok(())
 }
 
 #[tauri::command]
 pub async fn cancel_download(state: State<'_, Arc<AppState>>, id: u64) -> Result<(), String> {
     state.dm.cancel_download(id).await;
-    let _ = state.app_handle.emit("download-cancelled", serde_json::json!({ "id": id }));
+    state.bus.emit(FrontendEvent::DownloadCancelled, serde_json::json!({ "id": id }));
     Ok(())
 }
 

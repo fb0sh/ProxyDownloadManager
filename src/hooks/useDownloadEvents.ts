@@ -6,6 +6,7 @@ import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { t } from "../i18n";
 import type { DownloadItem } from "../types";
+import { EVENTS } from "../constants/events";
 
 interface DownloadEventsOptions {
   queryClient: QueryClient;
@@ -34,9 +35,9 @@ async function sendDownloadNotification(id: number, title: string, body?: string
 
 /** Events that simply invalidate the downloads query. */
 const INVALIDATE_EVENTS = [
-  "download-paused",
-  "download-resumed",
-  "download-cancelled",
+  EVENTS.DOWNLOAD_PAUSED,
+  EVENTS.DOWNLOAD_RESUMED,
+  EVENTS.DOWNLOAD_CANCELLED,
 ];
 
 export function useDownloadEvents({
@@ -50,7 +51,7 @@ export function useDownloadEvents({
 
   // browser-download-url
   useEffect(() => {
-    const unlisten = listen<string>("browser-download-url", (event) => {
+    const unlisten = listen<string>(EVENTS.BROWSER_DOWNLOAD_URL, (event) => {
       onUrlDetected(event.payload);
     });
     return () => { unlisten.then((f) => f()); };
@@ -64,7 +65,7 @@ export function useDownloadEvents({
       })
     );
     // download-created also invalidates but has extra side effects
-    const createdUnlisten = listen("download-created", async () => {
+    const createdUnlisten = listen(EVENTS.DOWNLOAD_CREATED, async () => {
       queryClient.invalidateQueries({ queryKey: ["downloads"] });
       try {
         const mainWin = await WebviewWindow.getByLabel("main");
@@ -79,7 +80,7 @@ export function useDownloadEvents({
 
   // download-progress (optimistic update)
   useEffect(() => {
-    const unlisten = listen<{ id: number; downloaded: number }>("download-progress", (event) => {
+    const unlisten = listen<{ id: number; downloaded: number }>(EVENTS.DOWNLOAD_PROGRESS, (event) => {
       const { id, downloaded } = event.payload;
       queryClient.setQueryData<DownloadItem[]>(["downloads"], (old) => {
         if (!old) return old;
@@ -91,7 +92,7 @@ export function useDownloadEvents({
 
   // download-started
   useEffect(() => {
-    const unlisten = listen<number>("download-started", (event) => {
+    const unlisten = listen<number>(EVENTS.DOWNLOAD_STARTED, (event) => {
       sendDownloadNotification(event.payload, "Download Started", undefined, "started");
     });
     return () => { unlisten.then((f) => f()); };
@@ -99,7 +100,7 @@ export function useDownloadEvents({
 
   // download-completed
   useEffect(() => {
-    const unlisten = listen<{ id: number; file_name: string }>("download-completed", async (event) => {
+    const unlisten = listen<{ id: number; file_name: string }>(EVENTS.DOWNLOAD_COMPLETED, async (event) => {
       const { id, file_name } = event.payload;
       await sendDownloadNotification(id, "Download Complete", file_name, "completed");
       openDownloadDetailsWindow(id);
@@ -109,7 +110,7 @@ export function useDownloadEvents({
 
   // download-error
   useEffect(() => {
-    const unlisten = listen<{ id: number; url: string; message: string }>("download-error", (event) => {
+    const unlisten = listen<{ id: number; url: string; message: string }>(EVENTS.DOWNLOAD_ERROR, (event) => {
       const { id, message } = event.payload;
       sendDownloadNotification(id, t("downloadError.failed"), message.slice(0, 100), "error");
     });

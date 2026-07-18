@@ -14,6 +14,7 @@ mod filename;
 mod download_manager;
 mod update;
 mod platform;
+mod event_bus;
 
 use crate::cmd::AppState;
 use crate::download_manager::DownloadManager;
@@ -55,16 +56,12 @@ fn setup_window(app: &tauri::App, silent_start: bool) {
 /// Spawn the event handler: receives download events from engines, updates DB, emits to frontend.
 fn spawn_event_handler(
     dm: Arc<DownloadManager>,
-    app_handle: tauri::AppHandle,
+    bus: Arc<crate::event_bus::EventBus>,
     mut event_rx: mpsc::UnboundedReceiver<crate::types::Event>,
 ) {
     tauri::async_runtime::spawn(async move {
-        use tauri::Emitter;
         while let Some(event) = event_rx.recv().await {
-            let emitted = dm.handle_event(event);
-            for e in emitted {
-                let _ = app_handle.emit(&e.name, e.payload);
-            }
+            dm.handle_event(event, &bus);
         }
     });
 }
@@ -72,11 +69,10 @@ fn spawn_event_handler(
 /// Spawn the WebSocket request forwarder: receives download requests from browser extensions,
 /// activates the app, and emits to the frontend.
 fn spawn_ws_forwarder(
-    app_handle: tauri::AppHandle,
+    bus: Arc<crate::event_bus::EventBus>,
     mut request_rx: mpsc::UnboundedReceiver<crate::types::PendingDownloadRequest>,
 ) {
     tauri::async_runtime::spawn(async move {
-        use tauri::Emitter;
         while let Some(req) = request_rx.recv().await {
             eprintln!("[ProxyDM consumer] Received request_rx: url={}", req.url);
 
@@ -89,8 +85,7 @@ fn spawn_ws_forwarder(
                 let _: () = unsafe { msg_send![ns_app, activateIgnoringOtherApps: true] };
             }
 
-            let result = app_handle.emit("browser-download-url", &req.url);
-            eprintln!("[ProxyDM consumer] emit result: {:?}", result);
+            bus.emit(crate::event_bus::FrontendEvent::BrowserDownloadUrl, req.url.clone());
         }
         eprintln!("[ProxyDM consumer] request_rx stream ended!");
     });
@@ -203,9 +198,11 @@ pub fn run() {
                 crate::state::runtime::DownloadManagerState::new(),
             ));
 
+            let bus = Arc::new(crate::event_bus::EventBus::new(app.handle().clone()));
             let state = Arc::new(AppState {
                 dm: dm.clone(),
                 app_handle: app.handle().clone(),
+                bus: bus.clone(),
             });
             app.manage(state);
 
@@ -225,8 +222,8 @@ pub fn run() {
             }
 
             // Spawn background tasks
-            spawn_event_handler(dm.clone(), app.handle().clone(), event_rx);
-            spawn_ws_forwarder(app.handle().clone(), request_rx);
+            spawn_event_handler(dm.clone(), bus.clone(), event_rx);
+            spawn_ws_forwarder(bus, request_rx);
             start_ws_server(event_tx, request_tx);
             spawn_flush_loop(dm.clone());
             crash_recovery(&dm);

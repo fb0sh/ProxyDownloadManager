@@ -128,10 +128,10 @@ impl DownloadManager {
         ]
     }
 
-    /// Handle an event from the download engine.
-    pub fn handle_event(&self, event: Event) -> Vec<EmittedEvent> {
+    /// Handle an event from the download engine. Emits frontend events via the bus.
+    pub fn handle_event(&self, event: Event, bus: &crate::event_bus::EventBus) {
+        use crate::event_bus::FrontendEvent;
         let id = event.download_id;
-        let mut emitted = Vec::new();
 
         let url_info = self.facade.get_item(id)
             .ok()
@@ -144,19 +144,13 @@ impl DownloadManager {
         if matches!(event.kind, EventKind::DownloadErrored) {
             let msg = event.data.clone().unwrap_or_default();
             let url = url_info.trim_start_matches(" url=").to_string();
-            emitted.push(EmittedEvent {
-                name: "download-error".to_string(),
-                payload: serde_json::json!({ "id": id, "url": url, "message": msg }),
-            });
+            bus.emit(FrontendEvent::DownloadError, serde_json::json!({ "id": id, "url": url, "message": msg }));
         }
 
         match event.kind {
             EventKind::DownloadStarted => {
                 self.facade.on_started(id);
-                emitted.push(EmittedEvent {
-                    name: "download-started".to_string(),
-                    payload: serde_json::json!(id),
-                });
+                bus.emit(FrontendEvent::DownloadStarted, serde_json::json!(id));
             }
             EventKind::DownloadCompleted => {
                 let file_name = self.facade.get_item(id)
@@ -165,10 +159,7 @@ impl DownloadManager {
                     .map(|item| item.file_name)
                     .unwrap_or_default();
                 self.facade.on_completed(id);
-                emitted.push(EmittedEvent {
-                    name: "download-completed".to_string(),
-                    payload: serde_json::json!({ "id": id, "file_name": file_name }),
-                });
+                bus.emit(FrontendEvent::DownloadCompleted, serde_json::json!({ "id": id, "file_name": file_name }));
             }
             EventKind::DownloadErrored => {
                 let msg = event.data.unwrap_or_default();
@@ -178,17 +169,12 @@ impl DownloadManager {
                 if let Some(data) = &event.data {
                     if let Ok(downloaded) = data.parse::<u64>() {
                         self.facade.update_progress(id, downloaded);
-                        emitted.push(EmittedEvent {
-                            name: "download-progress".to_string(),
-                            payload: serde_json::json!({ "id": id, "downloaded": downloaded }),
-                        });
+                        bus.emit(FrontendEvent::DownloadProgress, serde_json::json!({ "id": id, "downloaded": downloaded }));
                     }
                 }
             }
             _ => {}
         }
-
-        emitted
     }
 
     /// Start a new download: probe → compute chunks → DB insert → spawn worker.
@@ -513,12 +499,6 @@ impl DownloadManager {
             }
         }
     }
-}
-
-/// An event to be emitted to the frontend.
-pub struct EmittedEvent {
-    pub name: String,
-    pub payload: serde_json::Value,
 }
 
 /// Resolve a proxy name to a URL using the given settings.
