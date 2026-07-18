@@ -1,6 +1,8 @@
 pub mod chunk;
 pub mod concurrent;
+pub mod file_io;
 pub mod single;
+pub mod task_download;
 
 use crate::types::{EngineConfig, DownloadState, PdmError, PdmResult};
 use crate::network::pool::NetworkPool;
