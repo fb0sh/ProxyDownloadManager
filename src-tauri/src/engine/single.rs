@@ -1,6 +1,6 @@
 use crate::network::pool::NetworkPool;
 use crate::network::limiter::MultiLimiter;
-use crate::types::{PdmError, PdmResult, Event, EventKind, DownloadConfig};
+use crate::types::{PdmError, PdmResult, Event, EventKind, EngineConfig};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -15,10 +15,10 @@ impl SingleDownloader {
         Self { pool, event_tx }
     }
 
-    pub async fn download(&self, cfg: &DownloadConfig, limiter: Arc<MultiLimiter>, cancel: Arc<AtomicBool>, on_cancelled: &crate::engine::OnCancelled) -> PdmResult<()> {
+    pub async fn download(&self, cfg: &EngineConfig, limiter: Arc<MultiLimiter>, cancel: Arc<AtomicBool>, on_resume: &crate::engine::OnResumeState) -> PdmResult<()> {
         eprintln!("[ProxyDM] single id={} url={}", cfg.id, cfg.url);
         let mut req = self.pool
-            .get_client(if cfg.proxy_name.is_empty() { None } else { Some(&cfg.proxy_name) })
+            .get_client(if cfg.proxy_url.is_empty() { None } else { Some(&cfg.proxy_url) })
             .map_err(|e| PdmError::ClientBuild(e.to_string()))?
             .get(&cfg.url);
         if !cfg.user_agent.is_empty() {
@@ -69,7 +69,7 @@ impl SingleDownloader {
         let mut buf = Vec::with_capacity(BUF_SIZE);
 
         // Helper: save current progress for resume via callback
-        let save_progress = |written: u64, total_size: u64, id: u64, cfg: &DownloadConfig| {
+        let save_progress = |written: u64, total_size: u64, id: u64, cfg: &EngineConfig| {
             let remaining = total_size.saturating_sub(written);
             if remaining > 0 {
                 let saved = crate::types::DownloadState {
@@ -80,10 +80,10 @@ impl SingleDownloader {
                     total_size,
                     downloaded: written,
                     tasks: vec![crate::types::Task { offset: written, length: remaining }],
-                    proxy_name: cfg.proxy_name.clone(),
+                    proxy_name: cfg.proxy_url.clone(),
                     workers: 1,
                 };
-                on_cancelled(id, &saved);
+                on_resume(id, &saved);
             }
         };
 

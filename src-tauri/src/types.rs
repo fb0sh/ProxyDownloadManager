@@ -1,3 +1,6 @@
+pub mod engine_config;
+pub use engine_config::EngineConfig;
+
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -234,70 +237,6 @@ pub struct ProxyConfig {
     pub protocol: ProxyProtocol,
     pub host: String,
     pub port: u16,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DownloadConfig {
-    pub url: String,
-    pub output_path: String,
-    pub save_path: String,
-    pub id: u64,
-    pub file_name: String,
-    pub is_resume: bool,
-    pub headers: std::collections::HashMap<String, String>,
-    pub proxy_name: String,
-    pub total_size: u64,
-    pub supports_range: bool,
-    pub rate_limit_bps: u64,
-    pub connections: u32,
-    pub max_retries: u32,
-    pub user_agent: String,
-    #[serde(default)]
-    pub resume_tasks: Vec<Task>,
-}
-
-impl DownloadConfig {
-    /// Create a DownloadConfig from a DownloadItem and settings.
-    pub fn from_item(item: &DownloadItem, proxy_url: &str, user_agent: &str, is_resume: bool, max_retries: u32) -> Self {
-        DownloadConfig {
-            url: item.url.clone(),
-            output_path: item.save_path.clone(),
-            save_path: item.save_path.clone(),
-            id: item.id,
-            file_name: item.file_name.clone(),
-            is_resume,
-            headers: std::collections::HashMap::new(),
-            proxy_name: proxy_url.to_string(),
-            total_size: item.total_size,
-            supports_range: item.resumable.unwrap_or(true),
-            rate_limit_bps: 0,
-            connections: item.connections,
-            max_retries,
-            user_agent: user_agent.to_string(),
-            resume_tasks: vec![],
-        }
-    }
-
-    /// Create a DownloadConfig from a DownloadState (gob resume) and settings.
-    pub fn from_state(state: &DownloadState, proxy_url: &str, user_agent: &str, supports_range: bool, max_retries: u32) -> Self {
-        DownloadConfig {
-            url: state.url.clone(),
-            output_path: state.save_path.clone(),
-            save_path: state.save_path.clone(),
-            id: state.id,
-            file_name: state.file_name.clone(),
-            is_resume: true,
-            headers: std::collections::HashMap::new(),
-            proxy_name: proxy_url.to_string(),
-            total_size: state.total_size,
-            supports_range,
-            rate_limit_bps: 0,
-            connections: state.workers,
-            max_retries,
-            user_agent: user_agent.to_string(),
-            resume_tasks: state.tasks.clone(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

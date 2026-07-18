@@ -2,13 +2,14 @@ use crate::types::*;
 use crate::state::db::Db;
 use crate::state::facade::DownloadStateFacade;
 use crate::worker::WorkerPool;
+use crate::engine::OnResumeState;
 use crate::config;
 use crate::log::Logger;
 use crate::state::runtime::DownloadManagerState;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 pub struct DownloadManager {
-    pub(crate) facade: DownloadStateFacade,
+    pub(crate) facade: Arc<DownloadStateFacade>,
     pub(crate) worker_pool: WorkerPool,
     logger: Mutex<Logger>,
     settings: Mutex<Settings>,
@@ -33,7 +34,7 @@ impl DownloadManager {
     ) -> Self {
         let settings = config::load();
         Self {
-            facade: DownloadStateFacade::new(db, runtime),
+            facade: Arc::new(DownloadStateFacade::new(db, runtime)),
             worker_pool,
             logger: Mutex::new(logger),
             settings: Mutex::new(settings),
@@ -91,6 +92,11 @@ impl DownloadManager {
         if let Ok(l) = self.logger.lock() {
             l.warn(msg);
         }
+    }
+
+    fn make_resume_callback(&self) -> OnResumeState {
+        let facade = self.facade.clone();
+        Box::new(move |id, state| { facade.save_gob(id, state); })
     }
 
     // ── Delegate methods (encapsulate facade/worker_pool access) ──
@@ -302,9 +308,9 @@ impl DownloadManager {
         };
         self.facade.insert_item(&item)?;
 
-        let mut cfg = DownloadConfig::from_item(&item, &proxy_url_str.clone().unwrap_or_default(), &settings.user_agent, false, settings.max_retries);
+        let mut cfg = item.to_engine_config(&proxy_url_str.clone().unwrap_or_default(), &settings.user_agent, false, settings.max_retries);
         cfg.id = id;
-        self.worker_pool.add_with_id(cfg, id).await?;
+        self.worker_pool.add_with_id(cfg, id, self.make_resume_callback()).await?;
 
         Ok(id)
     }
@@ -356,8 +362,8 @@ impl DownloadManager {
         };
         self.facade.insert_item(&new_item)?;
 
-        let cfg = DownloadConfig::from_item(&new_item, &proxy_url, &settings.user_agent, false, settings.max_retries);
-        self.worker_pool.add_with_id(cfg, new_id).await?;
+        let cfg = new_item.to_engine_config(&proxy_url, &settings.user_agent, false, settings.max_retries);
+        self.worker_pool.add_with_id(cfg, new_id, self.make_resume_callback()).await?;
 
         Ok(new_id)
     }
@@ -396,8 +402,8 @@ impl DownloadManager {
 
             let proxy_url = self.resolve_proxy_url(&saved_state.proxy_name).unwrap_or_default();
             let s = self.get_settings();
-            let cfg = DownloadConfig::from_state(&saved_state, &proxy_url, &s.user_agent, supports_range, s.max_retries);
-            self.worker_pool.add_with_id(cfg, id).await?;
+            let cfg = saved_state.to_engine_config(&proxy_url, &s.user_agent, supports_range, s.max_retries);
+            self.worker_pool.add_with_id(cfg, id, self.make_resume_callback()).await?;
         } else {
             if let Ok(Some(item)) = self.facade.get_item(id) {
                 let mut updated = item.clone();
@@ -408,8 +414,8 @@ impl DownloadManager {
 
                 let settings = self.get_settings();
                 let proxy_url = self.resolve_proxy_url(&item.proxy_name).unwrap_or_default();
-                let cfg = DownloadConfig::from_item(&item, &proxy_url, &settings.user_agent, false, settings.max_retries);
-                self.worker_pool.add_with_id(cfg, id).await?;
+                let cfg = item.to_engine_config(&proxy_url, &settings.user_agent, false, settings.max_retries);
+                self.worker_pool.add_with_id(cfg, id, self.make_resume_callback()).await?;
             }
         }
         Ok(())

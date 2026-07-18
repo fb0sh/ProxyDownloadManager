@@ -2,7 +2,8 @@ pub mod chunk;
 pub mod concurrent;
 pub mod single;
 
-use crate::types::{DownloadConfig, DownloadState, PdmError, PdmResult};
+use crate::types::{EngineConfig, DownloadState, PdmError, PdmResult};
+use crate::types::engine_config;
 use crate::network::pool::NetworkPool;
 use crate::network::limiter::MultiLimiter;
 use std::sync::atomic::AtomicBool;
@@ -13,7 +14,7 @@ use async_trait::async_trait;
 
 /// Callback invoked by the engine when a download is cancelled,
 /// to persist remaining tasks for resume. Avoids direct gob access.
-pub type OnCancelled = Box<dyn Fn(u64, &DownloadState) + Send + Sync>;
+pub type OnResumeState = Box<dyn Fn(u64, &DownloadState) + Send + Sync>;
 
 /// Trait for download engine implementations.
 /// Both ConcurrentDownloader and SingleDownloader implement this,
@@ -22,10 +23,10 @@ pub type OnCancelled = Box<dyn Fn(u64, &DownloadState) + Send + Sync>;
 pub trait DownloadEngine: Send + Sync {
     async fn download(
         &self,
-        cfg: &DownloadConfig,
+        cfg: &EngineConfig,
         limiter: Arc<MultiLimiter>,
         cancel: Arc<AtomicBool>,
-        on_cancelled: &OnCancelled,
+        on_cancelled: &OnResumeState,
     ) -> PdmResult<()>;
 }
 
@@ -33,10 +34,10 @@ pub trait DownloadEngine: Send + Sync {
 impl DownloadEngine for concurrent::ConcurrentDownloader {
     async fn download(
         &self,
-        cfg: &DownloadConfig,
+        cfg: &EngineConfig,
         limiter: Arc<MultiLimiter>,
         cancel: Arc<AtomicBool>,
-        on_cancelled: &OnCancelled,
+        on_cancelled: &OnResumeState,
     ) -> PdmResult<()> {
         self.download(cfg, limiter, cancel, on_cancelled).await
     }
@@ -46,10 +47,10 @@ impl DownloadEngine for concurrent::ConcurrentDownloader {
 impl DownloadEngine for single::SingleDownloader {
     async fn download(
         &self,
-        cfg: &DownloadConfig,
+        cfg: &EngineConfig,
         limiter: Arc<MultiLimiter>,
         cancel: Arc<AtomicBool>,
-        on_cancelled: &OnCancelled,
+        on_cancelled: &OnResumeState,
     ) -> PdmResult<()> {
         self.download(cfg, limiter, cancel, on_cancelled).await
     }
@@ -57,7 +58,7 @@ impl DownloadEngine for single::SingleDownloader {
 
 /// Factory: create the appropriate engine based on config.
 fn create_engine(
-    cfg: &DownloadConfig,
+    cfg: &EngineConfig,
     pool: Arc<NetworkPool>,
     event_tx: &mpsc::UnboundedSender<Event>,
 ) -> Box<dyn DownloadEngine> {
@@ -69,12 +70,12 @@ fn create_engine(
 }
 
 pub async fn run_download(
-    cfg: DownloadConfig,
+    cfg: EngineConfig,
     pool: Arc<NetworkPool>,
     event_tx: mpsc::UnboundedSender<Event>,
     limiter: Arc<MultiLimiter>,
     cancel: Arc<AtomicBool>,
-    on_cancelled: OnCancelled,
+    on_cancelled: OnResumeState,
 ) -> PdmResult<()> {
     let engine_kind = if cfg.supports_range { "concurrent" } else { "single" };
     eprintln!("[ProxyDM] run_download id={} engine={} url={} size={} range={}",
@@ -95,7 +96,7 @@ pub async fn run_download(
         Err(ref e) if matches!(e, PdmError::Cancelled) => result,
         Err(e) => {
             eprintln!("[ProxyDM] Concurrent id={} failed, degrading to Single: {}", cfg.id, e);
-            let pdm_path = format!("{}.pdm", cfg.output_path);
+            let pdm_path = format!("{}.pdm", cfg.save_path);
             let _ = std::fs::OpenOptions::new()
                 .write(true)
                 .truncate(true)
@@ -124,16 +125,15 @@ mod tests {
     use crate::network::pool::NetworkPool;
     use std::sync::Arc;
 
-    fn test_config(supports_range: bool) -> DownloadConfig {
-        DownloadConfig {
+    fn test_config(supports_range: bool) -> EngineConfig {
+        EngineConfig {
             url: "https://example.com/file.zip".to_string(),
-            output_path: "/tmp/file.zip.pdm".to_string(),
             save_path: "/tmp/file.zip".to_string(),
             id: 1,
             file_name: "file.zip".to_string(),
             is_resume: false,
             headers: std::collections::HashMap::new(),
-            proxy_name: String::new(),
+            proxy_url: String::new(),
             total_size: 1000,
             supports_range,
             rate_limit_bps: 0,
@@ -171,7 +171,7 @@ mod tests {
         let cfg = test_config(false);
         let limiter = Arc::new(MultiLimiter::new(0, 0));
         let cancel = Arc::new(AtomicBool::new(false));
-        let on_cancelled: OnCancelled = Box::new(|_, _| {});
+        let on_cancelled: OnResumeState = Box::new(|_, _| {});
 
         // run_download will fail because the URL is unreachable,
         // but it should still emit DownloadStarted before failing

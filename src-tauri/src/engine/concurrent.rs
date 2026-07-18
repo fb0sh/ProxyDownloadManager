@@ -1,7 +1,7 @@
 use crate::network::pool::NetworkPool;
 use crate::network::limiter::MultiLimiter;
 use crate::engine::chunk::{self, ChunkQueue};
-use crate::types::{Task, Event, EventKind, DownloadConfig, PdmError, PdmResult};
+use crate::types::{Task, Event, EventKind, EngineConfig, PdmError, PdmResult};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -29,7 +29,7 @@ impl ConcurrentDownloader {
         Self { pool, event_tx }
     }
 
-    pub async fn download(&self, cfg: &DownloadConfig, limiter: Arc<MultiLimiter>, cancel: Arc<AtomicBool>, on_cancelled: &crate::engine::OnCancelled) -> PdmResult<()> {
+    pub async fn download(&self, cfg: &EngineConfig, limiter: Arc<MultiLimiter>, cancel: Arc<AtomicBool>, on_resume: &crate::engine::OnResumeState) -> PdmResult<()> {
         // On resume, use tasks passed via config instead of reading gob directly
         let (tasks, resume_offset): (Vec<Task>, u64) = if cfg.is_resume && !cfg.resume_tasks.is_empty() {
             eprintln!("[ProxyDM] concurrent id={} resume with {} engine tasks", cfg.id, cfg.resume_tasks.len());
@@ -64,11 +64,11 @@ impl ConcurrentDownloader {
         let queue = Arc::new(ChunkQueue::new(tasks));
 
         // Pre-allocate file and use std FileExt::write_at for lock-free concurrent writes
-        let file = create_output_file(&cfg.output_path, cfg.total_size).await?;
+        let file = create_output_file(&cfg.save_path, cfg.total_size).await?;
         let file = Arc::new(file);
-        eprintln!("[ProxyDM] concurrent id={} file created: {}.pdm", cfg.id, cfg.output_path);
+        eprintln!("[ProxyDM] concurrent id={} file created: {}.pdm", cfg.id, cfg.save_path);
 
-        let client = self.pool.get_client(if cfg.proxy_name.is_empty() { None } else { Some(&cfg.proxy_name) })?;
+        let client = self.pool.get_client(if cfg.proxy_url.is_empty() { None } else { Some(&cfg.proxy_url) })?;
 
         let mut handles = Vec::new();
         let download_id = cfg.id;
@@ -181,10 +181,10 @@ impl ConcurrentDownloader {
                     total_size: cfg.total_size,
                     downloaded: bytes_written.load(Ordering::Relaxed),
                     tasks: remaining_tasks,
-                    proxy_name: cfg.proxy_name.clone(),
+                    proxy_name: cfg.proxy_url.clone(),
                     workers: num_workers,
                 };
-                on_cancelled(cfg.id, &saved);
+                on_resume(cfg.id, &saved);
             }
             return Err(PdmError::Cancelled);
         }
@@ -196,7 +196,7 @@ impl ConcurrentDownloader {
         }
 
         // Rename .pdm to final filename
-        finalize_file(&cfg.output_path, &cfg.save_path).await?;
+        finalize_file(&cfg.save_path, &cfg.save_path).await?;
 
         let _ = self.event_tx.send(Event {
             kind: EventKind::DownloadCompleted,

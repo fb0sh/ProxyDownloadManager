@@ -1,4 +1,5 @@
-use crate::types::{DownloadConfig, PdmResult, Event};
+use crate::types::{EngineConfig, PdmResult, Event};
+use crate::engine::OnResumeState;
 use crate::network::pool::NetworkPool;
 use crate::network::limiter::MultiLimiter;
 use crate::engine;
@@ -31,16 +32,16 @@ impl WorkerPool {
         self.next_id.fetch_add(1, Ordering::Relaxed)
     }
 
-    pub async fn add_with_id(&self, cfg: DownloadConfig, id: u64) -> PdmResult<u64> {
+    pub async fn add_with_id(&self, cfg: EngineConfig, id: u64, on_resume: OnResumeState) -> PdmResult<u64> {
         let permit = self.semaphore.clone().try_acquire_owned().map_err(|_| crate::types::PdmError::Other("Too many concurrent downloads — try again later.".to_string()))?;
-        self.spawn_task(cfg, permit, id).await;
+        self.spawn_task(cfg, permit, id, on_resume).await;
         Ok(id)
     }
 
-    async fn spawn_task(&self, mut cfg: DownloadConfig, permit: tokio::sync::OwnedSemaphorePermit, id: u64) {
+    async fn spawn_task(&self, mut cfg: EngineConfig, permit: tokio::sync::OwnedSemaphorePermit, id: u64, on_resume: OnResumeState) {
         cfg.id = id;
         eprintln!("[ProxyDM] worker spawn id={} url={} proxy={} conns={}",
-            id, cfg.url, cfg.proxy_name, cfg.connections);
+            id, cfg.url, cfg.proxy_url, cfg.connections);
         let cancel = Arc::new(AtomicBool::new(false));
         let cancel_for_task = cancel.clone();
         let event_tx = self.event_tx.clone();
@@ -54,7 +55,7 @@ impl WorkerPool {
             ));
 
             let result = engine::run_download(cfg, pool, event_tx.clone(), limiter, cancel_for_task.clone(),
-                Box::new(|id, state| { let _ = crate::state::gob::save_state(id, state); })
+                on_resume
             ).await;
 
             match &result {
