@@ -1,11 +1,5 @@
-export const EVENTS = {
-  BROWSER_DOWNLOAD_URL: "browser-download-url",
-  DOWNLOAD_CREATED: "download-created",
-  DOWNLOAD_STARTED: "download-started",
-  DOWNLOAD_PROGRESS: "download-progress",
-  DOWNLOAD_COMPLETED: "download-completed",
-  DOWNLOAD_ERROR: "download-error",
-  DOWNLOAD_PAUSED: "download-paused",
-  DOWNLOAD_RESUMED: "download-resumed",
-  DOWNLOAD_CANCELLED: "download-cancelled",
-} as const;
+// Single source of truth: events.json (shared with Rust build.rs)
+// When updating event names, edit events.json in this directory.
+import eventsJson from "./events.json";
+
+export const EVENTS = eventsJson as typeof eventsJson;

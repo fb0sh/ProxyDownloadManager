@@ -1,6 +1,9 @@
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
+// Include auto-generated event constants from events.json
+include!(concat!(env!("OUT_DIR"), "/generated_events.rs"));
+
 /// All frontend-facing events. Each variant maps to a specific Tauri event name.
 #[derive(Debug, Clone, Copy)]
 pub enum FrontendEvent {
@@ -18,15 +21,15 @@ pub enum FrontendEvent {
 impl FrontendEvent {
     pub fn name(&self) -> &'static str {
         match self {
-            Self::BrowserDownloadUrl => "browser-download-url",
-            Self::DownloadCreated => "download-created",
-            Self::DownloadStarted => "download-started",
-            Self::DownloadProgress => "download-progress",
-            Self::DownloadCompleted => "download-completed",
-            Self::DownloadError => "download-error",
-            Self::DownloadPaused => "download-paused",
-            Self::DownloadResumed => "download-resumed",
-            Self::DownloadCancelled => "download-cancelled",
+            Self::BrowserDownloadUrl => BROWSER_DOWNLOAD_URL,
+            Self::DownloadCreated => DOWNLOAD_CREATED,
+            Self::DownloadStarted => DOWNLOAD_STARTED,
+            Self::DownloadProgress => DOWNLOAD_PROGRESS,
+            Self::DownloadCompleted => DOWNLOAD_COMPLETED,
+            Self::DownloadError => DOWNLOAD_ERROR,
+            Self::DownloadPaused => DOWNLOAD_PAUSED,
+            Self::DownloadResumed => DOWNLOAD_RESUMED,
+            Self::DownloadCancelled => DOWNLOAD_CANCELLED,
         }
     }
 }
