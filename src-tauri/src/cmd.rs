@@ -41,22 +41,17 @@ pub async fn redownload_download(
 
 #[tauri::command]
 pub async fn pause_download(state: State<'_, Arc<AppState>>, id: u64) -> Result<(), String> {
-    state.dm.pause_download(id).await.map_err(|e| e.to_string())?;
-    state.bus.emit(FrontendEvent::DownloadPaused, serde_json::json!({ "id": id }));
-    Ok(())
+    state.dm.pause_download(id).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn resume_download(state: State<'_, Arc<AppState>>, id: u64) -> Result<(), String> {
-    state.dm.resume_download(id).await.map_err(|e| e.to_string())?;
-    state.bus.emit(FrontendEvent::DownloadResumed, serde_json::json!({ "id": id }));
-    Ok(())
+    state.dm.resume_download(id).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn cancel_download(state: State<'_, Arc<AppState>>, id: u64) -> Result<(), String> {
     state.dm.cancel_download(id).await;
-    state.bus.emit(FrontendEvent::DownloadCancelled, serde_json::json!({ "id": id }));
     Ok(())
 }
 

@@ -3,6 +3,7 @@ use crate::state::db::Db;
 use crate::state::facade::DownloadStateFacade;
 use crate::worker::WorkerPool;
 use crate::engine::OnResumeState;
+use crate::event_bus::{EventBus, FrontendEvent};
 use crate::log::Logger;
 use crate::state::runtime::DownloadManagerState;
 use crate::services::{chunk_planner, probe_service, settings_service::SettingsService, network_service::NetworkService};
@@ -14,6 +15,7 @@ pub struct DownloadManager {
     logger: Mutex<Logger>,
     pub(crate) settings: Arc<SettingsService>,
     pub(crate) network: Arc<NetworkService>,
+    bus: Arc<EventBus>,
 }
 
 impl DownloadManager {
@@ -24,6 +26,7 @@ impl DownloadManager {
         runtime: DownloadManagerState,
         settings: Arc<SettingsService>,
         network: Arc<NetworkService>,
+        bus: Arc<EventBus>,
     ) -> Self {
         Self {
             facade: Arc::new(DownloadStateFacade::new(db, runtime)),
@@ -31,6 +34,7 @@ impl DownloadManager {
             logger: Mutex::new(logger),
             settings,
             network,
+            bus,
         }
     }
 
@@ -70,8 +74,7 @@ impl DownloadManager {
     }
 
     /// Handle an event from the download engine. Emits frontend events via the bus.
-    pub fn handle_event(&self, event: Event, bus: &crate::event_bus::EventBus) {
-        use crate::event_bus::FrontendEvent;
+    pub fn handle_event(&self, event: Event) {
         let id = event.download_id;
 
         let url_info = self.facade.get_item(id)
@@ -85,13 +88,13 @@ impl DownloadManager {
         if matches!(event.kind, EventKind::DownloadErrored) {
             let msg = event.data.clone().unwrap_or_default();
             let url = url_info.trim_start_matches(" url=").to_string();
-            bus.emit(FrontendEvent::DownloadError, serde_json::json!({ "id": id, "url": url, "message": msg }));
+            self.bus.emit(FrontendEvent::DownloadError, serde_json::json!({ "id": id, "url": url, "message": msg }));
         }
 
         match event.kind {
             EventKind::DownloadStarted => {
                 self.facade.on_started(id);
-                bus.emit(FrontendEvent::DownloadStarted, serde_json::json!(id));
+                self.bus.emit(FrontendEvent::DownloadStarted, serde_json::json!(id));
             }
             EventKind::DownloadCompleted => {
                 let file_name = self.facade.get_item(id)
@@ -100,7 +103,7 @@ impl DownloadManager {
                     .map(|item| item.file_name)
                     .unwrap_or_default();
                 self.facade.on_completed(id);
-                bus.emit(FrontendEvent::DownloadCompleted, serde_json::json!({ "id": id, "file_name": file_name }));
+                self.bus.emit(FrontendEvent::DownloadCompleted, serde_json::json!({ "id": id, "file_name": file_name }));
             }
             EventKind::DownloadErrored => {
                 let msg = event.data.unwrap_or_default();
@@ -110,7 +113,7 @@ impl DownloadManager {
                 if let Some(data) = &event.data {
                     if let Ok(downloaded) = data.parse::<u64>() {
                         self.facade.update_progress(id, downloaded);
-                        bus.emit(FrontendEvent::DownloadProgress, serde_json::json!({ "id": id, "downloaded": downloaded }));
+                        self.bus.emit(FrontendEvent::DownloadProgress, serde_json::json!({ "id": id, "downloaded": downloaded }));
                     }
                 }
             }
@@ -162,6 +165,7 @@ impl DownloadManager {
                 let _ = self.facade.update_item(&item);
             }
         }
+        self.bus.emit(FrontendEvent::DownloadPaused, serde_json::json!({ "id": id }));
         Ok(())
     }
 
@@ -197,6 +201,7 @@ impl DownloadManager {
                 self.worker_pool.add_with_id(cfg, id, self.make_resume_callback()).await?;
             }
         }
+        self.bus.emit(FrontendEvent::DownloadResumed, serde_json::json!({ "id": id }));
         Ok(())
     }
 
@@ -232,6 +237,7 @@ impl DownloadManager {
     /// Cancel a download without deleting records.
     pub async fn cancel_download(&self, id: u64) {
         self.worker_pool.cancel(id).await;
+        self.bus.emit(FrontendEvent::DownloadCancelled, serde_json::json!({ "id": id }));
     }
 
     /// Delegate check_update to the network service.

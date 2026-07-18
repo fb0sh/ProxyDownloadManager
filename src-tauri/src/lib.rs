@@ -59,12 +59,11 @@ fn setup_window(app: &tauri::App, silent_start: bool) {
 /// Spawn the event handler: receives download events from engines, updates DB, emits to frontend.
 fn spawn_event_handler(
     dm: Arc<DownloadManager>,
-    bus: Arc<crate::event_bus::EventBus>,
     mut event_rx: mpsc::UnboundedReceiver<crate::types::Event>,
 ) {
     tauri::async_runtime::spawn(async move {
         while let Some(event) = event_rx.recv().await {
-            dm.handle_event(event, &bus);
+            dm.handle_event(event);
         }
     });
 }
@@ -196,6 +195,7 @@ pub fn run() {
             let logger = crate::log::Logger::new().expect("Failed to initialize logger");
 
             let network_svc = Arc::new(NetworkService::new(worker_pool.pool_ref()));
+            let bus = Arc::new(crate::event_bus::EventBus::new(app.handle().clone()));
 
             let dm = Arc::new(DownloadManager::new(
                 db,
@@ -204,9 +204,9 @@ pub fn run() {
                 crate::state::runtime::DownloadManagerState::new(),
                 settings_svc,
                 network_svc,
+                bus.clone(),
             ));
 
-            let bus = Arc::new(crate::event_bus::EventBus::new(app.handle().clone()));
             let state = Arc::new(AppState {
                 dm: dm.clone(),
                 app_handle: app.handle().clone(),
@@ -230,7 +230,7 @@ pub fn run() {
             }
 
             // Spawn background tasks
-            spawn_event_handler(dm.clone(), bus.clone(), event_rx);
+            spawn_event_handler(dm.clone(), event_rx);
             spawn_ws_forwarder(bus, request_rx);
             start_ws_server(event_tx, request_tx);
             spawn_flush_loop(dm.clone());
