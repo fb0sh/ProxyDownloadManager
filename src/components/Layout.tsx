@@ -8,27 +8,10 @@ import { t } from "../i18n";
 import { useAppContext } from "../contexts/AppContext";
 
 interface LayoutProps {
-  onNewDownload: () => void;
-  onExtension: () => void;
-  onSettings: () => void;
-  onAbout: () => void;
-  onQuit: () => void;
-  onLog: () => void;
-  onResumeSelected: () => void;
-  onPauseSelected: () => void;
-  onDeleteSelected: () => void;
-  onStop: (id: number) => void;
-  onDelete: (ids: number[]) => void;
-  onProperties: (id: number) => void;
-  onRedownload: (item: import("../types").DownloadItem) => void;
   onRedownloadItem?: import("../types").DownloadItem;
 }
 
-export default function Layout({
-  onNewDownload, onExtension, onSettings, onAbout, onQuit, onLog,
-  onResumeSelected, onPauseSelected, onDeleteSelected,
-  onStop, onDelete, onProperties, onRedownload, onRedownloadItem,
-}: LayoutProps) {
+export default function Layout({ onRedownloadItem }: LayoutProps) {
   const { selectedIds, filter, setFilter } = useAppContext();
   const { data: downloads = [] } = useDownloads();
 
@@ -51,21 +34,12 @@ export default function Layout({
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
       <Toolbar
-        onNewDownload={onNewDownload}
-        onExtension={onExtension}
-        onSettings={onSettings}
-        onAbout={onAbout}
-        onQuit={onQuit}
-        onLog={onLog}
-        onResumeSelected={onResumeSelected}
-        onPauseSelected={onPauseSelected}
-        onDeleteSelected={onDeleteSelected}
-        onRedownloadSelected={onRedownloadItem ? () => onRedownload(onRedownloadItem) : undefined}
         hasDownloadingSelected={hasDownloadingSelected}
         hasPausedSelected={hasPausedSelected}
         hasCompletedSelected={hasCompletedSelected}
         hasFailedSelected={hasFailedSelected}
         hasRedownloadable={!!onRedownloadItem}
+        onRedownloadItem={onRedownloadItem}
       />
       <div style={{ display: "flex", padding: "6px 8px", borderBottom: "1px solid var(--borderColor-muted, #d8dee4)" }}>
       <SegmentedControl
@@ -97,7 +71,7 @@ export default function Layout({
       </SegmentedControl>
       </div>
       <div style={{ flex: 1, overflow: "auto" }}>
-        <DownloadTable filter={filter} onStop={onStop} onDelete={onDelete} onProperties={onProperties} onRedownload={onRedownload} />
+        <DownloadTable filter={filter} />
       </div>
     </div>
   );

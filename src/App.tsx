@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import Layout from "./components/Layout";
 import DeleteDialog from "./components/dialogs/DeleteDialog";
 import SettingsDialog from "./components/dialogs/SettingsDialog";
@@ -14,18 +14,14 @@ import { useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { setLanguage } from "./i18n";
 import type { DownloadItem } from "./types";
-import { useAppContext } from "./contexts/AppContext";
+import { AppProvider, useAppContext, type AppActions } from "./contexts/AppContext";
 
-function App() {
+function AppInner() {
   const { dialog, setDialog, selectedIds, setSelectedIds } = useAppContext();
-
-  const pauseDownload = usePauseDownload();
-  const resumeDownload = useResumeDownload();
-  const redownloadDownload = useRedownloadDownload();
-  const { data: downloads = [] } = useDownloads();
+  const { openNewDownload } = useWindowManager();
   const { settings: loadedSettings } = useSettings();
   const queryClient = useQueryClient();
-  const { openNewDownload, openDetails } = useWindowManager();
+  const { data: downloads = [] } = useDownloads();
 
   useEffect(() => {
     if (loadedSettings) {
@@ -34,34 +30,7 @@ function App() {
   }, [loadedSettings]);
 
   useClipboardDetection();
-
   useDownloadEvents({ queryClient });
-
-  const handleQuit = async () => {
-    try { await invoke("exit_app"); } catch { window.close(); }
-  };
-
-  const handlePauseSelected = () => {
-    for (const id of selectedIds) pauseDownload.mutate(id);
-  };
-
-  const handleResumeSelected = async () => {
-    for (const id of selectedIds) {
-      try { await resumeDownload.mutateAsync(id); } catch {}
-    }
-  };
-
-  const handleDeleteSelected = () => {
-    setDialog({ type: "delete", ids: Array.from(selectedIds) });
-  };
-
-  const handleStop = (id: number) => pauseDownload.mutate(id);
-
-  const handleDelete = (ids: number[]) => setDialog({ type: "delete", ids });
-
-  const handleRedownload = async (item: DownloadItem) => {
-    try { await redownloadDownload.mutateAsync(item.id); } catch {}
-  };
 
   const clearSelection = () => setSelectedIds(new Set());
 
@@ -71,22 +40,7 @@ function App() {
 
   return (
     <>
-      <Layout
-        onNewDownload={() => openNewDownload()}
-        onExtension={() => setDialog({ type: "extension" })}
-        onLog={() => setDialog({ type: "log" })}
-        onSettings={() => setDialog({ type: "settings" })}
-        onAbout={() => setDialog({ type: "about" })}
-        onQuit={handleQuit}
-        onResumeSelected={handleResumeSelected}
-        onPauseSelected={handlePauseSelected}
-        onDeleteSelected={handleDeleteSelected}
-        onStop={handleStop}
-        onDelete={handleDelete}
-        onProperties={(id) => openDetails(id)}
-        onRedownloadItem={selectedForRedownload}
-        onRedownload={handleRedownload}
-      />
+      <Layout onRedownloadItem={selectedForRedownload} />
 
       {dialog?.type === "delete" && (
         <DeleteDialog ids={dialog.ids} onClose={() => { setDialog(null); clearSelection(); }} />
@@ -107,4 +61,56 @@ function App() {
   );
 }
 
-export default App;
+// useActions is called inside the React tree (AppProvider from main.tsx wraps App),
+// so useAppContext() works. The actions object is memoized per (downloads, selectedIds)
+// which change together during active use.
+function useActions(): AppActions {
+  const pauseDownload = usePauseDownload();
+  const resumeDownload = useResumeDownload();
+  const redownloadDownload = useRedownloadDownload();
+  const { data: downloads = [] } = useDownloads();
+  const { openNewDownload, openDetails } = useWindowManager();
+  const { setSelectedIds, setDialog, selectedIds } = useAppContext();
+
+  return useMemo(() => ({
+    onNewDownload: () => openNewDownload(),
+    onExtension: () => setDialog({ type: "extension" }),
+    onLog: () => setDialog({ type: "log" }),
+    onSettings: () => setDialog({ type: "settings" }),
+    onAbout: () => setDialog({ type: "about" }),
+    onQuit: async () => {
+      try { await invoke("exit_app"); } catch { window.close(); }
+    },
+    onResumeSelected: async () => {
+      const items = downloads.filter((d) => selectedIds.has(d.id) && d.status === "paused");
+      await Promise.all(items.map((d) => resumeDownload.mutateAsync(d.id)));
+      setSelectedIds(new Set());
+    },
+    onPauseSelected: () => {
+      const items = downloads.filter((d) => selectedIds.has(d.id) && d.status === "downloading");
+      for (const d of items) pauseDownload.mutate(d.id);
+      setSelectedIds(new Set());
+    },
+    onDeleteSelected: () => {
+      if (selectedIds.size === 0) return;
+      setDialog({ type: "delete", ids: Array.from(selectedIds) });
+    },
+    onStop: (id: number) => pauseDownload.mutate(id),
+    onDelete: (ids: number[]) => setDialog({ type: "delete", ids }),
+    onProperties: (id: number) => openDetails(id),
+    onRedownload: async (item: DownloadItem) => {
+      try { await redownloadDownload.mutateAsync(item.id); } catch {}
+    },
+  }), [openNewDownload, openDetails, pauseDownload, resumeDownload,
+       redownloadDownload, downloads, selectedIds, setSelectedIds, setDialog]);
+}
+
+export default function App() {
+  const actions = useActions();
+
+  return (
+    <AppProvider actions={actions}>
+      <AppInner />
+    </AppProvider>
+  );
+}

@@ -1,30 +1,28 @@
 import { Button } from "@primer/react";
 import { PlusIcon, TriangleRightIcon, StopIcon, TrashIcon, GearIcon, QuestionIcon, NoteIcon, BrowserIcon } from "@primer/octicons-react";
 import { t } from "../i18n";
+import { useAppContext } from "../contexts/AppContext";
+import type { DownloadItem } from "../types";
 
 interface ToolbarProps {
-  onNewDownload: () => void;
-  onExtension: () => void;
-  onSettings: () => void;
-  onAbout: () => void;
-  onQuit: () => void;
-  onLog: () => void;
-  onResumeSelected?: () => void;
-  onPauseSelected?: () => void;
-  onDeleteSelected?: () => void;
-  onRedownloadSelected?: () => void;
   hasDownloadingSelected: boolean;
   hasPausedSelected: boolean;
   hasCompletedSelected: boolean;
   hasFailedSelected: boolean;
   hasRedownloadable: boolean;
+  onRedownloadItem?: DownloadItem;
 }
 
 export default function Toolbar({
-  onNewDownload, onExtension, onSettings, onAbout, onQuit, onLog,
-  onResumeSelected, onPauseSelected, onDeleteSelected, onRedownloadSelected,
-  hasDownloadingSelected, hasPausedSelected, hasCompletedSelected, hasFailedSelected, hasRedownloadable,
+  hasDownloadingSelected, hasPausedSelected, hasCompletedSelected, hasFailedSelected,
+  hasRedownloadable, onRedownloadItem,
 }: ToolbarProps) {
+  const { actions } = useAppContext();
+  const { onNewDownload, onExtension, onSettings, onAbout, onQuit, onLog,
+    onResumeSelected, onPauseSelected, onDeleteSelected, onRedownload } = actions;
+
+  const handleRedownloadSelected = onRedownloadItem ? () => onRedownload(onRedownloadItem) : undefined;
+
   return (
     <div
       style={{
@@ -54,8 +52,8 @@ export default function Toolbar({
           {t("toolbar.delete")}
         </Button>
       )}
-      {hasRedownloadable && (
-        <Button onClick={onRedownloadSelected} size="small">
+      {hasRedownloadable && handleRedownloadSelected && (
+        <Button onClick={handleRedownloadSelected} size="small">
           {t("toolbar.redownload")}
         </Button>
       )}

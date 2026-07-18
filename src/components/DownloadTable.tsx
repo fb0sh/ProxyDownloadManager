@@ -12,17 +12,11 @@ import { useAppContext } from "../contexts/AppContext";
 
 interface DownloadTableProps {
   filter: "all" | "completed" | "incomplete";
-  onStop: (id: number) => void;
-  onDelete: (ids: number[]) => void;
-  onProperties: (id: number) => void;
-  onRedownload: (item: DownloadItem) => void;
 }
 
-export default function DownloadTable({
-  filter,
-  onStop, onDelete, onProperties, onRedownload,
-}: DownloadTableProps) {
-  const { selectedIds, setSelectedIds } = useAppContext();
+export default function DownloadTable({ filter }: DownloadTableProps) {
+  const { selectedIds, setSelectedIds, actions } = useAppContext();
+  const { onStop, onDelete, onProperties, onRedownload } = actions;
   const { data: downloads = [], isLoading } = useDownloads();
   console.debug('[ProxyDM FE] DownloadTable render filter=', filter, 'count=', downloads.length);
   const filtered = applyFilter(downloads, filter);
