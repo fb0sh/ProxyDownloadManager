@@ -6,6 +6,7 @@ use crate::engine::OnResumeState;
 use crate::config;
 use crate::log::Logger;
 use crate::state::runtime::DownloadManagerState;
+use crate::services::{chunk_planner, probe_service};
 use std::sync::{Arc, Mutex};
 
 pub struct DownloadManager {
@@ -120,12 +121,7 @@ impl DownloadManager {
     /// Build the user-agent fallback list: configured UA + browser defaults.
     fn build_user_agents(&self) -> Vec<String> {
         let settings = self.get_settings();
-        vec![
-            settings.user_agent,
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36".to_string(),
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36".to_string(),
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:127.0) Gecko/20100101 Firefox/127.0".to_string(),
-        ]
+        probe_service::build_user_agents(&settings.user_agent)
     }
 
     /// Handle an event from the download engine. Emits frontend events via the bus.
@@ -196,40 +192,23 @@ impl DownloadManager {
         let settings = self.get_settings();
         let user_agents = self.build_user_agents();
 
-        let probe_result = crate::probe::probe(&url, &headers, proxy_opt, &pool, &user_agents).await;
+        let outcome = probe_service::probe_with_fallback(
+            &url, &headers, proxy_opt, &pool, &user_agents, &filename,
+        ).await;
 
-        let (file_name, file_size, supports_range) = match probe_result {
-            Ok(r) => {
-                self.log_info(&format!("Probe ok url={} size={} range={} name={}", url, r.file_size, r.supports_range, r.file_name));
-                let name = if filename.is_empty() { r.file_name } else { filename };
-                (name, r.file_size, r.supports_range)
-            }
-            Err(e) => {
-                self.log_warn(&format!("Probe failed, forcing blind download url={} err={}", url, e));
-                let name = if filename.is_empty() {
-                    crate::filename::from_url(&url).unwrap_or_else(|| "download".to_string())
-                } else {
-                    filename
-                };
-                (name, 0, false)
-            }
-        };
+        let file_name = outcome.file_name;
+        let file_size = outcome.file_size;
+        let supports_range = outcome.supports_range;
+
+        if file_size > 0 {
+            self.log_info(&format!("Probe ok url={} size={} range={} name={}", url, file_size, supports_range, file_name));
+        } else {
+            self.log_warn(&format!("Probe failed, forcing blind download url={}", url));
+        }
 
         let max_conns = settings.max_connections.max(1).min(32);
 
-        let connections = if connections > 0 {
-            connections.min(32)
-        } else if file_size == 0 {
-            max_conns.min(2)
-        } else if file_size < 100 * 1024 * 1024 {
-            max_conns.min(2)
-        } else if file_size < 1024 * 1024 * 1024 {
-            max_conns.min(4)
-        } else if file_size < 10u64 * 1024 * 1024 * 1024 {
-            max_conns.min(8)
-        } else {
-            max_conns.min(16)
-        };
+        let connections = chunk_planner::compute_connection_count(file_size, connections, max_conns);
 
         let save_dir = if save_path.is_empty() {
             settings.download_dir
@@ -238,44 +217,12 @@ impl DownloadManager {
         };
         let full_path = unique_filename(&save_dir, &file_name);
 
-        if file_size > 0 {
-            let pdm_path = format!("{}.pdm", full_path);
-            if let Some(parent) = std::path::Path::new(&pdm_path).parent() {
-                if let Ok(available) = fs2::available_space(parent) {
-                    let needed = file_size + (2u64 * 1024 * 1024);
-                    if available < needed {
-                        return Err(PdmError::Other(format!("Insufficient disk space: need {}, available {}", needed, available)));
-                    }
-                }
-            }
-        }
+        chunk_planner::check_disk_space(&full_path, file_size)?;
 
         let id = self.worker_pool.next_id();
 
-        let parts = if supports_range && file_size > 0 {
-            let num_conns = if connections > 0 { connections.min(32) } else { 1 };
-            let min_chunk = 2u64 * 1024 * 1024;
-            let tasks = crate::engine::chunk::compute_chunks(file_size, num_conns, min_chunk);
-            tasks.iter().enumerate().map(|(i, t)| DownloadPart {
-                index: i as u32,
-                start: t.offset,
-                end: t.offset + t.length,
-                downloaded: 0,
-                temp_path: String::new(),
-                status: PartStatus::Pending,
-                retries: 0,
-            }).collect()
-        } else {
-            vec![DownloadPart {
-                index: 0,
-                start: 0,
-                end: file_size,
-                downloaded: 0,
-                temp_path: String::new(),
-                status: PartStatus::Pending,
-                retries: 0,
-            }]
-        };
+        let plan = chunk_planner::plan_chunks(file_size, connections, supports_range, settings.max_connections);
+        let parts = plan.parts;
 
         let item = DownloadItem {
             id,

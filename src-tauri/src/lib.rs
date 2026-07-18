@@ -15,6 +15,7 @@ mod download_manager;
 mod update;
 mod platform;
 mod event_bus;
+mod services;
 
 use crate::cmd::AppState;
 use crate::download_manager::DownloadManager;
