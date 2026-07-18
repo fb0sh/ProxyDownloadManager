@@ -48,17 +48,17 @@ impl Db {
         home.join(".ProxyDM/state/downloads.db")
     }
 
-    pub fn new() -> Result<Self, String> {
+    pub fn new() -> PdmResult<Self> {
         let path = Self::db_path();
         Self::from_path(&path)
     }
 
     /// Test helper — create Db at specific path
-    pub(crate) fn from_path(path: &std::path::Path) -> Result<Self, String> {
+    pub(crate) fn from_path(path: &std::path::Path) -> PdmResult<Self> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            std::fs::create_dir_all(parent).map_err(PdmError::from)?;
         }
-        let conn = Connection::open(path).map_err(|e| e.to_string())?;
+        let conn = Connection::open(path).map_err(PdmError::from)?;
         let db = Db {
             conn: Mutex::new(conn),
         };
@@ -66,8 +66,8 @@ impl Db {
         Ok(db)
     }
 
-    fn init(&self) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+    fn init(&self) -> PdmResult<()> {
+        let conn = self.conn.lock().map_err(PdmError::from)?;
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
              PRAGMA synchronous=NORMAL;
@@ -87,43 +87,43 @@ impl Db {
                 resumable INTEGER
             );",
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(PdmError::from)?;
         Ok(())
     }
 
     /// Return the maximum download ID in the database, or 0 if empty.
     /// Used to initialize the worker pool's ID counter across restarts.
-    pub fn max_id(&self) -> Result<u64, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+    pub fn max_id(&self) -> PdmResult<u64> {
+        let conn = self.conn.lock().map_err(PdmError::from)?;
         let max: u64 = conn
             .query_row("SELECT COALESCE(MAX(id), 0) FROM downloads", [], |row| row.get(0))
-            .map_err(|e| e.to_string())?;
+            .map_err(PdmError::from)?;
         Ok(max)
     }
 
-    pub fn list_downloads(&self) -> Result<Vec<DownloadItem>, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+    pub fn list_downloads(&self) -> PdmResult<Vec<DownloadItem>> {
+        let conn = self.conn.lock().map_err(PdmError::from)?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, url, file_name, save_path, total_size, downloaded, status, last_try,
                         created_at, proxy_name, connections, parts, resumable FROM downloads",
             )
-            .map_err(|e| e.to_string())?;
+            .map_err(PdmError::from)?;
 
         let rows = stmt
             .query_map([], |row| row_to_item(row))
-            .map_err(|e| e.to_string())?;
+            .map_err(PdmError::from)?;
 
         let mut items = Vec::new();
         for row in rows {
-            items.push(row.map_err(|e| e.to_string())?);
+            items.push(row.map_err(PdmError::from)?);
         }
         Ok(items)
     }
 
-    pub fn insert_download(&self, item: &DownloadItem) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        let parts_str = serde_json::to_string(&item.parts).map_err(|e| e.to_string())?;
+    pub fn insert_download(&self, item: &DownloadItem) -> PdmResult<()> {
+        let conn = self.conn.lock().map_err(PdmError::from)?;
+        let parts_str = serde_json::to_string(&item.parts).map_err(PdmError::from)?;
         conn.execute(
             "INSERT INTO downloads (id, url, file_name, save_path, total_size, downloaded, status, last_try,
                                     created_at, proxy_name, connections, parts, resumable)
@@ -144,42 +144,42 @@ impl Db {
                 item.resumable.map(|v| if v { 1 } else { 0 }),
             ],
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(PdmError::from)?;
         Ok(())
     }
 
-    pub fn get_by_id(&self, id: u64) -> Result<Option<DownloadItem>, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+    pub fn get_by_id(&self, id: u64) -> PdmResult<Option<DownloadItem>> {
+        let conn = self.conn.lock().map_err(PdmError::from)?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, url, file_name, save_path, total_size, downloaded, status, last_try,
                         created_at, proxy_name, connections, parts, resumable FROM downloads WHERE id=?1"
             )
-            .map_err(|e| e.to_string())?;
+            .map_err(PdmError::from)?;
 
-        let mut rows = stmt.query_map(params![id], |row| row_to_item(row)).map_err(|e| e.to_string())?;
+        let mut rows = stmt.query_map(params![id], |row| row_to_item(row)).map_err(PdmError::from)?;
 
         match rows.next() {
             Some(Ok(item)) => Ok(Some(item)),
-            Some(Err(e)) => Err(e.to_string()),
+            Some(Err(e)) => Err(PdmError::from(e)),
             None => Ok(None),
         }
     }
 
     /// Lightweight: only update the `downloaded` field (used for progress flushes).
-    pub fn update_download_progress(&self, id: u64, downloaded: u64) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+    pub fn update_download_progress(&self, id: u64, downloaded: u64) -> PdmResult<()> {
+        let conn = self.conn.lock().map_err(PdmError::from)?;
         conn.execute(
             "UPDATE downloads SET downloaded=?1 WHERE id=?2",
             params![downloaded, id],
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(PdmError::from)?;
         Ok(())
     }
 
-    pub fn update_download(&self, item: &DownloadItem) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        let parts_str = serde_json::to_string(&item.parts).map_err(|e| e.to_string())?;
+    pub fn update_download(&self, item: &DownloadItem) -> PdmResult<()> {
+        let conn = self.conn.lock().map_err(PdmError::from)?;
+        let parts_str = serde_json::to_string(&item.parts).map_err(PdmError::from)?;
         conn.execute(
             "UPDATE downloads SET url=?1, file_name=?2, save_path=?3, total_size=?4, downloaded=?5,
                                    status=?6, last_try=?7, created_at=?8, proxy_name=?9,
@@ -201,14 +201,14 @@ impl Db {
                 item.id,
             ],
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(PdmError::from)?;
         Ok(())
     }
 
-    pub fn delete_download(&self, id: u64) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+    pub fn delete_download(&self, id: u64) -> PdmResult<()> {
+        let conn = self.conn.lock().map_err(PdmError::from)?;
         conn.execute("DELETE FROM downloads WHERE id=?1", params![id])
-            .map_err(|e| e.to_string())?;
+            .map_err(PdmError::from)?;
         Ok(())
     }
 }

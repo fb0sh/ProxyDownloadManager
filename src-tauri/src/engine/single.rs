@@ -1,6 +1,6 @@
 use crate::network::pool::NetworkPool;
 use crate::network::limiter::MultiLimiter;
-use crate::types::{Event, EventKind, DownloadConfig};
+use crate::types::{PdmError, PdmResult, Event, EventKind, DownloadConfig};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -15,11 +15,11 @@ impl SingleDownloader {
         Self { pool, event_tx }
     }
 
-    pub async fn download(&self, cfg: &DownloadConfig, limiter: Arc<MultiLimiter>, cancel: Arc<AtomicBool>, on_cancelled: &crate::engine::OnCancelled) -> Result<(), String> {
+    pub async fn download(&self, cfg: &DownloadConfig, limiter: Arc<MultiLimiter>, cancel: Arc<AtomicBool>, on_cancelled: &crate::engine::OnCancelled) -> PdmResult<()> {
         eprintln!("[ProxyDM] single id={} url={}", cfg.id, cfg.url);
         let mut req = self.pool
             .get_client(if cfg.proxy_name.is_empty() { None } else { Some(&cfg.proxy_name) })
-            .map_err(|e| format!("Failed to create HTTP client: {}", e))?
+            .map_err(|e| PdmError::ClientBuild(e.to_string()))?
             .get(&cfg.url);
         if !cfg.user_agent.is_empty() {
             req = req.header("User-Agent", &cfg.user_agent);
@@ -27,21 +27,12 @@ impl SingleDownloader {
         let resp = req
             .send()
             .await
-            .map_err(|e| {
-                let mut msg = format!("Download request failed: {}", e);
-                let mut src = std::error::Error::source(&e);
-                while let Some(s) = src {
-                    msg.push_str(&format!(": {}", s));
-                    src = s.source();
-                }
-                eprintln!("[ProxyDM] single id={} REQUEST ERROR: {}", cfg.id, msg);
-                msg
-            })?;
+            .map_err(|e| PdmError::Network(e.to_string()))?;
         eprintln!("[ProxyDM] single id={} HTTP {} size={}", cfg.id, resp.status(),
             resp.headers().get("content-length").and_then(|v| v.to_str().ok()).unwrap_or("?"));
 
         if cancel.load(Ordering::Relaxed) {
-            return Err("Cancelled".to_string());
+            return Err(PdmError::Cancelled);
         }
 
         let status = resp.status();
@@ -53,14 +44,14 @@ impl SingleDownloader {
                     .and_then(|v| v.to_str().ok())
                     .and_then(|s| s.parse::<u64>().ok())
                     .unwrap_or(5);
-                return Err(format!("Rate limited, retry after {}s", retry_after));
+                return Err(PdmError::Other(format!("Rate limited, retry after {}s", retry_after)));
             }
-            return Err(format!("HTTP {}", status));
+            return Err(PdmError::Http(status.as_u16()));
         }
 
         // Ensure output directory exists
         if let Some(parent) = std::path::Path::new(&cfg.save_path).parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(|e| e.to_string())?;
+            tokio::fs::create_dir_all(parent).await.map_err(|e| PdmError::Io(e.to_string()))?;
         }
 
         // Use std::fs::File (no tokio overhead for sequential write)
@@ -68,7 +59,7 @@ impl SingleDownloader {
         let pdm_path = format!("{}.pdm", cfg.save_path);
         use std::io::Write;
         let mut file = std::fs::File::create(&pdm_path)
-            .map_err(|e| format!("Failed to create file: {}", e))?;
+            .map_err(|e| PdmError::Io(e.to_string()))?;
 
         let stream = resp.bytes_stream();
         use futures_util::StreamExt;
@@ -105,7 +96,7 @@ impl SingleDownloader {
                     buf.clear();
                 }
                 save_progress(total, cfg.total_size, cfg.id, cfg);
-                return Err("Cancelled".to_string());
+                return Err(PdmError::Cancelled);
             }
 
             let chunk_result = tokio::time::timeout(
@@ -122,17 +113,17 @@ impl SingleDownloader {
                             buf.clear();
                         }
                         save_progress(total, cfg.total_size, cfg.id, cfg);
-                        return Err("Cancelled".to_string());
+                        return Err(PdmError::Cancelled);
                     }
                     continue;
                 }
             };
-            let chunk = chunk.map_err(|e| format!("Stream error: {}", e))?;
+            let chunk = chunk.map_err(|e| PdmError::Network(e.to_string()))?;
             limiter.wait_n(chunk.len() as u64);
             buf.extend_from_slice(&chunk);
 
             if buf.len() >= BUF_SIZE {
-                file.write_all(&buf).map_err(|e| format!("Write error: {}", e))?;
+                file.write_all(&buf).map_err(|e| PdmError::Io(e.to_string()))?;
                 total += buf.len() as u64;
                 buf.clear();
 
@@ -146,15 +137,15 @@ impl SingleDownloader {
 
         // Flush remainder
         if !buf.is_empty() {
-            file.write_all(&buf).map_err(|e| format!("Write error: {}", e))?;
+            file.write_all(&buf).map_err(|e| PdmError::Io(e.to_string()))?;
             total += buf.len() as u64;
         }
-        file.flush().map_err(|e| format!("Flush error: {}", e))?;
+        file.flush().map_err(|e| PdmError::Io(e.to_string()))?;
         drop(file);
 
         // Rename .pdm to final filename (matches concurrent engine convention)
         tokio::fs::rename(&pdm_path, &cfg.save_path).await
-            .map_err(|e| format!("Failed to rename file: {}", e))?;
+            .map_err(|e| PdmError::Io(e.to_string()))?;
 
         eprintln!("[ProxyDM] single id={} done total={} bytes", cfg.id, total);
 

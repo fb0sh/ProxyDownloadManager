@@ -1,3 +1,4 @@
+use crate::types::{PdmError, PdmResult};
 use crate::network::pool::NetworkPool;
 use std::collections::HashMap;
 use std::error::Error;
@@ -14,8 +15,8 @@ pub async fn probe(
     proxy: Option<&str>,
     pool: &NetworkPool,
     user_agents: &[String],
-) -> Result<ProbeResult, String> {
-    let client = pool.get_client(proxy).map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+) -> PdmResult<ProbeResult> {
+    let client = pool.get_client(proxy).map_err(|e| PdmError::ClientBuild(e.to_string()))?;
     eprintln!("[ProxyDM] probe start url={} proxy={:?} uas={}", url, proxy, user_agents.len());
 
     // Try each UA, return first success
@@ -84,7 +85,7 @@ pub async fn probe(
                 _ => continue, // try next UA
             }
         } else {
-            return Err(format!("Probe failed with status: {}", status));
+            return Err(PdmError::Probe(format!("HTTP {}", status)));
         };
 
         // Detect filename from Content-Disposition or URL
@@ -106,5 +107,5 @@ pub async fn probe(
         None => "All probe attempts failed".to_string(),
     };
     eprintln!("[ProxyDM] probe FAILED: {}", err_msg);
-    Err(err_msg)
+    Err(PdmError::Probe(err_msg))
 }

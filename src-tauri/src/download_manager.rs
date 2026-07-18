@@ -64,7 +64,7 @@ impl DownloadManager {
 
     /// Save settings: persist to disk, reload cache, clear pool if TLS changed.
     /// Returns change flags for the caller to handle Tauri-specific side effects.
-    pub fn save_settings(&self, new_settings: &Settings) -> Result<SettingsChangeFlags, String> {
+    pub fn save_settings(&self, new_settings: &Settings) -> PdmResult<SettingsChangeFlags> {
         let old = self.get_settings();
         let tls_changed = old.danger_accept_invalid_certs != new_settings.danger_accept_invalid_certs;
         let shortcut_changed = old.global_shortcut != new_settings.global_shortcut;
@@ -95,11 +95,11 @@ impl DownloadManager {
 
     // ── Delegate methods (encapsulate facade/worker_pool access) ──
 
-    pub fn list_items(&self) -> Result<Vec<DownloadItem>, String> {
+    pub fn list_items(&self) -> PdmResult<Vec<DownloadItem>> {
         self.facade.list_items()
     }
 
-    pub fn update_item(&self, item: &DownloadItem) -> Result<(), String> {
+    pub fn update_item(&self, item: &DownloadItem) -> PdmResult<()> {
         self.facade.update_item(item)
     }
 
@@ -193,7 +193,7 @@ impl DownloadManager {
         save_path: String,
         proxy_name: String,
         connections: u32,
-    ) -> Result<u64, String> {
+    ) -> PdmResult<u64> {
         self.log_info(&format!("Download start url={} proxy={}", url, proxy_name));
 
         let pool = self.worker_pool.pool_ref();
@@ -252,10 +252,7 @@ impl DownloadManager {
                 if let Ok(available) = fs2::available_space(parent) {
                     let needed = file_size + (2u64 * 1024 * 1024);
                     if available < needed {
-                        return Err(format!(
-                            "Insufficient disk space: need {}, available {}",
-                            needed, available
-                        ));
+                        return Err(PdmError::Other(format!("Insufficient disk space: need {}, available {}", needed, available)));
                     }
                 }
             }
@@ -313,7 +310,7 @@ impl DownloadManager {
     }
 
     /// Redownload an existing download with a new ID.
-    pub async fn redownload_download(&self, id: u64) -> Result<u64, String> {
+    pub async fn redownload_download(&self, id: u64) -> PdmResult<u64> {
         let items = self.facade.list_items()?;
         let existing = items.iter().find(|i| i.id == id)
             .ok_or_else(|| format!("Download {} not found", id))?.clone();
@@ -366,7 +363,7 @@ impl DownloadManager {
     }
 
     /// Pause a download: cancel workers → flush → save gob → update DB.
-    pub async fn pause_download(&self, id: u64) -> Result<(), String> {
+    pub async fn pause_download(&self, id: u64) -> PdmResult<()> {
         self.log_info(&format!("Pause id={}", id));
         self.worker_pool.cancel_and_wait(id).await;
         self.facade.flush();
@@ -384,7 +381,7 @@ impl DownloadManager {
     }
 
     /// Resume a paused download.
-    pub async fn resume_download(&self, id: u64) -> Result<(), String> {
+    pub async fn resume_download(&self, id: u64) -> PdmResult<()> {
         self.log_info(&format!("Resume id={}", id));
 
         if let Some(saved_state) = self.facade.load_gob(id) {
@@ -419,7 +416,7 @@ impl DownloadManager {
     }
 
     /// Delete a download: cancel → delete DB/gob → optionally delete files.
-    pub async fn delete_download(&self, id: u64, delete_file: bool) -> Result<(), String> {
+    pub async fn delete_download(&self, id: u64, delete_file: bool) -> PdmResult<()> {
         self.log_info(&format!("Delete id={} delete_file={}", id, delete_file));
 
         let save_path = if delete_file {
@@ -453,7 +450,7 @@ impl DownloadManager {
     }
 
     /// Check for application updates from GitHub.
-    pub async fn check_update(&self, proxy_name: &str) -> Result<serde_json::Value, String> {
+    pub async fn check_update(&self, proxy_name: &str) -> PdmResult<serde_json::Value> {
         let proxy_url = self.resolve_proxy_url(proxy_name);
         let pool = self.worker_pool.pool_ref();
         let client = pool.get_client(proxy_url.as_deref())?;
@@ -468,7 +465,7 @@ impl DownloadManager {
             .map_err(|e| format!("Failed to check update: {}", e))?;
 
         if !resp.status().is_success() {
-            return Err(format!("GitHub API responded with status {}", resp.status()));
+            return Err(PdmError::Other(format!("GitHub API responded with status {}", resp.status())));
         }
 
         let body = resp.text().await
@@ -478,7 +475,7 @@ impl DownloadManager {
     }
 
     /// Test proxy connectivity.
-    pub async fn test_proxy(&self, proxy_name: &str) -> Result<serde_json::Value, String> {
+    pub async fn test_proxy(&self, proxy_name: &str) -> PdmResult<serde_json::Value> {
         let proxy_url = self.resolve_proxy_url(proxy_name);
         let pool = self.worker_pool.pool_ref();
         let client = pool.get_client(proxy_url.as_deref())?;

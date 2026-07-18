@@ -1,3 +1,4 @@
+use crate::types::{PdmError, PdmResult};
 use crate::types::Settings;
 use std::path::PathBuf;
 
@@ -29,13 +30,13 @@ pub fn load() -> Settings {
     }
 }
 
-pub fn save(settings: &Settings) -> Result<(), String> {
+pub fn save(settings: &Settings) -> PdmResult<()> {
     let path = config_path();
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(parent).map_err(|e| PdmError::Config(e.to_string()))?;
     }
-    let content = toml::to_string(settings).map_err(|e| e.to_string())?;
-    std::fs::write(&path, content).map_err(|e| e.to_string())?;
+    let content = toml::to_string(settings).map_err(|e| PdmError::Config(e.to_string()))?;
+    std::fs::write(&path, content).map_err(|e| PdmError::Config(e.to_string()))?;
     eprintln!("[ProxyDM] config saved to {:?}", path);
     Ok(())
 }

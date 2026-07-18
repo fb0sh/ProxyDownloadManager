@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use reqwest::Proxy;
 use std::time::Duration;
+use crate::types::{PdmError, PdmResult};
 
 pub struct NetworkPool {
     clients: Mutex<HashMap<String, reqwest::Client>>,
@@ -16,9 +17,9 @@ impl NetworkPool {
         }
     }
 
-    pub fn get_client(&self, proxy_url: Option<&str>) -> Result<reqwest::Client, String> {
+    pub fn get_client(&self, proxy_url: Option<&str>) -> PdmResult<reqwest::Client> {
         let key = proxy_url.unwrap_or("direct").to_string();
-        let mut map = self.clients.lock().map_err(|e| e.to_string())?;
+        let mut map = self.clients.lock().map_err(|e| PdmError::Other(e.to_string()))?;
         if let Some(client) = map.get(&key) {
             return Ok(client.clone());
         }
@@ -37,7 +38,7 @@ impl NetworkPool {
             }
         }
 
-        let client = builder.build().map_err(|e| format!("Failed to build HTTP client: {}", e))?;
+        let client = builder.build().map_err(|e| PdmError::ClientBuild(e.to_string()))?;
         map.insert(key, client.clone());
         Ok(client)
     }

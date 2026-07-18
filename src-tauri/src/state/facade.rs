@@ -22,23 +22,23 @@ impl DownloadStateFacade {
 
     // ── DB accessors (encapsulate direct db calls) ──
 
-    pub fn get_item(&self, id: u64) -> Result<Option<DownloadItem>, String> {
+    pub fn get_item(&self, id: u64) -> PdmResult<Option<DownloadItem>> {
         self.db.get_by_id(id)
     }
 
-    pub fn list_items(&self) -> Result<Vec<DownloadItem>, String> {
+    pub fn list_items(&self) -> PdmResult<Vec<DownloadItem>> {
         self.db.list_downloads()
     }
 
-    pub fn insert_item(&self, item: &DownloadItem) -> Result<(), String> {
+    pub fn insert_item(&self, item: &DownloadItem) -> PdmResult<()> {
         self.db.insert_download(item)
     }
 
-    pub fn update_item(&self, item: &DownloadItem) -> Result<(), String> {
+    pub fn update_item(&self, item: &DownloadItem) -> PdmResult<()> {
         self.db.update_download(item)
     }
 
-    pub fn delete_item(&self, id: u64) -> Result<(), String> {
+    pub fn delete_item(&self, id: u64) -> PdmResult<()> {
         self.db.delete_download(id)
     }
 

@@ -15,7 +15,7 @@ pub struct AppState {
 
 #[tauri::command]
 pub fn list_downloads(state: State<'_, Arc<AppState>>) -> Result<Vec<DownloadItem>, String> {
-    state.dm.list_items()
+    state.dm.list_items().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -27,7 +27,7 @@ pub async fn start_download(
     proxy_name: String,
     connections: u32,
 ) -> Result<u64, String> {
-    state.dm.start_download(url, filename, save_path, proxy_name, connections).await
+    state.dm.start_download(url, filename, save_path, proxy_name, connections).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -35,19 +35,19 @@ pub async fn redownload_download(
     state: State<'_, Arc<AppState>>,
     id: u64,
 ) -> Result<u64, String> {
-    state.dm.redownload_download(id).await
+    state.dm.redownload_download(id).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn pause_download(state: State<'_, Arc<AppState>>, id: u64) -> Result<(), String> {
-    state.dm.pause_download(id).await?;
+    state.dm.pause_download(id).await.map_err(|e| e.to_string())?;
     let _ = state.app_handle.emit("download-paused", serde_json::json!({ "id": id }));
     Ok(())
 }
 
 #[tauri::command]
 pub async fn resume_download(state: State<'_, Arc<AppState>>, id: u64) -> Result<(), String> {
-    state.dm.resume_download(id).await?;
+    state.dm.resume_download(id).await.map_err(|e| e.to_string())?;
     let _ = state.app_handle.emit("download-resumed", serde_json::json!({ "id": id }));
     Ok(())
 }
@@ -65,7 +65,7 @@ pub async fn delete_download(
     id: u64,
     delete_file: bool,
 ) -> Result<(), String> {
-    state.dm.delete_download(id, delete_file).await
+    state.dm.delete_download(id, delete_file).await.map_err(|e| e.to_string())
 }
 
 // ── Settings ──
@@ -81,7 +81,7 @@ pub fn save_settings(state: State<'_, Arc<AppState>>, settings: Settings) -> Res
         settings.language, settings.download_dir, settings.max_connections, settings.danger_accept_invalid_certs);
     state.dm.log_info(&format!("Settings saved: language={} download_dir={}", settings.language, settings.download_dir));
 
-    let flags = state.dm.save_settings(&settings)?;
+    let flags = state.dm.save_settings(&settings).map_err(|e| e.to_string())?;
 
     if let Err(e) = sync_autostart(&state.app_handle, flags.launch_at_startup, flags.silent_startup) {
         eprintln!("[ProxyDM] Failed to sync autostart: {}", e);
@@ -211,7 +211,7 @@ pub async fn check_update(
     state: State<'_, Arc<AppState>>,
     proxy_name: String,
 ) -> Result<UpdateInfo, String> {
-    let release_value: serde_json::Value = state.dm.check_update(&proxy_name).await?;
+    let release_value: serde_json::Value = state.dm.check_update(&proxy_name).await.map_err(|e| e.to_string())?;
     let release: GithubRelease = serde_json::from_value(release_value)
         .map_err(|e| format!("Failed to parse release info: {}", e))?;
 
@@ -244,7 +244,7 @@ pub async fn test_proxy(
     state: State<'_, Arc<AppState>>,
     proxy_name: String,
 ) -> Result<serde_json::Value, String> {
-    state.dm.test_proxy(&proxy_name).await
+    state.dm.test_proxy(&proxy_name).await.map_err(|e| e.to_string())
 }
 
 // ── Internal helpers ──

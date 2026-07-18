@@ -1,7 +1,7 @@
 use crate::network::pool::NetworkPool;
 use crate::network::limiter::MultiLimiter;
 use crate::engine::chunk::{self, ChunkQueue};
-use crate::types::{Task, Event, EventKind, DownloadConfig};
+use crate::types::{Task, Event, EventKind, DownloadConfig, PdmError, PdmResult};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -29,7 +29,7 @@ impl ConcurrentDownloader {
         Self { pool, event_tx }
     }
 
-    pub async fn download(&self, cfg: &DownloadConfig, limiter: Arc<MultiLimiter>, cancel: Arc<AtomicBool>, on_cancelled: &crate::engine::OnCancelled) -> Result<(), String> {
+    pub async fn download(&self, cfg: &DownloadConfig, limiter: Arc<MultiLimiter>, cancel: Arc<AtomicBool>, on_cancelled: &crate::engine::OnCancelled) -> PdmResult<()> {
         // On resume, use tasks passed via config instead of reading gob directly
         let (tasks, resume_offset): (Vec<Task>, u64) = if cfg.is_resume && !cfg.resume_tasks.is_empty() {
             eprintln!("[ProxyDM] concurrent id={} resume with {} engine tasks", cfg.id, cfg.resume_tasks.len());
@@ -54,7 +54,7 @@ impl ConcurrentDownloader {
         };
 
         if tasks.is_empty() {
-            return Err(format!("No tasks to download for id={}", cfg.id));
+            return Err(PdmError::Other(format!("No tasks to download for id={}", cfg.id)));
         }
 
         let num_workers = num_conns.min(tasks.len() as u32).max(1);
@@ -68,8 +68,7 @@ impl ConcurrentDownloader {
         let file = Arc::new(file);
         eprintln!("[ProxyDM] concurrent id={} file created: {}.pdm", cfg.id, cfg.output_path);
 
-        let client = self.pool.get_client(if cfg.proxy_name.is_empty() { None } else { Some(&cfg.proxy_name) })
-            .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+        let client = self.pool.get_client(if cfg.proxy_name.is_empty() { None } else { Some(&cfg.proxy_name) })?;
 
         let mut handles = Vec::new();
         let download_id = cfg.id;
@@ -187,13 +186,13 @@ impl ConcurrentDownloader {
                 };
                 on_cancelled(cfg.id, &saved);
             }
-            return Err("Cancelled".to_string());
+            return Err(PdmError::Cancelled);
         }
 
         // Verify completeness: queue must be empty AND total bytes written match
         if !queue.is_empty() || bytes_written.load(Ordering::Relaxed) < cfg.total_size {
             let downloaded = bytes_written.load(Ordering::Relaxed);
-            return Err(format!("Download incomplete: {}/{} bytes", downloaded, cfg.total_size));
+            return Err(PdmError::Other(format!("Download incomplete: {}/{} bytes", downloaded, cfg.total_size)));
         }
 
         // Rename .pdm to final filename

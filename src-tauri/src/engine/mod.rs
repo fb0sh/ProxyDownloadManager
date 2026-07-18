@@ -2,7 +2,7 @@ pub mod chunk;
 pub mod concurrent;
 pub mod single;
 
-use crate::types::{DownloadConfig, DownloadState};
+use crate::types::{DownloadConfig, DownloadState, PdmError, PdmResult};
 use crate::network::pool::NetworkPool;
 use crate::network::limiter::MultiLimiter;
 use std::sync::atomic::AtomicBool;
@@ -26,7 +26,7 @@ pub trait DownloadEngine: Send + Sync {
         limiter: Arc<MultiLimiter>,
         cancel: Arc<AtomicBool>,
         on_cancelled: &OnCancelled,
-    ) -> Result<(), String>;
+    ) -> PdmResult<()>;
 }
 
 #[async_trait]
@@ -37,7 +37,7 @@ impl DownloadEngine for concurrent::ConcurrentDownloader {
         limiter: Arc<MultiLimiter>,
         cancel: Arc<AtomicBool>,
         on_cancelled: &OnCancelled,
-    ) -> Result<(), String> {
+    ) -> PdmResult<()> {
         self.download(cfg, limiter, cancel, on_cancelled).await
     }
 }
@@ -50,7 +50,7 @@ impl DownloadEngine for single::SingleDownloader {
         limiter: Arc<MultiLimiter>,
         cancel: Arc<AtomicBool>,
         on_cancelled: &OnCancelled,
-    ) -> Result<(), String> {
+    ) -> PdmResult<()> {
         self.download(cfg, limiter, cancel, on_cancelled).await
     }
 }
@@ -75,7 +75,7 @@ pub async fn run_download(
     limiter: Arc<MultiLimiter>,
     cancel: Arc<AtomicBool>,
     on_cancelled: OnCancelled,
-) -> Result<(), String> {
+) -> PdmResult<()> {
     let engine_kind = if cfg.supports_range { "concurrent" } else { "single" };
     eprintln!("[ProxyDM] run_download id={} engine={} url={} size={} range={}",
         cfg.id, engine_kind, cfg.url, cfg.total_size, cfg.supports_range);
@@ -92,7 +92,7 @@ pub async fn run_download(
     // On concurrent failure (not cancelled), degrade to single
     let result = match result {
         Ok(()) => result,
-        Err(ref e) if e == "Cancelled" => result,
+        Err(ref e) if matches!(e, PdmError::Cancelled) => result,
         Err(e) => {
             eprintln!("[ProxyDM] Concurrent id={} failed, degrading to Single: {}", cfg.id, e);
             let pdm_path = format!("{}.pdm", cfg.output_path);

@@ -1,4 +1,4 @@
-use crate::types::{DownloadConfig, Event};
+use crate::types::{DownloadConfig, PdmResult, Event};
 use crate::network::pool::NetworkPool;
 use crate::network::limiter::MultiLimiter;
 use crate::engine;
@@ -31,8 +31,8 @@ impl WorkerPool {
         self.next_id.fetch_add(1, Ordering::Relaxed)
     }
 
-    pub async fn add_with_id(&self, cfg: DownloadConfig, id: u64) -> Result<u64, String> {
-        let permit = self.semaphore.clone().try_acquire_owned().map_err(|_| "Too many concurrent downloads — try again later.".to_string())?;
+    pub async fn add_with_id(&self, cfg: DownloadConfig, id: u64) -> PdmResult<u64> {
+        let permit = self.semaphore.clone().try_acquire_owned().map_err(|_| crate::types::PdmError::Other("Too many concurrent downloads — try again later.".to_string()))?;
         self.spawn_task(cfg, permit, id).await;
         Ok(id)
     }
@@ -61,11 +61,11 @@ impl WorkerPool {
                 Ok(_) => eprintln!("[ProxyDM] worker id={} completed OK", id),
                 Err(e) => {
                     eprintln!("[ProxyDM] worker id={} ERROR: {}", id, e);
-                    if e != "Cancelled" {
+                    if !matches!(e, crate::types::PdmError::Cancelled) {
                         let _ = event_tx.send(Event {
                             kind: crate::types::EventKind::DownloadErrored,
                             download_id: id,
-                            data: Some(e.clone()),
+                            data: Some(e.to_string()),
                         });
                     }
                 }
