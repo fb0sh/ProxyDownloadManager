@@ -1,10 +1,12 @@
 // src/hooks/useClipboard.ts
 import { useEffect, useRef, useState } from "react";
 import { looksLikeDownloadUrl } from "../utils/download";
+import { useWindowManager } from "./useWindowManager";
 
-export function useClipboardDetection(onUrlDetected: (url: string) => void) {
+export function useClipboardDetection() {
   const [lastText, setLastText] = useState("");
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const { openNewDownload } = useWindowManager();
 
   useEffect(() => {
     intervalRef.current = setInterval(async () => {
@@ -16,7 +18,7 @@ export function useClipboardDetection(onUrlDetected: (url: string) => void) {
             (text.startsWith("http://") || text.startsWith("https://") || text.startsWith("ftp://")) &&
             looksLikeDownloadUrl(text)
           ) {
-            onUrlDetected(text);
+            openNewDownload(text);
           }
         }
       } catch {
@@ -27,7 +29,7 @@ export function useClipboardDetection(onUrlDetected: (url: string) => void) {
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
-  }, [lastText, onUrlDetected]);
+  }, [lastText, openNewDownload]);
 
   return null;
 }

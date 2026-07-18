@@ -1,4 +1,4 @@
-import { useEffect, useCallback } from "react";
+import { useEffect } from "react";
 import type { QueryClient } from "@tanstack/react-query";
 import type { PluginListener } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -7,11 +7,10 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { t } from "../i18n";
 import type { DownloadItem } from "../types";
 import { EVENTS } from "../constants/events";
+import { useWindowManager } from "./useWindowManager";
 
 interface DownloadEventsOptions {
   queryClient: QueryClient;
-  openNewDownloadWindow: (url?: string) => void;
-  openDownloadDetailsWindow: (id: number) => void;
 }
 
 async function sendDownloadNotification(id: number, title: string, body?: string, _ntype?: string) {
@@ -40,22 +39,16 @@ const INVALIDATE_EVENTS = [
   EVENTS.DOWNLOAD_CANCELLED,
 ];
 
-export function useDownloadEvents({
-  queryClient,
-  openNewDownloadWindow,
-  openDownloadDetailsWindow,
-}: DownloadEventsOptions) {
-  const onUrlDetected = useCallback((url: string) => {
-    openNewDownloadWindow(url);
-  }, [openNewDownloadWindow]);
+export function useDownloadEvents({ queryClient }: DownloadEventsOptions) {
+  const { openNewDownload, openDetails } = useWindowManager();
 
   // browser-download-url
   useEffect(() => {
     const unlisten = listen<string>(EVENTS.BROWSER_DOWNLOAD_URL, (event) => {
-      onUrlDetected(event.payload);
+      openNewDownload(event.payload);
     });
     return () => { unlisten.then((f) => f()); };
-  }, [onUrlDetected]);
+  }, [openNewDownload]);
 
   // All invalidation events in one subscription
   useEffect(() => {
@@ -103,10 +96,10 @@ export function useDownloadEvents({
     const unlisten = listen<{ id: number; file_name: string }>(EVENTS.DOWNLOAD_COMPLETED, async (event) => {
       const { id, file_name } = event.payload;
       await sendDownloadNotification(id, "Download Complete", file_name, "completed");
-      openDownloadDetailsWindow(id);
+      openDetails(id);
     });
     return () => { unlisten.then((f) => f()); };
-  }, [openDownloadDetailsWindow]);
+  }, [openDetails]);
 
   // download-error
   useEffect(() => {
@@ -134,12 +127,12 @@ export function useDownloadEvents({
             if (mainWin) { await mainWin.show(); await mainWin.setFocus(); }
           } catch {}
         } else if (id) {
-          openDownloadDetailsWindow(Number(id));
+          openDetails(Number(id));
         }
       });
     })();
     return () => { cancelled = true; if (unreg) unreg.unregister(); };
-  }, [openDownloadDetailsWindow]);
+  }, [openDetails]);
 
   // Window focus refresh
   useEffect(() => {

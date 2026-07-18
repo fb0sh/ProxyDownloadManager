@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from "react";
+import { useEffect } from "react";
 import Layout from "./components/Layout";
 import DeleteDialog from "./components/dialogs/DeleteDialog";
 import SettingsDialog from "./components/dialogs/SettingsDialog";
@@ -8,11 +8,11 @@ import ExtensionDialog from "./components/dialogs/ExtensionDialog";
 import { useClipboardDetection } from "./hooks/useClipboard";
 import { usePauseDownload, useResumeDownload, useDownloads, useSettings, useRedownloadDownload } from "./query/downloadQueries";
 import { useDownloadEvents } from "./hooks/useDownloadEvents";
+import { useWindowManager } from "./hooks/useWindowManager";
 import { isFailed } from "./utils/download";
 import { useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
-import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { setLanguage, t } from "./i18n";
+import { setLanguage } from "./i18n";
 import type { DownloadItem } from "./types";
 import { useAppContext } from "./contexts/AppContext";
 
@@ -25,6 +25,7 @@ function App() {
   const { data: downloads = [] } = useDownloads();
   const { settings: loadedSettings } = useSettings();
   const queryClient = useQueryClient();
+  const { openNewDownload, openDetails } = useWindowManager();
 
   useEffect(() => {
     if (loadedSettings) {
@@ -32,59 +33,9 @@ function App() {
     }
   }, [loadedSettings]);
 
-  const openNewDownloadWindow = useCallback(async (url?: string) => {
-    const existing = await WebviewWindow.getByLabel("new-download");
-    if (existing) { existing.setFocus(); return; }
+  useClipboardDetection();
 
-    const base = window.location.origin + window.location.pathname.replace(/\/+$/, "");
-    const params = new URLSearchParams();
-    params.set("view", "new-download");
-    if (url) params.set("url", url);
-
-    const win = new WebviewWindow("new-download", {
-      url: `${base}?${params.toString()}`,
-      width: 600,
-      height: 490,
-      title: t("newDownload.title"),
-    });
-    win.once("tauri://created", async () => {
-      if (url) {
-        try { await win.emit("new-download-url", url); } catch {}
-      }
-      await win.show().catch(() => {});
-      await win.unminimize().catch(() => {});
-      await win.center().catch(() => {});
-      await win.setAlwaysOnTop(true).catch(() => {});
-      await win.setFocus().catch(() => {});
-      const { UserAttentionType } = await import("@tauri-apps/api/window");
-      await win.requestUserAttention(UserAttentionType.Critical).catch(() => {});
-    });
-    win.once("tauri://error", (e) => {
-      console.error("Failed to open new download window:", e);
-    });
-  }, []);
-
-  const openDownloadDetailsWindow = useCallback(async (id: number) => {
-    const existing = await WebviewWindow.getByLabel("download-details");
-    if (existing) { existing.setFocus(); return; }
-
-    const base = window.location.origin + window.location.pathname.replace(/\/+$/, "");
-    const win = new WebviewWindow("download-details", {
-      url: `${base}?view=download-details&id=${id}`,
-      width: 480,
-      height: 460,
-      title: t("properties.title"),
-    });
-    win.once("tauri://created", async () => {
-      await win.setAlwaysOnTop(true).catch(() => {});
-      await win.setFocus().catch(() => {});
-    });
-    win.once("tauri://error", (e) => console.error("Failed to open details:", e));
-  }, []);
-
-  useClipboardDetection(useCallback((url: string) => openNewDownloadWindow(url), [openNewDownloadWindow]));
-
-  useDownloadEvents({ queryClient, openNewDownloadWindow, openDownloadDetailsWindow });
+  useDownloadEvents({ queryClient });
 
   const handleQuit = async () => {
     try { await invoke("exit_app"); } catch { window.close(); }
@@ -121,7 +72,7 @@ function App() {
   return (
     <>
       <Layout
-        onNewDownload={() => openNewDownloadWindow()}
+        onNewDownload={() => openNewDownload()}
         onExtension={() => setDialog({ type: "extension" })}
         onLog={() => setDialog({ type: "log" })}
         onSettings={() => setDialog({ type: "settings" })}
@@ -132,7 +83,7 @@ function App() {
         onDeleteSelected={handleDeleteSelected}
         onStop={handleStop}
         onDelete={handleDelete}
-        onProperties={(id) => openDownloadDetailsWindow(id)}
+        onProperties={(id) => openDetails(id)}
         onRedownloadItem={selectedForRedownload}
         onRedownload={handleRedownload}
       />
@@ -144,7 +95,7 @@ function App() {
         <SettingsDialog onClose={() => setDialog(null)} />
       )}
       {dialog?.type === "about" && (
-        <AboutDialog onClose={() => setDialog(null)} onDownloadUpdate={(url) => openNewDownloadWindow(url)} />
+        <AboutDialog onClose={() => setDialog(null)} onDownloadUpdate={(url) => openNewDownload(url)} />
       )}
       {dialog?.type === "extension" && (
         <ExtensionDialog onClose={() => setDialog(null)} />
