@@ -1,6 +1,5 @@
 import { describe, it, expect } from "vitest";
 import { isFailed, getErrorMessage, statusString, statusColor, formatTimestamp } from "../utils/format";
-import type { DownloadStatus } from "../types";
 
 describe("isFailed", () => {
   it("returns true for failed status", () => {
