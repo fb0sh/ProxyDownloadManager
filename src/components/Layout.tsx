@@ -5,6 +5,7 @@ import DownloadTable from "./DownloadTable";
 import { useDownloads } from "../query/downloadQueries";
 import { isFailed } from "../utils/download";
 import { t } from "../i18n";
+import { useAppContext } from "../contexts/AppContext";
 
 interface LayoutProps {
   onNewDownload: () => void;
@@ -21,20 +22,14 @@ interface LayoutProps {
   onProperties: (id: number) => void;
   onRedownload: (item: import("../types").DownloadItem) => void;
   onRedownloadItem?: import("../types").DownloadItem;
-  selectedIds: Set<number>;
-  onSelectChange: (ids: Set<number>) => void;
-  filter: "all" | "completed" | "incomplete";
-  onFilterChange: (f: "all" | "completed" | "incomplete") => void;
 }
 
 export default function Layout({
   onNewDownload, onExtension, onSettings, onAbout, onQuit, onLog,
   onResumeSelected, onPauseSelected, onDeleteSelected,
   onStop, onDelete, onProperties, onRedownload, onRedownloadItem,
-  selectedIds, onSelectChange,
-  filter, onFilterChange,
 }: LayoutProps) {
-  console.debug('[ProxyDM FE] Layout mount');
+  const { selectedIds, filter, setFilter } = useAppContext();
   const { data: downloads = [] } = useDownloads();
 
   const selectedDownloadStatuses = downloads
@@ -78,7 +73,7 @@ export default function Layout({
         size="small"
         onChange={(idx) => {
           const map = ["all", "completed", "incomplete"];
-          onFilterChange(map[idx ?? 0] as "all" | "completed" | "incomplete");
+          setFilter(map[idx ?? 0] as "all" | "completed" | "incomplete");
         }}
       >
         <SegmentedControl.Button
@@ -102,7 +97,7 @@ export default function Layout({
       </SegmentedControl>
       </div>
       <div style={{ flex: 1, overflow: "auto" }}>
-        <DownloadTable selectedIds={selectedIds} onSelectChange={onSelectChange} filter={filter} onStop={onStop} onDelete={onDelete} onProperties={onProperties} onRedownload={onRedownload} />
+        <DownloadTable filter={filter} onStop={onStop} onDelete={onDelete} onProperties={onProperties} onRedownload={onRedownload} />
       </div>
     </div>
   );

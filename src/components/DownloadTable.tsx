@@ -8,10 +8,9 @@ import { formatBytes } from "../types";
 import { t } from "../i18n";
 import { applyFilter, formatTimestamp, statusString, openFile, openFolder } from "../utils/download";
 import type { DownloadItem } from "../types";
+import { useAppContext } from "../contexts/AppContext";
 
 interface DownloadTableProps {
-  selectedIds: Set<number>;
-  onSelectChange: (ids: Set<number>) => void;
   filter: "all" | "completed" | "incomplete";
   onStop: (id: number) => void;
   onDelete: (ids: number[]) => void;
@@ -20,9 +19,10 @@ interface DownloadTableProps {
 }
 
 export default function DownloadTable({
-  selectedIds, onSelectChange, filter,
+  filter,
   onStop, onDelete, onProperties, onRedownload,
 }: DownloadTableProps) {
+  const { selectedIds, setSelectedIds } = useAppContext();
   const { data: downloads = [], isLoading } = useDownloads();
   console.debug('[ProxyDM FE] DownloadTable render filter=', filter, 'count=', downloads.length);
   const filtered = applyFilter(downloads, filter);
@@ -54,9 +54,9 @@ export default function DownloadTable({
 
   const toggleSelectAll = () => {
     if (selectAllChecked) {
-      onSelectChange(new Set());
+      setSelectedIds(new Set());
     } else {
-      onSelectChange(new Set(filtered.map((d) => d.id)));
+      setSelectedIds(new Set(filtered.map((d) => d.id)));
     }
   };
 
@@ -64,7 +64,7 @@ export default function DownloadTable({
     const next = new Set(selectedIds);
     if (next.has(id)) next.delete(id);
     else next.add(id);
-    onSelectChange(next);
+    setSelectedIds(next);
   };
 
   const handleContext = (e: React.MouseEvent, id: number) => {

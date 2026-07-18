@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useCallback, useEffect } from "react";
 import Layout from "./components/Layout";
 import DeleteDialog from "./components/dialogs/DeleteDialog";
 import SettingsDialog from "./components/dialogs/SettingsDialog";
@@ -14,19 +14,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { setLanguage, t } from "./i18n";
 import type { DownloadItem } from "./types";
-
-type Dialog =
-  | { type: "delete"; ids: number[] }
-  | { type: "settings" }
-  | { type: "about" }
-  | { type: "extension" }
-  | { type: "log" }
-  | null;
+import { useAppContext } from "./contexts/AppContext";
 
 function App() {
-  const [dialog, setDialog] = useState<Dialog>(null);
-  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
-  const [filter, setFilter] = useState<"all" | "completed" | "incomplete">("all");
+  const { dialog, setDialog, selectedIds, setSelectedIds } = useAppContext();
 
   const pauseDownload = usePauseDownload();
   const resumeDownload = useResumeDownload();
@@ -144,10 +135,6 @@ function App() {
         onProperties={(id) => openDownloadDetailsWindow(id)}
         onRedownloadItem={selectedForRedownload}
         onRedownload={handleRedownload}
-        selectedIds={selectedIds}
-        onSelectChange={setSelectedIds}
-        filter={filter}
-        onFilterChange={setFilter}
       />
 
       {dialog?.type === "delete" && (

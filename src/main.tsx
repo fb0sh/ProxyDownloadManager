@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import App from "./App";
 import NewDownloadWindow from "./NewDownloadWindow";
 import DownloadDetailsWindow from "./DownloadDetailsWindow";
+import { AppProvider } from "./contexts/AppContext";
 
 import "@primer/primitives/dist/css/functional/themes/light.css";
 import { BaseStyles, ThemeProvider } from "@primer/react";
@@ -50,7 +51,9 @@ function RootLayout() {
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
         <BaseStyles>
-          <App />
+          <AppProvider>
+            <App />
+          </AppProvider>
         </BaseStyles>
       </ThemeProvider>
     </QueryClientProvider>

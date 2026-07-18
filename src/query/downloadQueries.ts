@@ -1,16 +1,14 @@
-// src/query/downloadQueries.ts
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { tauriCommands } from "../hooks/useTauriCommands";
+import { tauriClient } from "../tauriClient";
 import type { Settings } from "../types";
 
 const DOWNLOADS_KEY = ["downloads"] as const;
 const SETTINGS_KEY = ["settings"] as const;
 
 export function useDownloads() {
-  const { listDownloads } = tauriCommands();
   return useQuery({
     queryKey: DOWNLOADS_KEY,
-    queryFn: listDownloads,
+    queryFn: tauriClient.listDownloads,
     refetchInterval: 1000,
     refetchIntervalInBackground: true,
   });
@@ -23,54 +21,49 @@ export function useDownload(id: number | undefined) {
 
 export function useStartDownload() {
   const queryClient = useQueryClient();
-  const { startDownload } = tauriCommands();
   return useMutation({
     mutationFn: ({ url, filename, proxyName, connections, savePath }: {
       url: string; filename: string; proxyName: string; connections: number; savePath: string;
-    }) => startDownload(url, filename, proxyName, connections, savePath),
+    }) => tauriClient.startDownload(url, filename, proxyName, connections, savePath),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: DOWNLOADS_KEY }),
   });
 }
 
 export function usePauseDownload() {
   const queryClient = useQueryClient();
-  const { pauseDownload } = tauriCommands();
   return useMutation({
-    mutationFn: (id: number) => pauseDownload(id),
+    mutationFn: (id: number) => tauriClient.pauseDownload(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: DOWNLOADS_KEY }),
   });
 }
 
 export function useResumeDownload() {
   const queryClient = useQueryClient();
-  const { resumeDownload } = tauriCommands();
   return useMutation({
-    mutationFn: (id: number) => resumeDownload(id),
+    mutationFn: (id: number) => tauriClient.resumeDownload(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: DOWNLOADS_KEY }),
   });
 }
 
 export function useDeleteDownload() {
   const queryClient = useQueryClient();
-  const { deleteDownload } = tauriCommands();
   return useMutation({
     mutationFn: ({ id, deleteFile }: { id: number; deleteFile: boolean }) =>
-      deleteDownload(id, deleteFile),
+      tauriClient.deleteDownload(id, deleteFile),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: DOWNLOADS_KEY }),
   });
 }
 
 export function useSettings() {
-  const { getSettings, saveSettings } = tauriCommands();
   const queryClient = useQueryClient();
 
   const query = useQuery({
     queryKey: SETTINGS_KEY,
-    queryFn: getSettings,
+    queryFn: tauriClient.getSettings,
   });
 
   const mutation = useMutation({
-    mutationFn: (settings: Settings) => saveSettings(settings),
+    mutationFn: (settings: Settings) => tauriClient.saveSettings(settings),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: SETTINGS_KEY }),
   });
 
@@ -79,9 +72,8 @@ export function useSettings() {
 
 export function useRedownloadDownload() {
   const queryClient = useQueryClient();
-  const { redownloadDownload } = tauriCommands();
   return useMutation({
-    mutationFn: (id: number) => redownloadDownload(id),
+    mutationFn: (id: number) => tauriClient.redownloadDownload(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: DOWNLOADS_KEY }),
   });
 }
