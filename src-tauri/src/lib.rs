@@ -19,6 +19,8 @@ mod services;
 
 use crate::cmd::AppState;
 use crate::download_manager::DownloadManager;
+use crate::services::settings_service::SettingsService;
+use crate::services::network_service::NetworkService;
 use std::sync::Arc;
 use tauri::Manager;
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
@@ -180,7 +182,8 @@ pub fn run() {
             }
 
             let db = crate::state::db::Db::new().expect("Failed to initialize database");
-            let settings = crate::config::load();
+            let settings_svc = Arc::new(SettingsService::new());
+            let settings = settings_svc.get();
 
             let _ = crate::tray::build_tray(app.handle(), &settings.global_shortcut);
 
@@ -192,11 +195,15 @@ pub fn run() {
             let worker_pool = crate::worker::WorkerPool::new(8, event_tx.clone(), danger_accept_invalid_certs, next_id_start);
             let logger = crate::log::Logger::new().expect("Failed to initialize logger");
 
+            let network_svc = Arc::new(NetworkService::new(worker_pool.pool_ref()));
+
             let dm = Arc::new(DownloadManager::new(
                 db,
                 worker_pool,
                 logger,
                 crate::state::runtime::DownloadManagerState::new(),
+                settings_svc,
+                network_svc,
             ));
 
             let bus = Arc::new(crate::event_bus::EventBus::new(app.handle().clone()));

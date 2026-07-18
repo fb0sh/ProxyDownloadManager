@@ -73,7 +73,7 @@ pub async fn delete_download(
 
 #[tauri::command]
 pub fn get_settings(state: State<'_, Arc<AppState>>) -> Result<Settings, String> {
-    Ok(state.dm.get_settings())
+    Ok(state.dm.settings.get())
 }
 
 #[tauri::command]
@@ -82,21 +82,25 @@ pub fn save_settings(state: State<'_, Arc<AppState>>, settings: Settings) -> Res
         settings.language, settings.download_dir, settings.max_connections, settings.danger_accept_invalid_certs);
     state.dm.log_info(&format!("Settings saved: language={} download_dir={}", settings.language, settings.download_dir));
 
-    let flags = state.dm.save_settings(&settings).map_err(|e| e.to_string())?;
+    let result = state.dm.settings.save(&settings).map_err(|e| e.to_string())?;
 
-    if let Err(e) = crate::platform::sync_autostart(&state.app_handle, flags.launch_at_startup, flags.silent_startup) {
+    if result.tls_changed {
+        state.dm.clear_client_pool();
+    }
+
+    if let Err(e) = crate::platform::sync_autostart(&state.app_handle, result.launch_at_startup, result.silent_startup) {
         eprintln!("[ProxyDM] Failed to sync autostart: {}", e);
     }
 
     #[cfg(desktop)]
-    if flags.shortcut_changed {
+    if result.shortcut_changed {
         use tauri_plugin_global_shortcut::GlobalShortcutExt;
         let app = &state.app_handle;
-        if !flags.old_shortcut.is_empty() {
-            let _ = app.global_shortcut().unregister(flags.old_shortcut.as_str());
+        if !result.old_shortcut.is_empty() {
+            let _ = app.global_shortcut().unregister(result.old_shortcut.as_str());
         }
-        if !flags.new_shortcut.is_empty() {
-            if let Err(e) = app.global_shortcut().register(flags.new_shortcut.as_str()) {
+        if !result.new_shortcut.is_empty() {
+            if let Err(e) = app.global_shortcut().register(result.new_shortcut.as_str()) {
                 eprintln!("[ProxyDM] Failed to update global shortcut: {}", e);
             }
         }
