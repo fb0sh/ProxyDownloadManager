@@ -13,7 +13,7 @@ interface DownloadEventsOptions {
   queryClient: QueryClient;
 }
 
-async function sendDownloadNotification(id: number, title: string, body?: string, _ntype?: string) {
+async function sendDownloadNotification(id: number, title: string, body?: string) {
   try {
     const { isPermissionGranted, requestPermission, sendNotification } =
       await import("@tauri-apps/plugin-notification");
@@ -32,85 +32,81 @@ async function sendDownloadNotification(id: number, title: string, body?: string
   }
 }
 
-/** Events that simply invalidate the downloads query. */
-const INVALIDATE_EVENTS = [
-  EVENTS.DOWNLOAD_PAUSED,
-  EVENTS.DOWNLOAD_RESUMED,
-  EVENTS.DOWNLOAD_CANCELLED,
-];
-
 export function useDownloadEvents({ queryClient }: DownloadEventsOptions) {
   const { openNewDownload, openDetails } = useWindowManager();
 
-  // browser-download-url
+  // Single subscription for all Tauri events — one setup/teardown cycle
   useEffect(() => {
-    const unlisten = listen<string>(EVENTS.BROWSER_DOWNLOAD_URL, (event) => {
-      openNewDownload(event.payload);
-    });
-    return () => { unlisten.then((f) => f()); };
-  }, [openNewDownload]);
+    const unlisteners: Promise<() => void>[] = [];
 
-  // All invalidation events in one subscription
-  useEffect(() => {
-    const unlisteners = INVALIDATE_EVENTS.map((eventName) =>
-      listen(eventName, () => {
-        queryClient.invalidateQueries({ queryKey: ["downloads"] });
+    // Browser download URL from extension
+    unlisteners.push(
+      listen<string>(EVENTS.BROWSER_DOWNLOAD_URL, (event) => {
+        openNewDownload(event.payload);
       })
     );
-    // download-created also invalidates but has extra side effects
-    const createdUnlisten = listen(EVENTS.DOWNLOAD_CREATED, async () => {
-      queryClient.invalidateQueries({ queryKey: ["downloads"] });
-      try {
-        const mainWin = await WebviewWindow.getByLabel("main");
-        if (mainWin) { await mainWin.show(); await mainWin.setFocus(); }
-      } catch {}
-    });
+
+    // Structural changes: full refetch
+    for (const eventName of [EVENTS.DOWNLOAD_PAUSED, EVENTS.DOWNLOAD_RESUMED, EVENTS.DOWNLOAD_CANCELLED]) {
+      unlisteners.push(
+        listen(eventName, () => {
+          queryClient.invalidateQueries({ queryKey: ["downloads"] });
+        })
+      );
+    }
+
+    // Download created: refetch + focus main window
+    unlisteners.push(
+      listen(EVENTS.DOWNLOAD_CREATED, async () => {
+        queryClient.invalidateQueries({ queryKey: ["downloads"] });
+        try {
+          const mainWin = await WebviewWindow.getByLabel("main");
+          if (mainWin) { await mainWin.show(); await mainWin.setFocus(); }
+        } catch {}
+      })
+    );
+
+    // Progress: optimistic cache update (avoids full refetch for high-frequency events)
+    unlisteners.push(
+      listen<{ id: number; downloaded: number }>(EVENTS.DOWNLOAD_PROGRESS, (event) => {
+        const { id, downloaded } = event.payload;
+        queryClient.setQueryData<DownloadItem[]>(["downloads"], (old) => {
+          if (!old) return old;
+          return old.map((d) => (d.id === id ? { ...d, downloaded } : d));
+        });
+      })
+    );
+
+    // Started notification
+    unlisteners.push(
+      listen<number>(EVENTS.DOWNLOAD_STARTED, (event) => {
+        sendDownloadNotification(event.payload, "Download Started");
+      })
+    );
+
+    // Completed: notification + open details
+    unlisteners.push(
+      listen<{ id: number; file_name: string }>(EVENTS.DOWNLOAD_COMPLETED, async (event) => {
+        const { id, file_name } = event.payload;
+        await sendDownloadNotification(id, "Download Complete", file_name);
+        openDetails(id);
+      })
+    );
+
+    // Error notification
+    unlisteners.push(
+      listen<{ id: number; url: string; message: string }>(EVENTS.DOWNLOAD_ERROR, (event) => {
+        const { id, message } = event.payload;
+        sendDownloadNotification(id, t("downloadError.failed"), message.slice(0, 100));
+      })
+    );
+
     return () => {
       unlisteners.forEach((u) => u.then((f) => f()));
-      createdUnlisten.then((f) => f());
     };
-  }, [queryClient]);
+  }, [queryClient, openNewDownload, openDetails]);
 
-  // download-progress (optimistic update)
-  useEffect(() => {
-    const unlisten = listen<{ id: number; downloaded: number }>(EVENTS.DOWNLOAD_PROGRESS, (event) => {
-      const { id, downloaded } = event.payload;
-      queryClient.setQueryData<DownloadItem[]>(["downloads"], (old) => {
-        if (!old) return old;
-        return old.map((d) => (d.id === id ? { ...d, downloaded } : d));
-      });
-    });
-    return () => { unlisten.then((f) => f()); };
-  }, [queryClient]);
-
-  // download-started
-  useEffect(() => {
-    const unlisten = listen<number>(EVENTS.DOWNLOAD_STARTED, (event) => {
-      sendDownloadNotification(event.payload, "Download Started", undefined, "started");
-    });
-    return () => { unlisten.then((f) => f()); };
-  }, []);
-
-  // download-completed
-  useEffect(() => {
-    const unlisten = listen<{ id: number; file_name: string }>(EVENTS.DOWNLOAD_COMPLETED, async (event) => {
-      const { id, file_name } = event.payload;
-      await sendDownloadNotification(id, "Download Complete", file_name, "completed");
-      openDetails(id);
-    });
-    return () => { unlisten.then((f) => f()); };
-  }, [openDetails]);
-
-  // download-error
-  useEffect(() => {
-    const unlisten = listen<{ id: number; url: string; message: string }>(EVENTS.DOWNLOAD_ERROR, (event) => {
-      const { id, message } = event.payload;
-      sendDownloadNotification(id, t("downloadError.failed"), message.slice(0, 100), "error");
-    });
-    return () => { unlisten.then((f) => f()); };
-  }, []);
-
-  // Notification clicks
+  // Notification click handler
   useEffect(() => {
     let unreg: PluginListener | null = null;
     let cancelled = false;
