@@ -63,8 +63,18 @@ impl SettingsService {
     /// Build the user-agent fallback list: configured UA + browser defaults.
     pub fn build_user_agents(&self) -> Vec<String> {
         let settings = self.get();
-        crate::services::probe_service::build_user_agents(&settings.user_agent)
+        build_user_agents_list(&settings.user_agent)
     }
+}
+
+/// Build the user-agent fallback list from a configured user-agent string.
+fn build_user_agents_list(user_agent: &str) -> Vec<String> {
+    vec![
+        user_agent.to_string(),
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36".to_string(),
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36".to_string(),
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:127.0) Gecko/20100101 Firefox/127.0".to_string(),
+    ]
 }
 
 /// Resolve a proxy name to a URL using the given settings.

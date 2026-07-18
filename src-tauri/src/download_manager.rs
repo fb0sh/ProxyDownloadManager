@@ -6,7 +6,7 @@ use crate::engine::OnResumeState;
 use crate::event_bus::{EventBus, FrontendEvent};
 use crate::log::Logger;
 use crate::state::runtime::DownloadManagerState;
-use crate::services::{chunk_planner, probe_service, settings_service::SettingsService, network_service::NetworkService};
+use crate::services::{settings_service::SettingsService, network_service::NetworkService};
 use std::sync::{Arc, Mutex};
 
 pub struct DownloadManager {
@@ -290,6 +290,46 @@ struct DownloadSpec {
     connections: u32,
 }
 
+struct ProbeOutcome {
+    file_name: String,
+    file_size: u64,
+    supports_range: bool,
+}
+
+async fn probe_with_fallback(
+    url: &str,
+    headers: &std::collections::HashMap<String, String>,
+    proxy_url: Option<&str>,
+    pool: &Arc<crate::network::pool::NetworkPool>,
+    user_agents: &[String],
+    filename_override: &str,
+) -> ProbeOutcome {
+    let result = crate::probe::probe(url, headers, proxy_url, pool, user_agents).await;
+
+    match result {
+        Ok(r) => {
+            let name = if filename_override.is_empty() { r.file_name } else { filename_override.to_string() };
+            ProbeOutcome {
+                file_name: name,
+                file_size: r.file_size,
+                supports_range: r.supports_range,
+            }
+        }
+        Err(e) => {
+            let name = if filename_override.is_empty() {
+                crate::filename::from_url(url).unwrap_or_else(|| "download".to_string())
+            } else {
+                filename_override.to_string()
+            };
+            ProbeOutcome {
+                file_name: name,
+                file_size: 0,
+                supports_range: false,
+            }
+        }
+    }
+}
+
 impl DownloadManager {
     /// Shared pipeline: probe → plan chunks → disk check → DB insert → spawn worker.
     async fn execute_download(&self, spec: DownloadSpec) -> PdmResult<u64> {
@@ -300,7 +340,7 @@ impl DownloadManager {
         let settings = self.settings.get();
         let user_agents = self.settings.build_user_agents();
 
-        let outcome = probe_service::probe_with_fallback(
+        let outcome = probe_with_fallback(
             &spec.url, &headers, proxy_opt, &pool, &user_agents, &spec.file_name,
         ).await;
 
@@ -315,7 +355,7 @@ impl DownloadManager {
         }
 
         let max_conns = settings.max_connections.max(1).min(32);
-        let connections = chunk_planner::compute_connection_count(file_size, spec.connections, max_conns);
+        let connections = crate::engine::chunk::compute_connection_count(file_size, spec.connections, max_conns);
 
         let save_dir = if spec.save_path.is_empty() {
             settings.download_dir
@@ -324,10 +364,10 @@ impl DownloadManager {
         };
         let full_path = unique_filename(&save_dir, &file_name);
 
-        chunk_planner::check_disk_space(&full_path, file_size)?;
+        crate::engine::chunk::check_disk_space(&full_path, file_size)?;
 
         let id = self.worker_pool.next_id();
-        let plan = chunk_planner::plan_chunks(file_size, connections, supports_range, settings.max_connections);
+        let plan = crate::engine::chunk::plan_chunks(file_size, connections, supports_range, settings.max_connections);
 
         let item = DownloadItem {
             id,
