@@ -119,7 +119,7 @@ impl SingleDownloader {
                 }
             };
             let chunk = chunk.map_err(|e| PdmError::Network(e.to_string()))?;
-            limiter.wait_n(chunk.len() as u64);
+            limiter.wait_n(chunk.len() as u64).await;
             buf.extend_from_slice(&chunk);
 
             if buf.len() >= BUF_SIZE {

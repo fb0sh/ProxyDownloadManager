@@ -412,4 +412,27 @@ mod tests {
         assert_eq!(req.url, "https://example.com/file.zip");
         assert_eq!(req.connections, 4);
     }
+
+    #[test]
+    fn test_download_status_json_roundtrip() {
+        // JSON format: {"failed":"msg"} for Failed, string for others
+        let cases = vec![
+            (DownloadStatus::Downloading, "\"downloading\""),
+            (DownloadStatus::Paused, "\"paused\""),
+            (DownloadStatus::Completed, "\"completed\""),
+            (DownloadStatus::Queued, "\"queued\""),
+        ];
+        for (status, expected_json) in &cases {
+            let json = serde_json::to_string(status).unwrap();
+            assert_eq!(json, *expected_json, "Serialization mismatch for {:?}", status);
+            let back: DownloadStatus = serde_json::from_str(&json).unwrap();
+            assert!(format!("{:?}", back) == format!("{:?}", status), "Deserialization mismatch for {:?}", status);
+        }
+        // Failed has special object format
+        let failed = DownloadStatus::Failed("timeout".to_string());
+        let json = serde_json::to_string(&failed).unwrap();
+        assert_eq!(json, r#"{"failed":"timeout"}"#);
+        let back: DownloadStatus = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, DownloadStatus::Failed(msg) if msg == "timeout"));
+    }
 }

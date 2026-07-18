@@ -17,28 +17,31 @@ impl RateLimiter {
         }
     }
 
-    pub fn wait_n(&self, n: u64) {
+    pub async fn wait_n(&self, n: u64) {
         let bps = self.bps.load(Ordering::Relaxed);
         if bps == 0 {
             return; // no limit
         }
-        let mut allowance = self.allowance.lock().unwrap();
-        let mut last_check = self.last_check.lock().unwrap();
-        let now = Instant::now();
-        let elapsed = now.duration_since(*last_check).as_secs_f64();
-        *last_check = now;
-        *allowance += elapsed * (bps as f64);
-        if *allowance > (bps as f64) * 2.0 {
-            *allowance = (bps as f64) * 2.0;
-        }
-        if *allowance >= n as f64 {
-            *allowance -= n as f64;
-            return;
-        }
-        let deficit = n as f64 - *allowance;
-        let wait_time = deficit / (bps as f64);
-        std::thread::sleep(Duration::from_secs_f64(wait_time));
-        *allowance = 0.0;
+        let wait_secs = {
+            let mut allowance = self.allowance.lock().unwrap();
+            let mut last_check = self.last_check.lock().unwrap();
+            let now = Instant::now();
+            let elapsed = now.duration_since(*last_check).as_secs_f64();
+            *last_check = now;
+            *allowance += elapsed * (bps as f64);
+            if *allowance > (bps as f64) * 2.0 {
+                *allowance = (bps as f64) * 2.0;
+            }
+            if *allowance >= n as f64 {
+                *allowance -= n as f64;
+                return;
+            }
+            let deficit = n as f64 - *allowance;
+            *allowance = 0.0;
+            deficit / (bps as f64)
+        };
+        // Locks dropped here — safe to await without blocking the executor
+        tokio::time::sleep(Duration::from_secs_f64(wait_secs)).await;
     }
 }
 
@@ -55,9 +58,9 @@ impl MultiLimiter {
         }
     }
 
-    pub fn wait_n(&self, n: u64) {
-        self.global.wait_n(n);
-        self.per_download.wait_n(n);
+    pub async fn wait_n(&self, n: u64) {
+        self.global.wait_n(n).await;
+        self.per_download.wait_n(n).await;
     }
 }
 
@@ -65,23 +68,23 @@ impl MultiLimiter {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_rate_limiter_no_limit() {
+    #[tokio::test]
+    async fn test_rate_limiter_no_limit() {
         let limiter = RateLimiter::new(0);
         // Should return immediately when bps is 0
-        limiter.wait_n(10_000_000);
+        limiter.wait_n(10_000_000).await;
     }
 
-    #[test]
-    fn test_multi_limiter_no_limit() {
+    #[tokio::test]
+    async fn test_multi_limiter_no_limit() {
         let limiter = MultiLimiter::new(0, 0);
-        limiter.wait_n(1000);
+        limiter.wait_n(1000).await;
     }
 
-    #[test]
-    fn test_multi_limiter_partial_limit() {
+    #[tokio::test]
+    async fn test_multi_limiter_partial_limit() {
         let limiter = MultiLimiter::new(100_000, 0);
         // Per-download unlimited, global has limit
-        limiter.wait_n(1);
+        limiter.wait_n(1).await;
     }
 }

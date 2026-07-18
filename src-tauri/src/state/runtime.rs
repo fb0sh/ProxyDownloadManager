@@ -53,7 +53,8 @@ impl DownloadManagerState {
     }
 
     /// Flush all dirty entries to the database.
-    /// Returns the number of entries flushed.
+    /// Returns the number of entries successfully flushed.
+    /// Failed entries stay dirty and retry on the next flush cycle.
     pub fn flush_to_db(&self, db: &crate::state::db::Db) -> usize {
         let batch: Vec<(u64, u64)> = {
             let map = recover_lock(self.inner.lock());
@@ -62,18 +63,19 @@ impl DownloadManagerState {
                 .map(|(&id, rt)| (id, rt.downloaded))
                 .collect()
         };
-        let count = batch.len();
-        for (id, downloaded) in &batch {
-            let _ = db.update_download_progress(*id, *downloaded);
-        }
-        // Update last_flushed after successful DB write
+        let mut flushed = 0usize;
         let mut map = recover_lock(self.inner.lock());
         for (id, downloaded) in &batch {
-            if let Some(rt) = map.get_mut(id) {
-                rt.last_flushed = *downloaded;
+            if db.update_download_progress(*id, *downloaded).is_ok() {
+                if let Some(rt) = map.get_mut(id) {
+                    rt.last_flushed = *downloaded;
+                }
+                flushed += 1;
             }
+            // Failed entries keep their last_flushed value, so they stay dirty
+            // and will be retried on the next flush cycle.
         }
-        count
+        flushed
     }
 
     pub(crate) fn get_downloaded(&self, id: u64) -> Option<u64> {
@@ -114,5 +116,53 @@ mod tests {
         let state = test_state();
         state.update_progress(999, 500); // no panic, no error
         assert_eq!(state.get_downloaded(999), None);
+    }
+
+    #[test]
+    fn test_flush_to_db() {
+        let state = test_state();
+        let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("pdm_flush_test_{}", ts));
+        std::fs::create_dir_all(&dir).ok();
+        let db_path = dir.join("test.db");
+        let db = crate::state::db::Db::from_path(&db_path).unwrap();
+
+        // Insert a download item so update_download_progress succeeds
+        let item = crate::types::DownloadItem {
+            id: 1,
+            url: "https://example.com/file.zip".to_string(),
+            file_name: "file.zip".to_string(),
+            save_path: "/tmp/file.zip".to_string(),
+            total_size: 1000,
+            downloaded: 0,
+            status: crate::types::DownloadStatus::Downloading,
+            parts: vec![],
+            proxy_name: String::new(),
+            connections: 1,
+            resumable: None,
+            created_at: String::new(),
+            last_try: String::new(),
+        };
+        db.insert_download(&item).unwrap();
+
+        state.register(1);
+        state.update_progress(1, 500);
+
+        // First flush: should flush 1 entry
+        let flushed = state.flush_to_db(&db);
+        assert_eq!(flushed, 1);
+
+        // Second flush: nothing dirty, should flush 0
+        let flushed = state.flush_to_db(&db);
+        assert_eq!(flushed, 0);
+
+        // Update again and flush
+        state.update_progress(1, 800);
+        let flushed = state.flush_to_db(&db);
+        assert_eq!(flushed, 1);
+
+        // Verify DB has the final value
+        let item = db.get_by_id(1).unwrap().unwrap();
+        assert_eq!(item.downloaded, 800);
     }
 }

@@ -327,4 +327,37 @@ mod tests {
         let db = test_db();
         db.delete_download(999).unwrap();
     }
+
+    #[test]
+    fn test_status_roundtrip_all_variants() {
+        let statuses = vec![
+            DownloadStatus::Downloading,
+            DownloadStatus::Paused,
+            DownloadStatus::Completed,
+            DownloadStatus::Queued,
+            DownloadStatus::Failed("connection refused".to_string()),
+            DownloadStatus::Failed("".to_string()),
+        ];
+        for status in &statuses {
+            let db = test_db();
+            let mut item = sample_item(1);
+            item.status = status.clone();
+            db.insert_download(&item).unwrap();
+            let items = db.list_downloads().unwrap();
+            assert!(format!("{:?}", items[0].status) == format!("{:?}", status),
+                "Roundtrip failed for {:?}", status);
+        }
+    }
+
+    #[test]
+    fn test_parse_status_handles_edge_cases() {
+        assert!(matches!(parse_status("downloading"), DownloadStatus::Downloading));
+        assert!(matches!(parse_status("paused"), DownloadStatus::Paused));
+        assert!(matches!(parse_status("completed"), DownloadStatus::Completed));
+        assert!(matches!(parse_status("queued"), DownloadStatus::Queued));
+        assert!(matches!(parse_status("failed:timeout"), DownloadStatus::Failed(msg) if msg == "timeout"));
+        assert!(matches!(parse_status("failed:"), DownloadStatus::Failed(msg) if msg == ""));
+        assert!(matches!(parse_status("failed"), DownloadStatus::Failed(msg) if msg == ""));
+        assert!(matches!(parse_status("unknown"), DownloadStatus::Queued));
+    }
 }

@@ -367,7 +367,7 @@ async fn download_task(
                 continue;
             }
         };
-        limiter.wait_n(chunk.len() as u64);
+        limiter.wait_n(chunk.len() as u64).await;
 
         buf.extend_from_slice(&chunk);
 

@@ -173,7 +173,7 @@ impl DownloadManager {
         }
     }
 
-    /// Start a new download: probe → compute chunks → DB insert → spawn worker.
+    /// Start a new download.
     pub async fn start_download(
         &self,
         url: String,
@@ -183,122 +183,23 @@ impl DownloadManager {
         connections: u32,
     ) -> PdmResult<u64> {
         self.log_info(&format!("Download start url={} proxy={}", url, proxy_name));
-
-        let pool = self.worker_pool.pool_ref();
-        let headers = std::collections::HashMap::new();
-        let proxy_url_str = self.resolve_proxy_url(&proxy_name);
-        let proxy_opt = proxy_url_str.as_deref();
-
-        let settings = self.get_settings();
-        let user_agents = self.build_user_agents();
-
-        let outcome = probe_service::probe_with_fallback(
-            &url, &headers, proxy_opt, &pool, &user_agents, &filename,
-        ).await;
-
-        let file_name = outcome.file_name;
-        let file_size = outcome.file_size;
-        let supports_range = outcome.supports_range;
-
-        if file_size > 0 {
-            self.log_info(&format!("Probe ok url={} size={} range={} name={}", url, file_size, supports_range, file_name));
-        } else {
-            self.log_warn(&format!("Probe failed, forcing blind download url={}", url));
-        }
-
-        let max_conns = settings.max_connections.max(1).min(32);
-
-        let connections = chunk_planner::compute_connection_count(file_size, connections, max_conns);
-
-        let save_dir = if save_path.is_empty() {
-            settings.download_dir
-        } else {
-            save_path
-        };
-        let full_path = unique_filename(&save_dir, &file_name);
-
-        chunk_planner::check_disk_space(&full_path, file_size)?;
-
-        let id = self.worker_pool.next_id();
-
-        let plan = chunk_planner::plan_chunks(file_size, connections, supports_range, settings.max_connections);
-        let parts = plan.parts;
-
-        let item = DownloadItem {
-            id,
-            url: url.clone(),
-            file_name: file_name.clone(),
-            save_path: full_path.clone(),
-            total_size: file_size,
-            downloaded: 0,
-            status: DownloadStatus::Downloading,
-            parts,
-            proxy_name: proxy_name.clone(),
-            connections,
-            resumable: Some(supports_range),
-            created_at: now_str(),
-            last_try: String::new(),
-        };
-        self.facade.insert_item(&item)?;
-
-        let mut cfg = item.to_engine_config(&proxy_url_str.clone().unwrap_or_default(), &settings.user_agent, false, settings.max_retries);
-        cfg.id = id;
-        self.worker_pool.add_with_id(cfg, id, self.make_resume_callback()).await?;
-
-        Ok(id)
+        self.execute_download(DownloadSpec {
+            url, file_name: filename, save_path, proxy_name, connections,
+        }).await
     }
 
     /// Redownload an existing download with a new ID.
     pub async fn redownload_download(&self, id: u64) -> PdmResult<u64> {
-        let items = self.facade.list_items()?;
-        let existing = items.iter().find(|i| i.id == id)
-            .ok_or_else(|| format!("Download {} not found", id))?.clone();
-
+        let existing = self.facade.get_item(id)?
+            .ok_or_else(|| format!("Download {} not found", id))?;
         self.log_info(&format!("Redownload start id={} url={}", id, existing.url));
-
-        let pool = self.worker_pool.pool_ref();
-        let headers = std::collections::HashMap::new();
-        let proxy_url = self.resolve_proxy_url(&existing.proxy_name).unwrap_or_default();
-        let proxy_opt = if proxy_url.is_empty() { None } else { Some(proxy_url.as_str()) };
-        let settings = self.get_settings();
-        let user_agents = self.build_user_agents();
-
-        let probe_result = crate::probe::probe(&existing.url, &headers, proxy_opt, &pool, &user_agents).await;
-
-        let (file_size, supports_range) = match probe_result {
-            Ok(r) => {
-                self.log_info(&format!("Probe ok url={} size={} range={}", existing.url, r.file_size, r.supports_range));
-                (r.file_size, r.supports_range)
-            }
-            Err(e) => {
-                self.log_warn(&format!("Probe failed, blind redownload url={} err={}", existing.url, e));
-                (0, false)
-            }
-        };
-
-        let new_id = self.worker_pool.next_id();
-
-        let new_item = DownloadItem {
-            id: new_id,
-            url: existing.url.clone(),
-            file_name: existing.file_name.clone(),
-            save_path: existing.save_path.clone(),
-            total_size: file_size,
-            downloaded: 0,
-            status: DownloadStatus::Downloading,
-            parts: vec![],
-            proxy_name: existing.proxy_name.clone(),
+        self.execute_download(DownloadSpec {
+            url: existing.url,
+            file_name: existing.file_name,
+            save_path: existing.save_path,
+            proxy_name: existing.proxy_name,
             connections: existing.connections,
-            resumable: Some(supports_range),
-            created_at: now_str(),
-            last_try: String::new(),
-        };
-        self.facade.insert_item(&new_item)?;
-
-        let cfg = new_item.to_engine_config(&proxy_url, &settings.user_agent, false, settings.max_retries);
-        self.worker_pool.add_with_id(cfg, new_id, self.make_resume_callback()).await?;
-
-        Ok(new_id)
+        }).await
     }
 
     /// Pause a download: cancel workers → flush → save gob → update DB.
@@ -486,6 +387,78 @@ pub fn unique_filename(dir: &str, filename: &str) -> String {
             return candidate;
         }
         n += 1;
+    }
+}
+
+/// Spec for the shared download pipeline.
+struct DownloadSpec {
+    url: String,
+    file_name: String,
+    save_path: String,
+    proxy_name: String,
+    connections: u32,
+}
+
+impl DownloadManager {
+    /// Shared pipeline: probe → plan chunks → disk check → DB insert → spawn worker.
+    async fn execute_download(&self, spec: DownloadSpec) -> PdmResult<u64> {
+        let pool = self.worker_pool.pool_ref();
+        let headers = std::collections::HashMap::new();
+        let proxy_url_str = self.resolve_proxy_url(&spec.proxy_name);
+        let proxy_opt = proxy_url_str.as_deref();
+        let settings = self.get_settings();
+        let user_agents = self.build_user_agents();
+
+        let outcome = probe_service::probe_with_fallback(
+            &spec.url, &headers, proxy_opt, &pool, &user_agents, &spec.file_name,
+        ).await;
+
+        let file_name = outcome.file_name;
+        let file_size = outcome.file_size;
+        let supports_range = outcome.supports_range;
+
+        if file_size > 0 {
+            self.log_info(&format!("Probe ok url={} size={} range={} name={}", spec.url, file_size, supports_range, file_name));
+        } else {
+            self.log_warn(&format!("Probe failed, forcing blind download url={}", spec.url));
+        }
+
+        let max_conns = settings.max_connections.max(1).min(32);
+        let connections = chunk_planner::compute_connection_count(file_size, spec.connections, max_conns);
+
+        let save_dir = if spec.save_path.is_empty() {
+            settings.download_dir
+        } else {
+            spec.save_path
+        };
+        let full_path = unique_filename(&save_dir, &file_name);
+
+        chunk_planner::check_disk_space(&full_path, file_size)?;
+
+        let id = self.worker_pool.next_id();
+        let plan = chunk_planner::plan_chunks(file_size, connections, supports_range, settings.max_connections);
+
+        let item = DownloadItem {
+            id,
+            url: spec.url,
+            file_name,
+            save_path: full_path,
+            total_size: file_size,
+            downloaded: 0,
+            status: DownloadStatus::Downloading,
+            parts: plan.parts,
+            proxy_name: spec.proxy_name,
+            connections,
+            resumable: Some(supports_range),
+            created_at: now_str(),
+            last_try: String::new(),
+        };
+        self.facade.insert_item(&item)?;
+
+        let cfg = item.to_engine_config(&proxy_url_str.unwrap_or_default(), &settings.user_agent, false, settings.max_retries);
+        self.worker_pool.add_with_id(cfg, id, self.make_resume_callback()).await?;
+
+        Ok(id)
     }
 }
 
