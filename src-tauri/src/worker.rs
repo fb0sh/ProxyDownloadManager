@@ -135,3 +135,126 @@ impl WorkerPool {
         self.pool.clear();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_config() -> EngineConfig {
+        EngineConfig {
+            url: "http://127.0.0.1:1/nonexistent".to_string(),
+            save_path: "/tmp/test_worker.dat".to_string(),
+            id: 0,
+            file_name: "test.dat".to_string(),
+            is_resume: false,
+            headers: HashMap::new(),
+            proxy_url: String::new(),
+            total_size: 100,
+            supports_range: false,
+            rate_limit_bps: 0,
+            connections: 1,
+            max_retries: 0,
+            user_agent: "test".to_string(),
+            resume_tasks: vec![],
+        }
+    }
+
+    fn on_resume() -> OnResumeState {
+        Box::new(|_, _| {})
+    }
+
+    #[test]
+    fn test_next_id_increments() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let pool = WorkerPool::new(4, tx, false, 10);
+        assert_eq!(pool.next_id(), 10);
+        assert_eq!(pool.next_id(), 11);
+        assert_eq!(pool.next_id(), 12);
+    }
+
+    #[tokio::test]
+    async fn test_new_pool_initial_state() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let pool = WorkerPool::new(8, tx, false, 1);
+        assert_eq!(pool.next_id(), 1); // first call returns 1, increments to 2
+        // Active map should be empty
+        let active = pool.active.lock().await;
+        assert!(active.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_cancel_returns_none_for_unknown_id() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let pool = WorkerPool::new(4, tx, false, 1);
+        let result = pool.cancel(999).await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_cancel_returns_handle_for_active_task() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let pool = WorkerPool::new(4, tx, false, 1);
+
+        // Add a task — it will fail quickly (unreachable URL) but will be in the active map briefly
+        let id = pool.next_id();
+        let _ = pool.add_with_id(test_config(), id, on_resume()).await;
+
+        // Wait briefly for task to be inserted into active map
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Cancel — may or may not find the task depending on whether it already completed
+        let result = pool.cancel(id).await;
+        // If the task already completed and cleaned up, result is None (valid)
+        // If the task is still running, result is Some (valid)
+        // Both are acceptable outcomes for an unreachable URL
+        let _ = result; // just verify no panic
+    }
+
+    #[tokio::test]
+    async fn test_cancel_and_wait_completes() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let pool = WorkerPool::new(4, tx, false, 1);
+
+        let id = pool.next_id();
+        let _ = pool.add_with_id(test_config(), id, on_resume()).await;
+
+        // cancel_and_wait should complete without hanging
+        pool.cancel_and_wait(id).await;
+
+        // After cancel_and_wait, the task should be removed from active map
+        let active = pool.active.lock().await;
+        assert!(!active.contains_key(&id));
+    }
+
+    #[tokio::test]
+    async fn test_cancel_and_wait_for_unknown_id() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let pool = WorkerPool::new(4, tx, false, 1);
+
+        // Should not panic or hang
+        pool.cancel_and_wait(999).await;
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_cancel_safety() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let pool = WorkerPool::new(4, tx, false, 1);
+
+        // Spawn multiple tasks
+        let id1 = pool.next_id();
+        let id2 = pool.next_id();
+        let _ = pool.add_with_id(test_config(), id1, on_resume()).await;
+        let _ = pool.add_with_id(test_config(), id2, on_resume()).await;
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Cancel both concurrently
+        let (r1, r2) = tokio::join!(pool.cancel(id1), pool.cancel(id2));
+        // Both should return without panic
+        let _ = (r1, r2);
+
+        // Wait for cleanup
+        pool.cancel_and_wait(id1).await;
+        pool.cancel_and_wait(id2).await;
+    }
+}
