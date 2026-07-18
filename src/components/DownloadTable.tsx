@@ -1,14 +1,13 @@
-import { useState, useRef, useEffect } from "react";
-import { Text, Checkbox } from "@primer/react";
+import { Text } from "@primer/react";
 import { DataTable, Table } from "@primer/react/experimental";
 import { useDownloads } from "../query/downloadQueries";
-import { useDownloadSpeed, computeETA } from "../hooks/useDownloadSpeed";
-import { useFileIcons, iconFor } from "../hooks/useFileIcons";
-import { formatBytes } from "../utils/format";
+import { useDownloadSpeed } from "../hooks/useDownloadSpeed";
+import { useFileIcons } from "../hooks/useFileIcons";
 import { t } from "../i18n";
-import { applyFilter, formatTimestamp, statusString, openFile, openFolder } from "../utils/download";
-import type { DownloadItem } from "../types";
+import { applyFilter, openFile, openFolder } from "../utils/download";
 import { useAppContext } from "../contexts/AppContext";
+import { useContextMenu } from "../hooks/useContextMenu";
+import { buildColumns } from "./columns";
 
 interface DownloadTableProps {
   filter: "all" | "completed" | "incomplete";
@@ -22,26 +21,7 @@ export default function DownloadTable({ filter }: DownloadTableProps) {
   const filtered = applyFilter(downloads, filter);
   const speeds = useDownloadSpeed(filtered);
   const icons = useFileIcons(filtered);
-  const [menuState, setMenuState] = useState<{ id: number; x: number; y: number } | null>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-
-  // Wraps any cell content with right-click context menu support
-  const ctx = (row: DownloadItem, content: React.ReactNode) => (
-    <div onContextMenu={(e) => handleContext(e, row.id)} style={{ cursor: "context-menu" }}>
-      {content}
-    </div>
-  );
-
-  // Close context menu on click outside
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setMenuState(null);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, []);
+  const { menuState, menuRef, handleContext, closeMenu } = useContextMenu();
 
   const selectAllChecked = filtered.length > 0 && filtered.every((d) => selectedIds.has(d.id));
   const selectAllIndeterminate = !selectAllChecked && filtered.some((d) => selectedIds.has(d.id));
@@ -60,13 +40,6 @@ export default function DownloadTable({ filter }: DownloadTableProps) {
     else next.add(id);
     setSelectedIds(next);
   };
-
-  const handleContext = (e: React.MouseEvent, id: number) => {
-    e.preventDefault();
-    setMenuState({ id, x: e.clientX, y: e.clientY });
-  };
-
-  const closeMenu = () => setMenuState(null);
 
   const handleOpen = async (path: string) => {
     closeMenu();
@@ -110,162 +83,16 @@ export default function DownloadTable({ filter }: DownloadTableProps) {
     );
   };
 
-  const skeletonColumns = [
-    { header: "", width: "auto" as const },
-    { header: t("downloadTable.fileName") },
-    { header: t("downloadTable.size"), width: "auto" as const },
-    { header: t("downloadTable.status"), width: "auto" as const },
-    { header: t("downloadTable.speed"), width: "auto" as const },
-    { header: t("downloadTable.remain"), width: "auto" as const },
-    { header: t("downloadTable.threads"), width: "auto" as const },
-    { header: t("downloadTable.proxy"), width: "auto" as const },
-    { header: t("downloadTable.resume"), width: "auto" as const },
-    { header: t("downloadTable.lastTry"), width: "auto" as const },
-  ];
-
-  const dataColumns = [
-    {
-      id: "select",
-      header: () => (
-        <Checkbox
-          checked={selectAllChecked}
-          onChange={toggleSelectAll}
-          ref={(el) => {
-            if (el) el.indeterminate = selectAllIndeterminate;
-          }}
-        />
-      ),
-      width: "auto" as const,
-      renderCell: (row: DownloadItem) => (
-        <Checkbox checked={selectedIds.has(row.id)} onChange={() => toggleSelect(row.id)} />
-      ),
-    },
-    {
-      id: "file_name",
-      header: t("downloadTable.fileName"),
-      field: "file_name" as const,
-      rowHeader: true,
-      sortBy: "alphanumeric" as const,
-      width: "grow" as const,
-      renderCell: (row: DownloadItem) => (
-        <div onContextMenu={(e) => handleContext(e, row.id)} style={{ cursor: "context-menu", display: "flex", alignItems: "center", gap: 4 }}>
-          <img
-            src={iconFor(icons, row.file_name)}
-            alt=""
-            width={18}
-            height={18}
-            style={{ flexShrink: 0 }}
-          />
-          <Text weight="semibold" size="medium" style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", lineHeight: 1.4 }}>
-            {row.file_name}
-          </Text>
-        </div>
-      ),
-    },
-    {
-      id: "size",
-      header: t("downloadTable.size"),
-      width: "auto" as const,
-      renderCell: (row: DownloadItem) => ctx(row,
-        <Text size="small" style={{ whiteSpace: "nowrap" }}>
-          {row.total_size === 0 ? "—" : row.status === "completed" ? formatBytes(row.total_size) : `${formatBytes(row.downloaded)} / ${formatBytes(row.total_size)}`}
-        </Text>
-      ),
-    },
-    {
-      id: "status",
-      header: t("downloadTable.status"),
-      width: "auto" as const,
-      renderCell: (row: DownloadItem) => {
-        const pct = row.total_size > 0 ? Math.round((row.downloaded / row.total_size) * 100) : 0;
-        if (row.total_size === 0) {
-          return ctx(row, <Text size="small" style={{ color: "var(--fgColor-muted, #656d76)" }}>—</Text>);
-        }
-        if (row.status === "downloading") {
-          return ctx(row, <Text size="small">{pct}{t("progress.percent")}</Text>);
-        }
-        if (row.status === "paused") {
-          return ctx(row, <Text size="small">Paused ({pct}{t("progress.percent")})</Text>);
-        }
-        if (row.status === "completed") {
-          return ctx(row, <Text size="small">Completed</Text>);
-        }
-        return ctx(row, <Text size="small">{statusString(row.status)}</Text>);
-      },
-    },
-    {
-      id: "speed",
-      header: t("downloadTable.speed"),
-      width: "auto" as const,
-      sortBy: (a: DownloadItem, b: DownloadItem) => {
-        const si_a = speeds.get(a.id);
-        const si_b = speeds.get(b.id);
-        return (si_a?.bps ?? 0) - (si_b?.bps ?? 0);
-      },
-      renderCell: (row: DownloadItem) => {
-        const info = speeds.get(row.id);
-        return ctx(row,
-          <Text size="small" style={{ whiteSpace: "nowrap" }}>
-            {info?.display ?? "—"}
-          </Text>
-        );
-      },
-    },
-    {
-      id: "remain",
-      header: t("downloadTable.remain"),
-      width: "auto" as const,
-      renderCell: (row: DownloadItem) => {
-        if (row.status !== "downloading") return ctx(row, <Text size="small" style={{ color: "var(--fgColor-muted, #656d76)" }}>—</Text>);
-        const info = speeds.get(row.id);
-        return ctx(row,
-          <Text size="small">
-            {info ? computeETA(row, info.bps) : "—"}
-          </Text>
-        );
-      },
-    },
-    {
-      id: "threads",
-      header: t("downloadTable.threads"),
-      width: "auto" as const,
-      renderCell: (row: DownloadItem) => ctx(row,
-        <Text size="small">{row.connections}</Text>
-      ),
-    },
-    {
-      id: "proxy",
-      header: t("downloadTable.proxy"),
-      width: "auto" as const,
-      renderCell: (row: DownloadItem) => ctx(row,
-        <Text size="small">{row.proxy_name || "—"}</Text>
-      ),
-    },
-    {
-      id: "resume",
-      header: t("downloadTable.resume"),
-      width: "auto" as const,
-      renderCell: (row: DownloadItem) => ctx(row,
-        <Text size="small">
-          {row.resumable === true ? t("properties.yes") : row.resumable === false ? t("properties.no") : t("properties.unknown")}
-        </Text>
-      ),
-    },
-    {
-      id: "last_try",
-      header: t("downloadTable.lastTry"),
-      width: "auto" as const,
-      minWidth: 140,
-      renderCell: (row: DownloadItem) => ctx(row,
-        <Text size="small" style={{ whiteSpace: "nowrap" }}>{formatTimestamp(row.last_try)}</Text>
-      ),
-    },
-  ];
+  const columns = buildColumns({
+    selectedIds, toggleSelect, selectAllChecked, selectAllIndeterminate,
+    toggleSelectAll, speeds, icons, onContextMenu: handleContext,
+    onStop, onDelete, onProperties, onRedownload,
+  });
 
   if (isLoading) {
     return (
       <Table.Container>
-        <Table.Skeleton columns={skeletonColumns} rows={10} />
+        <Table.Skeleton columns={columns.map((c) => ({ header: c.header, width: c.width }))} rows={10} />
       </Table.Container>
     );
   }
@@ -285,7 +112,7 @@ export default function DownloadTable({ filter }: DownloadTableProps) {
       <Table.Container>
         <DataTable
           data={filtered}
-          columns={dataColumns}
+          columns={columns}
           cellPadding="condensed"
           initialSortColumn="file_name"
           initialSortDirection="ASC"
