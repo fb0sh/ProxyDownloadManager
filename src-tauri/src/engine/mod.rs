@@ -3,7 +3,6 @@ pub mod concurrent;
 pub mod single;
 
 use crate::types::{EngineConfig, DownloadState, PdmError, PdmResult};
-use crate::types::engine_config;
 use crate::network::pool::NetworkPool;
 use crate::network::limiter::MultiLimiter;
 use std::sync::atomic::AtomicBool;

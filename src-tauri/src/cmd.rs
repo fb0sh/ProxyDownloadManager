@@ -1,10 +1,10 @@
 use crate::types::*;
 use crate::download_manager::DownloadManager;
-use crate::event_bus::{EventBus, FrontendEvent};
+use crate::event_bus::EventBus;
 use crate::icons::{IconCache, IconData};
 use std::process::Command as StdCommand;
 use std::sync::Arc;
-use tauri::{Emitter, Manager, State};
+use tauri::State;
 
 pub struct AppState {
     pub dm: Arc<DownloadManager>,
