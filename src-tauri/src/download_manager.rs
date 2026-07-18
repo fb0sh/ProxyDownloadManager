@@ -251,86 +251,7 @@ impl DownloadManager {
         let proxy_url = self.settings.resolve_proxy_url(proxy_name);
         self.network.test_proxy(proxy_url.as_deref()).await
     }
-}
 
-pub fn now_str() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let dur = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    format!("{}", dur.as_secs())
-}
-
-pub fn unique_filename(dir: &str, filename: &str) -> String {
-    let dir = dir.trim_end_matches('/');
-    let candidate = format!("{}/{}", dir, filename);
-    if !std::path::Path::new(&candidate).exists() {
-        return candidate;
-    }
-    let (stem, ext) = match filename.rfind('.') {
-        Some(dot) => (&filename[..dot], &filename[dot..]),
-        None => (filename, ""),
-    };
-    let mut n = 1;
-    loop {
-        let candidate = format!("{}/{}.{}{}", dir, stem, n, ext);
-        if !std::path::Path::new(&candidate).exists() {
-            return candidate;
-        }
-        n += 1;
-    }
-}
-
-/// Spec for the shared download pipeline.
-struct DownloadSpec {
-    url: String,
-    file_name: String,
-    save_path: String,
-    proxy_name: String,
-    connections: u32,
-}
-
-struct ProbeOutcome {
-    file_name: String,
-    file_size: u64,
-    supports_range: bool,
-}
-
-async fn probe_with_fallback(
-    url: &str,
-    headers: &std::collections::HashMap<String, String>,
-    proxy_url: Option<&str>,
-    pool: &Arc<crate::network::pool::NetworkPool>,
-    user_agents: &[String],
-    filename_override: &str,
-) -> ProbeOutcome {
-    let result = crate::probe::probe(url, headers, proxy_url, pool, user_agents).await;
-
-    match result {
-        Ok(r) => {
-            let name = if filename_override.is_empty() { r.file_name } else { filename_override.to_string() };
-            ProbeOutcome {
-                file_name: name,
-                file_size: r.file_size,
-                supports_range: r.supports_range,
-            }
-        }
-        Err(e) => {
-            let name = if filename_override.is_empty() {
-                crate::filename::from_url(url).unwrap_or_else(|| "download".to_string())
-            } else {
-                filename_override.to_string()
-            };
-            ProbeOutcome {
-                file_name: name,
-                file_size: 0,
-                supports_range: false,
-            }
-        }
-    }
-}
-
-impl DownloadManager {
     /// Shared pipeline: probe → plan chunks → disk check → DB insert → spawn worker.
     async fn execute_download(&self, spec: DownloadSpec) -> PdmResult<u64> {
         let pool = self.worker_pool.pool_ref();
@@ -340,7 +261,7 @@ impl DownloadManager {
         let settings = self.settings.get();
         let user_agents = self.settings.build_user_agents();
 
-        let outcome = probe_with_fallback(
+        let outcome = crate::probe::probe_with_fallback(
             &spec.url, &headers, proxy_opt, &pool, &user_agents, &spec.file_name,
         ).await;
 
@@ -391,6 +312,43 @@ impl DownloadManager {
 
         Ok(id)
     }
+}
+
+pub fn now_str() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let dur = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    format!("{}", dur.as_secs())
+}
+
+pub fn unique_filename(dir: &str, filename: &str) -> String {
+    let dir = dir.trim_end_matches('/');
+    let candidate = format!("{}/{}", dir, filename);
+    if !std::path::Path::new(&candidate).exists() {
+        return candidate;
+    }
+    let (stem, ext) = match filename.rfind('.') {
+        Some(dot) => (&filename[..dot], &filename[dot..]),
+        None => (filename, ""),
+    };
+    let mut n = 1;
+    loop {
+        let candidate = format!("{}/{}.{}{}", dir, stem, n, ext);
+        if !std::path::Path::new(&candidate).exists() {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+/// Spec for the shared download pipeline.
+struct DownloadSpec {
+    url: String,
+    file_name: String,
+    save_path: String,
+    proxy_name: String,
+    connections: u32,
 }
 
 #[cfg(test)]

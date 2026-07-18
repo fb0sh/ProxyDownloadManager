@@ -109,3 +109,45 @@ pub async fn probe(
     eprintln!("[ProxyDM] probe FAILED: {}", err_msg);
     Err(PdmError::Probe(err_msg))
 }
+
+/// Probe result with filename override applied.
+pub struct ProbeOutcome {
+    pub file_name: String,
+    pub file_size: u64,
+    pub supports_range: bool,
+}
+
+/// Probe with fallback: on failure, derive filename from URL.
+pub async fn probe_with_fallback(
+    url: &str,
+    headers: &HashMap<String, String>,
+    proxy_url: Option<&str>,
+    pool: &std::sync::Arc<NetworkPool>,
+    user_agents: &[String],
+    filename_override: &str,
+) -> ProbeOutcome {
+    let result = probe(url, headers, proxy_url, pool, user_agents).await;
+
+    match result {
+        Ok(r) => {
+            let name = if filename_override.is_empty() { r.file_name } else { filename_override.to_string() };
+            ProbeOutcome {
+                file_name: name,
+                file_size: r.file_size,
+                supports_range: r.supports_range,
+            }
+        }
+        Err(e) => {
+            let name = if filename_override.is_empty() {
+                crate::filename::from_url(url).unwrap_or_else(|| "download".to_string())
+            } else {
+                filename_override.to_string()
+            };
+            ProbeOutcome {
+                file_name: name,
+                file_size: 0,
+                supports_range: false,
+            }
+        }
+    }
+}
