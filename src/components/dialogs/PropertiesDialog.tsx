@@ -3,7 +3,7 @@ import { Text, Label, ProgressBar, Button } from "@primer/react";
 import { CopyIcon } from "@primer/octicons-react";
 import { Dialog } from "@primer/react/experimental";
 import { useDownload } from "../../query/downloadQueries";
-import { formatBytes } from "../../types";
+import { formatBytes } from "../../utils/format";
 import { statusColor, statusString } from "../../utils/download";
 import { sectionCard, sectionHeader } from "../../utils/styles";
 import { t } from "../../i18n";

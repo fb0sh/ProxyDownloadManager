@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { formatBytes } from "../types";
+import { formatBytes } from "../utils/format";
 import { t } from "../i18n";
 import type { DownloadItem } from "../types";
 

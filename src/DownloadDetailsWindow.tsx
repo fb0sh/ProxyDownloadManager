@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Text, Label, Button } from "@primer/react";
 import { CopyIcon } from "@primer/octicons-react";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { formatBytes } from "./types";
+import { formatBytes } from "./utils/format";
 import { formatTimestamp, statusColor, statusString, openFile, openFolder } from "./utils/download";
 import { useDownload } from "./query/downloadQueries";
 

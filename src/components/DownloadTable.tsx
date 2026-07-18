@@ -4,7 +4,7 @@ import { DataTable, Table } from "@primer/react/experimental";
 import { useDownloads } from "../query/downloadQueries";
 import { useDownloadSpeed, computeETA } from "../hooks/useDownloadSpeed";
 import { useFileIcons, iconFor } from "../hooks/useFileIcons";
-import { formatBytes } from "../types";
+import { formatBytes } from "../utils/format";
 import { t } from "../i18n";
 import { applyFilter, formatTimestamp, statusString, openFile, openFolder } from "../utils/download";
 import type { DownloadItem } from "../types";
