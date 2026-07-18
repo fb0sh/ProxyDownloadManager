@@ -6,7 +6,6 @@ import {
   BrowserIcon, PasteIcon, SyncIcon,
 } from "@primer/octicons-react";
 import { setLanguage, t } from "../src/i18n";
-import { useSettingsStore } from "../src/stores/settingsStore";
 import {
   usePauseDownload, useResumeDownload, useDownloads, useSettings, useRedownloadDownload,
 } from "../src/query/downloadQueries";
@@ -46,15 +45,13 @@ function AppInner() {
   const resumeDownload = useResumeDownload();
   const redownloadDownload = useRedownloadDownload();
   const { data: downloads = [] } = useDownloads();
-  const { settings: loadedSettings } = useSettings();
-  const setSettings = useSettingsStore((s) => s.setSettings);
+  const { settings: loadedSettings, saveSettings } = useSettings();
 
   useEffect(() => {
     if (loadedSettings) {
-      setSettings(loadedSettings);
       setLanguage(loadedSettings.language || "zh");
     }
-  }, [loadedSettings, setSettings]);
+  }, [loadedSettings]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
