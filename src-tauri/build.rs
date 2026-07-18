@@ -46,4 +46,15 @@ fn main() {
 
     // Re-run if events.json changes
     println!("cargo:rerun-if-changed=events.json");
+
+    // Validate frontend copy matches source
+    let frontend_events = Path::new(&manifest_dir).parent().unwrap().join("src/constants/events.json");
+    if let Ok(frontend_content) = fs::read_to_string(&frontend_events) {
+        if frontend_content.trim() != content.trim() {
+            panic!(
+                "events.json mismatch: src-tauri/events.json and src/constants/events.json differ. \
+                 Edit src-tauri/events.json (source of truth) and copy to src/constants/events.json."
+            );
+        }
+    }
 }
