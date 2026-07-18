@@ -17,8 +17,8 @@ pub async fn create_output_file(path: &str, total_size: u64) -> Result<std::fs::
     Ok(file)
 }
 
-pub async fn finalize_file(output_path: &str, save_path: &str) -> Result<(), String> {
-    let pdm_path = format!("{}.pdm", output_path);
+pub async fn finalize_file(save_path: &str) -> Result<(), String> {
+    let pdm_path = format!("{}.pdm", save_path);
     tokio::fs::rename(&pdm_path, save_path)
         .await
         .map_err(|e| format!("Failed to rename file: {}", e))

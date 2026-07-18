@@ -5,6 +5,7 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { formatBytes } from "./utils/format";
 import { formatTimestamp, statusColor, statusString, openFile, openFolder } from "./utils/download";
 import { useDownload } from "./query/downloadQueries";
+import { t } from "./i18n";
 
 const card: React.CSSProperties = {
   border: "1px solid var(--borderColor-muted, #d8dee4)", borderRadius: 6,
@@ -60,8 +61,7 @@ export default function DownloadDetailsWindow() {
   if (!idParam) return <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100vh" }}><Text>No download ID provided</Text></div>;
   if (!item) return <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100vh" }}><Text>Loading...</Text></div>;
 
-  const yes = "Yes", no = "No", uk = "Unknown";
-  const resumable = item.resumable === true ? yes : item.resumable === false ? no : uk;
+  const resumable = item.resumable === true ? t("properties.yes") : item.resumable === false ? t("properties.no") : t("properties.unknown");
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh", fontSize: 12, background: "var(--bgColor-default, #fff)" }}>
@@ -77,8 +77,8 @@ export default function DownloadDetailsWindow() {
         <Label variant={statusColor(item.status)} style={{ fontSize: 11 }}>{statusString(item.status)}</Label>
         {item.status === "completed" && (
           <>
-            <Button size="small" onClick={handleOpenFile}>Open</Button>
-            <Button size="small" onClick={handleOpenFolder}>Folder</Button>
+            <Button size="small" onClick={handleOpenFile}>{t("downloadRow.open")}</Button>
+            <Button size="small" onClick={handleOpenFolder}>{t("downloadRow.openFolder")}</Button>
           </>
         )}
       </div>
@@ -110,30 +110,30 @@ export default function DownloadDetailsWindow() {
 
         {/* File */}
         <div style={card}>
-          <div style={hdr}>File</div>
+          <div style={hdr}>{t("properties.file")}</div>
           <div style={bd}>
-            <div style={r}><span style={l}>Size</span><span style={v}>{formatBytes(item.total_size)}</span></div>
-            <div style={r}><span style={l}>Saved</span><span style={v}>{item.save_path || "—"}</span></div>
-            <div style={r}><span style={l}>Created</span><span style={v}>{formatTimestamp(item.created_at)}</span></div>
+            <div style={r}><span style={l}>{t("properties.size")}</span><span style={v}>{formatBytes(item.total_size)}</span></div>
+            <div style={r}><span style={l}>{t("properties.savePath")}</span><span style={v}>{item.save_path || "—"}</span></div>
+            <div style={r}><span style={l}>{t("properties.created")}</span><span style={v}>{formatTimestamp(item.created_at)}</span></div>
           </div>
         </div>
 
         {/* Download */}
         <div style={card}>
-          <div style={hdr}>Download</div>
+          <div style={hdr}>{t("properties.download")}</div>
           <div style={bd}>
-            <div style={r}><span style={l}>Status</span><span style={v}>{statusString(item.status)}</span></div>
-            <div style={r}><span style={l}>Resume</span><span style={v}>{resumable}</span></div>
-            <div style={r}><span style={l}>Last try</span><span style={v}>{formatTimestamp(item.last_try)}</span></div>
+            <div style={r}><span style={l}>{t("properties.status")}</span><span style={v}>{statusString(item.status)}</span></div>
+            <div style={r}><span style={l}>{t("properties.resumable")}</span><span style={v}>{resumable}</span></div>
+            <div style={r}><span style={l}>{t("properties.lastTry")}</span><span style={v}>{formatTimestamp(item.last_try)}</span></div>
           </div>
         </div>
 
         {/* Network */}
         <div style={card}>
-          <div style={hdr}>Network</div>
+          <div style={hdr}>{t("properties.network")}</div>
           <div style={bd}>
-            <div style={r}><span style={l}>Threads</span><span style={v}>{String(item.connections)}</span></div>
-            <div style={r}><span style={l}>Proxy</span><span style={v}>{item.proxy_name || "—"}</span></div>
+            <div style={r}><span style={l}>{t("properties.connections")}</span><span style={v}>{String(item.connections)}</span></div>
+            <div style={r}><span style={l}>{t("properties.proxy")}</span><span style={v}>{item.proxy_name || "—"}</span></div>
           </div>
         </div>
 

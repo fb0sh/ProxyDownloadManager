@@ -185,7 +185,8 @@ impl DownloadManager {
 
             let proxy_url = self.settings.resolve_proxy_url(&saved_state.proxy_name).unwrap_or_default();
             let s = self.settings.get();
-            let cfg = saved_state.to_engine_config(&proxy_url, &s.user_agent, supports_range, s.max_retries);
+            let mut cfg = saved_state.to_engine_config(&proxy_url, &s.user_agent, supports_range, s.max_retries);
+            cfg.rate_limit_bps = s.global_rate_limit;
             self.worker_pool.add_with_id(cfg, id, self.make_resume_callback()).await?;
         } else {
             if let Ok(Some(item)) = self.facade.get_item(id) {
@@ -197,7 +198,8 @@ impl DownloadManager {
 
                 let settings = self.settings.get();
                 let proxy_url = self.settings.resolve_proxy_url(&item.proxy_name).unwrap_or_default();
-                let cfg = item.to_engine_config(&proxy_url, &settings.user_agent, false, settings.max_retries);
+                let mut cfg = item.to_engine_config(&proxy_url, &settings.user_agent, false, settings.max_retries);
+                cfg.rate_limit_bps = settings.global_rate_limit;
                 self.worker_pool.add_with_id(cfg, id, self.make_resume_callback()).await?;
             }
         }
@@ -307,7 +309,8 @@ impl DownloadManager {
         };
         self.facade.insert_item(&item)?;
 
-        let cfg = item.to_engine_config(&proxy_url_str.unwrap_or_default(), &settings.user_agent, false, settings.max_retries);
+        let mut cfg = item.to_engine_config(&proxy_url_str.unwrap_or_default(), &settings.user_agent, false, settings.max_retries);
+        cfg.rate_limit_bps = settings.global_rate_limit;
         self.worker_pool.add_with_id(cfg, id, self.make_resume_callback()).await?;
 
         Ok(id)

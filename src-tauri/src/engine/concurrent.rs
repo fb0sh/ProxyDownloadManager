@@ -175,7 +175,7 @@ impl ConcurrentDownloader {
             return Err(PdmError::Other(format!("Download incomplete: {}/{} bytes", downloaded, cfg.total_size)));
         }
 
-        finalize_file(&cfg.save_path, &cfg.save_path).await?;
+        finalize_file(&cfg.save_path).await?;
 
         let _ = self.event_tx.send(Event {
             kind: EventKind::DownloadCompleted,

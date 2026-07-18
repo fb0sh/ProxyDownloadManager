@@ -13,7 +13,6 @@ pub enum EventKind {
     DownloadProgress,
     DownloadCompleted,
     DownloadErrored,
-    DownloadRemoved,
 }
 
 #[cfg(test)]
