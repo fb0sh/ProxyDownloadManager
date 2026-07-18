@@ -3,38 +3,29 @@ use rusqlite::{params, Connection};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-fn row_to_item(row: &rusqlite::Row) -> rusqlite::Result<DownloadItem> {
-    let id: u64 = row.get(0)?;
-    let url: String = row.get(1)?;
-    let file_name: String = row.get(2)?;
-    let save_path: String = row.get(3)?;
-    let total_size: u64 = row.get(4)?;
-    let downloaded: u64 = row.get(5)?;
-    let status_str: String = row.get(6)?;
-    let last_try: String = row.get(7)?;
-    let created_at: String = row.get(8)?;
-    let proxy_name: String = row.get(9)?;
-    let connections: u32 = row.get(10)?;
-    let parts_str: String = row.get(11)?;
-    let resumable: Option<i32> = row.get(12)?;
+/// All columns in the downloads table, in order. Used for SELECT queries and row mapping.
+const COLUMNS: &str = "id, url, file_name, save_path, total_size, downloaded, status, last_try, \
+                        created_at, proxy_name, connections, parts, resumable";
 
-    let parts: Vec<DownloadPart> = serde_json::from_str(&parts_str).unwrap_or_default();
-    let status = parse_status(&status_str);
+fn row_to_item(row: &rusqlite::Row) -> rusqlite::Result<DownloadItem> {
+    let parts_str: String = row.get("parts")?;
+    let status_str: String = row.get("status")?;
+    let resumable: Option<i32> = row.get("resumable")?;
 
     Ok(DownloadItem {
-        id,
-        url,
-        file_name,
-        save_path,
-        total_size,
-        downloaded,
-        status,
-        parts,
-        proxy_name,
-        connections,
+        id: row.get("id")?,
+        url: row.get("url")?,
+        file_name: row.get("file_name")?,
+        save_path: row.get("save_path")?,
+        total_size: row.get("total_size")?,
+        downloaded: row.get("downloaded")?,
+        status: parse_status(&status_str),
+        parts: serde_json::from_str(&parts_str).unwrap_or_default(),
+        proxy_name: row.get("proxy_name")?,
+        connections: row.get("connections")?,
         resumable: resumable.map(|v| v != 0),
-        created_at,
-        last_try,
+        created_at: row.get("created_at")?,
+        last_try: row.get("last_try")?,
     })
 }
 
@@ -104,10 +95,7 @@ impl Db {
     pub fn list_downloads(&self) -> PdmResult<Vec<DownloadItem>> {
         let conn = self.conn.lock().map_err(PdmError::from)?;
         let mut stmt = conn
-            .prepare(
-                "SELECT id, url, file_name, save_path, total_size, downloaded, status, last_try,
-                        created_at, proxy_name, connections, parts, resumable FROM downloads",
-            )
+            .prepare(&format!("SELECT {} FROM downloads", COLUMNS))
             .map_err(PdmError::from)?;
 
         let rows = stmt
@@ -151,10 +139,7 @@ impl Db {
     pub fn get_by_id(&self, id: u64) -> PdmResult<Option<DownloadItem>> {
         let conn = self.conn.lock().map_err(PdmError::from)?;
         let mut stmt = conn
-            .prepare(
-                "SELECT id, url, file_name, save_path, total_size, downloaded, status, last_try,
-                        created_at, proxy_name, connections, parts, resumable FROM downloads WHERE id=?1"
-            )
+            .prepare(&format!("SELECT {} FROM downloads WHERE id=?1", COLUMNS))
             .map_err(PdmError::from)?;
 
         let mut rows = stmt.query_map(params![id], |row| row_to_item(row)).map_err(PdmError::from)?;
