@@ -24,10 +24,10 @@ impl ConcurrentDownloader {
             let off = cfg.resume_tasks.iter().map(|t| t.offset + t.length).max().unwrap_or(0);
             (cfg.resume_tasks.clone(), off)
         } else if cfg.is_resume {
-            let remaining = cfg.total_size;
+            let remaining = cfg.total_size.saturating_sub(cfg.downloaded);
             let num_conns = 4.max(cfg.connections);
-            log::info!("[ProxyDM] concurrent id={} resume recompute from scratch", cfg.id);
-            (chunk::compute_chunks(remaining, num_conns, 0), 0)
+            log::info!("[ProxyDM] concurrent id={} resume from {} bytes, {} remaining", cfg.id, cfg.downloaded, remaining);
+            (chunk::compute_chunks(remaining, num_conns, cfg.downloaded), cfg.downloaded)
         } else {
             (chunk::compute_chunks(cfg.total_size, cfg.connections.max(1), 0), 0)
         };
@@ -157,20 +157,18 @@ impl ConcurrentDownloader {
 
         if cancel.load(Ordering::Relaxed) {
             let remaining_tasks = queue.drain();
-            if !remaining_tasks.is_empty() {
-                let saved = crate::types::DownloadState {
-                    url: cfg.url.clone(),
-                    id: cfg.id,
-                    file_name: cfg.file_name.clone(),
-                    save_path: cfg.save_path.clone(),
-                    total_size: cfg.total_size,
-                    downloaded: bytes_written.load(Ordering::Relaxed),
-                    tasks: remaining_tasks,
-                    proxy_name: cfg.proxy_url.clone(),
-                    workers: num_workers,
-                };
-                on_resume(cfg.id, &saved);
-            }
+            let saved = crate::types::DownloadState {
+                url: cfg.url.clone(),
+                id: cfg.id,
+                file_name: cfg.file_name.clone(),
+                save_path: cfg.save_path.clone(),
+                total_size: cfg.total_size,
+                downloaded: bytes_written.load(Ordering::Relaxed),
+                tasks: remaining_tasks,
+                proxy_name: cfg.proxy_url.clone(),
+                workers: num_workers,
+            };
+            on_resume(cfg.id, &saved);
             return Err(PdmError::Cancelled);
         }
 

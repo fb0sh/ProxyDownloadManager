@@ -18,6 +18,7 @@ pub struct EngineConfig {
     pub max_retries: u32,
     pub user_agent: String,
     pub resume_tasks: Vec<Task>,
+    pub downloaded: u64,
 }
 
 impl DownloadItem {
@@ -43,6 +44,7 @@ impl DownloadItem {
             max_retries,
             user_agent: user_agent.to_string(),
             resume_tasks: vec![],
+            downloaded: self.downloaded,
         }
     }
 }
@@ -70,6 +72,7 @@ impl DownloadState {
             max_retries,
             user_agent: user_agent.to_string(),
             resume_tasks: self.tasks.clone(),
+            downloaded: self.downloaded,
         }
     }
 }

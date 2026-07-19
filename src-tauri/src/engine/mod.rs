@@ -142,6 +142,7 @@ mod tests {
             max_retries: 3,
             user_agent: "test".to_string(),
             resume_tasks: vec![],
+            downloaded: 0,
         }
     }
 
