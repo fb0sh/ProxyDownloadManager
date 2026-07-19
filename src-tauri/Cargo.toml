@@ -1,6 +1,6 @@
 [package]
 name = "proxydownloadmanager"
-version = "0.9.4"
+version = "0.9.5"
 description = "Proxy Download Manager - Multi-threaded download manager with proxy support"
 authors = ["fb0sh"]
 edition = "2021"
