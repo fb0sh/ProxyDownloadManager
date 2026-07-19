@@ -152,6 +152,7 @@ mod tests {
             is_resume: false,
             headers: HashMap::new(),
             proxy_url: String::new(),
+            proxy_name: String::new(),
             total_size: 100,
             supports_range: false,
             rate_limit_bps: 0,

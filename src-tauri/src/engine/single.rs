@@ -80,7 +80,7 @@ impl SingleDownloader {
                     total_size,
                     downloaded: written,
                     tasks: vec![crate::types::Task { offset: written, length: remaining }],
-                    proxy_name: cfg.proxy_url.clone(),
+                    proxy_name: cfg.proxy_name.clone(),
                     workers: 1,
                 };
                 on_resume(id, &saved);

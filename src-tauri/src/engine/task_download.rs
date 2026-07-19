@@ -84,6 +84,21 @@ pub async fn download_task(
     loop {
         // Check cancel (responsive Stop even during streaming)
         if cancel.load(Ordering::Relaxed) {
+            // Flush buffered data before returning to avoid data loss
+            if !buf.is_empty() {
+                if let Err(e) = write_at(file, &buf, base_offset + written) {
+                    return TaskResult::Fatal(format!("write_at error on cancel: {}", e));
+                }
+                written += buf.len() as u64;
+                bytes_written.fetch_add(buf.len() as u64, Ordering::Relaxed);
+                buf.clear();
+            }
+            let remaining = chunk_size.saturating_sub(written);
+            if remaining > 0 {
+                return TaskResult::Partial {
+                    remaining: Task { offset: base_offset + written, length: remaining },
+                };
+            }
             return TaskResult::Cancelled;
         }
 
@@ -127,6 +142,21 @@ pub async fn download_task(
             }
             Err(_elapsed) => {
                 if cancel.load(Ordering::Relaxed) {
+                    // Flush buffered data before returning
+                    if !buf.is_empty() {
+                        if let Err(e) = write_at(file, &buf, base_offset + written) {
+                            return TaskResult::Fatal(format!("write_at error on cancel: {}", e));
+                        }
+                        written += buf.len() as u64;
+                        bytes_written.fetch_add(buf.len() as u64, Ordering::Relaxed);
+                        buf.clear();
+                    }
+                    let remaining = chunk_size.saturating_sub(written);
+                    if remaining > 0 {
+                        return TaskResult::Partial {
+                            remaining: Task { offset: base_offset + written, length: remaining },
+                        };
+                    }
                     return TaskResult::Cancelled;
                 }
                 continue;

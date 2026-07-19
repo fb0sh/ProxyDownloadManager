@@ -3,6 +3,7 @@ use std::collections::HashMap;
 
 /// Engine-facing download configuration.
 /// `proxy_url` is the resolved proxy URL (not a proxy name key).
+/// `proxy_name` is the user-facing proxy name key (for saving to gob).
 pub struct EngineConfig {
     pub url: String,
     pub save_path: String,
@@ -11,6 +12,7 @@ pub struct EngineConfig {
     pub is_resume: bool,
     pub headers: HashMap<String, String>,
     pub proxy_url: String,
+    pub proxy_name: String,
     pub total_size: u64,
     pub supports_range: bool,
     pub rate_limit_bps: u64,
@@ -37,6 +39,7 @@ impl DownloadItem {
             is_resume,
             headers: HashMap::new(),
             proxy_url: proxy_url.to_string(),
+            proxy_name: self.proxy_name.clone(),
             total_size: self.total_size,
             supports_range: self.resumable.unwrap_or(true),
             rate_limit_bps: 0,
@@ -65,6 +68,7 @@ impl DownloadState {
             is_resume: true,
             headers: HashMap::new(),
             proxy_url: proxy_url.to_string(),
+            proxy_name: self.proxy_name.clone(),
             total_size: self.total_size,
             supports_range,
             rate_limit_bps: 0,

@@ -67,6 +67,7 @@ impl DownloadStateFacade {
         self.runtime.remove(id);
         if let Ok(Some(mut item)) = self.db.get_by_id(id) {
             item.status = DownloadStatus::Completed;
+            item.downloaded = item.total_size;
             for part in item.parts.iter_mut() {
                 if !matches!(part.status, PartStatus::Completed) {
                     part.status = PartStatus::Completed;

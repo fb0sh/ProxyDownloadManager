@@ -135,6 +135,7 @@ mod tests {
             is_resume: false,
             headers: std::collections::HashMap::new(),
             proxy_url: String::new(),
+            proxy_name: String::new(),
             total_size: 1000,
             supports_range,
             rate_limit_bps: 0,
