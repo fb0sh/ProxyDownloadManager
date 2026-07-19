@@ -151,3 +151,190 @@ pub async fn probe_with_fallback(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// Spawn a minimal HTTP server that responds with the given status, content-length,
+    /// and optional Content-Disposition header. Returns the base URL.
+    async fn spawn_mock_server(
+        status_line: &str,
+        content_length: u64,
+        content_disposition: Option<&str>,
+    ) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        // Own the strings before moving into the spawned task
+        let status_line = status_line.to_string();
+        let cd = content_disposition.map(|s| s.to_string());
+
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            // Read the full request (drain until we see the end-of-headers marker)
+            let mut buf = vec![0u8; 4096];
+            let mut total = Vec::new();
+            loop {
+                let n = stream.read(&mut buf).await.unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                total.extend_from_slice(&buf[..n]);
+                if total.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+
+            let mut resp = format!("{}\r\nContent-Length: {}\r\n", status_line, content_length);
+            if let Some(ref header) = cd {
+                resp.push_str(&format!("Content-Disposition: {}\r\n", header));
+            }
+            resp.push_str("\r\n");
+            let _ = stream.write_all(resp.as_bytes()).await;
+        });
+
+        format!("http://{}", addr)
+    }
+
+    // ── ProbeOutcome construction ──────────────────────────────────────────
+
+    #[test]
+    fn probe_outcome_fields_are_set_correctly() {
+        let outcome = ProbeOutcome {
+            file_name: "report.pdf".to_string(),
+            file_size: 4096,
+            supports_range: true,
+        };
+        assert_eq!(outcome.file_name, "report.pdf");
+        assert_eq!(outcome.file_size, 4096);
+        assert!(outcome.supports_range);
+    }
+
+    #[test]
+    fn probe_outcome_defaults_for_failed_probe() {
+        let outcome = ProbeOutcome {
+            file_name: "download".to_string(),
+            file_size: 0,
+            supports_range: false,
+        };
+        assert_eq!(outcome.file_name, "download");
+        assert_eq!(outcome.file_size, 0);
+        assert!(!outcome.supports_range);
+    }
+
+    // ── probe_with_fallback: filename override on success ──────────────────
+
+    #[tokio::test]
+    async fn fallback_override_used_as_is_on_success() {
+        let url = spawn_mock_server(
+            "HTTP/1.1 200 OK",
+            1024,
+            Some("attachment; filename=\"server_name.dat\""),
+        )
+        .await;
+
+        let pool = Arc::new(NetworkPool::new(false));
+        let headers = HashMap::new();
+        let uas = vec!["TestUA/1.0".to_string()];
+
+        let outcome =
+            probe_with_fallback(&url, &headers, None, &pool, &uas, "my_override.txt").await;
+
+        assert_eq!(outcome.file_name, "my_override.txt");
+        assert_eq!(outcome.file_size, 1024);
+        assert!(!outcome.supports_range);
+    }
+
+    // ── probe_with_fallback: error fallback with override ──────────────────
+
+    #[tokio::test]
+    async fn fallback_override_used_as_is_on_error() {
+        // Port 1 is almost certainly not listening → connection refused → probe error
+        let url = "http://127.0.0.1:1/path/file.pdf";
+        let pool = Arc::new(NetworkPool::new(false));
+        let headers = HashMap::new();
+        let uas = vec!["TestUA/1.0".to_string()];
+
+        let outcome =
+            probe_with_fallback(url, &headers, None, &pool, &uas, "forced_name.zip").await;
+
+        assert_eq!(outcome.file_name, "forced_name.zip");
+        assert_eq!(outcome.file_size, 0);
+        assert!(!outcome.supports_range);
+    }
+
+    // ── probe_with_fallback: error fallback derives name from URL ──────────
+
+    #[tokio::test]
+    async fn fallback_empty_override_on_error_uses_from_url() {
+        let url = "http://127.0.0.1:1/some/deep/archive.tar.gz";
+        let pool = Arc::new(NetworkPool::new(false));
+        let headers = HashMap::new();
+        let uas = vec!["TestUA/1.0".to_string()];
+
+        let outcome = probe_with_fallback(url, &headers, None, &pool, &uas, "").await;
+
+        let expected = crate::filename::from_url(url).unwrap_or_else(|| "download".to_string());
+        assert_eq!(outcome.file_name, expected);
+        assert_eq!(outcome.file_size, 0);
+        assert!(!outcome.supports_range);
+    }
+
+    #[tokio::test]
+    async fn fallback_empty_override_on_error_no_extension_uses_download() {
+        // URL with no recognizable filename in path → from_url may return None → "download"
+        let url = "http://127.0.0.1:1/a";
+        let pool = Arc::new(NetworkPool::new(false));
+        let headers = HashMap::new();
+        let uas = vec!["TestUA/1.0".to_string()];
+
+        let outcome = probe_with_fallback(url, &headers, None, &pool, &uas, "").await;
+
+        let expected = crate::filename::from_url(url).unwrap_or_else(|| "download".to_string());
+        assert_eq!(outcome.file_name, expected);
+        assert_eq!(outcome.file_size, 0);
+        assert!(!outcome.supports_range);
+    }
+
+    // ── probe_with_fallback: empty override on success uses probe name ─────
+
+    #[tokio::test]
+    async fn fallback_empty_override_on_success_uses_probe_filename() {
+        let url = spawn_mock_server(
+            "HTTP/1.1 200 OK",
+            2048,
+            Some("attachment; filename=\"from_header.xlsx\""),
+        )
+        .await;
+
+        let pool = Arc::new(NetworkPool::new(false));
+        let headers = HashMap::new();
+        let uas = vec!["TestUA/1.0".to_string()];
+
+        let outcome = probe_with_fallback(&url, &headers, None, &pool, &uas, "").await;
+
+        assert_eq!(outcome.file_name, "from_header.xlsx");
+        assert_eq!(outcome.file_size, 2048);
+        assert!(!outcome.supports_range);
+    }
+
+    #[tokio::test]
+    async fn fallback_empty_override_on_success_uses_url_when_no_cd() {
+        // No Content-Disposition header → filename derived from URL path via extract_filename
+        let url = spawn_mock_server("HTTP/1.1 200 OK", 512, None).await;
+
+        let pool = Arc::new(NetworkPool::new(false));
+        let headers = HashMap::new();
+        let uas = vec!["TestUA/1.0".to_string()];
+
+        let outcome = probe_with_fallback(&url, &headers, None, &pool, &uas, "").await;
+
+        // No CD header → extract_filename falls back to from_url(url)
+        let expected = crate::filename::extract_filename(&url, None)
+            .unwrap_or_else(|| "download".to_string());
+        assert_eq!(outcome.file_name, expected);
+        assert_eq!(outcome.file_size, 512);
+    }
+}
