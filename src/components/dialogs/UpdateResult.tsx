@@ -48,13 +48,11 @@ export default function UpdateResult({ updateInfo, onDownload }: UpdateResultPro
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         <Text>
-          {t("about.newVersion")}: <strong>{updateInfo.latest_version}</strong>
+          {t("about.version")} {updateInfo.current_version}
           <span style={{ margin: "0 4px", display: "inline-flex", verticalAlign: "middle" }}>
             <ArrowRightIcon size={12} />
           </span>
-          <Text size="small" style={{ color: "var(--fgColor-muted, #656d76)" }}>
-            {t("about.version")} {updateInfo.current_version}
-          </Text>
+          <strong>{updateInfo.latest_version}</strong>
         </Text>
 
         {recommendedAsset && (
