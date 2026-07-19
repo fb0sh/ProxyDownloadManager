@@ -1,8 +1,7 @@
-import { useState } from "react";
 import { Text, Label, ProgressBar, Button } from "@primer/react";
 import { CopyIcon } from "@primer/octicons-react";
 import { Dialog } from "@primer/react/experimental";
-import { useDownload } from "../../query/downloadQueries";
+import { useDownloadDetail } from "../../hooks/useDownloadDetail";
 import { formatBytes } from "../../utils/format";
 import { statusColor, statusString } from "../../utils/download";
 import { sectionCard, sectionHeader } from "../../utils/styles";
@@ -51,16 +50,7 @@ function InfoRow({ label, value, last }: { label: string; value: string; last?: 
 }
 
 export default function PropertiesDialog({ id, onClose }: PropertiesDialogProps) {
-  const item = useDownload(id);
-  const [urlCopied, setUrlCopied] = useState(false);
-
-  const handleCopyUrl = async () => {
-    try {
-      await navigator.clipboard.writeText(item?.url ?? "");
-      setUrlCopied(true);
-      setTimeout(() => setUrlCopied(false), 2000);
-    } catch {} // clipboard not available
-  };
+  const { item, urlCopied, handleCopyUrl } = useDownloadDetail(id);
 
   if (!item) return null;
 

@@ -1,10 +1,9 @@
-import { useState } from "react";
 import { Text, Label, Button } from "@primer/react";
 import { CopyIcon } from "@primer/octicons-react";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { formatBytes } from "./utils/format";
-import { formatTimestamp, statusColor, statusString, openFile, openFolder } from "./utils/download";
-import { useDownload } from "./query/downloadQueries";
+import { formatTimestamp, statusColor, statusString } from "./utils/download";
+import { useDownloadDetail, useDownloadIdFromUrl } from "./hooks/useDownloadDetail";
 import { t } from "./i18n";
 
 const card: React.CSSProperties = {
@@ -31,30 +30,18 @@ const v: React.CSSProperties = {
 };
 
 export default function DownloadDetailsWindow() {
-  const p = new URLSearchParams(window.location.search);
-  const idParam = p.get("id");
-  const id = idParam ? Number(idParam) : undefined;
-  const item = useDownload(id);
-  const [urlCopied, setUrlCopied] = useState(false);
-
-  const handleCopyUrl = async () => {
-    try {
-      await navigator.clipboard.writeText(item?.url ?? "");
-      setUrlCopied(true);
-      setTimeout(() => setUrlCopied(false), 2000);
-    } catch {} // clipboard not available
-  };
+  const idParam = new URLSearchParams(window.location.search).get("id");
+  const id = useDownloadIdFromUrl();
+  const { item, urlCopied, handleCopyUrl, handleOpenFile, handleOpenFolder } = useDownloadDetail(id);
 
   const closeWindow = () => { getCurrentWebviewWindow().close(); };
 
-  const handleOpenFile = async () => {
-    if (!item) return;
-    await openFile(item.save_path);
+  const handleOpenFileAndClose = async () => {
+    await handleOpenFile();
     closeWindow();
   };
-  const handleOpenFolder = async () => {
-    if (!item) return;
-    await openFolder(item.save_path);
+  const handleOpenFolderAndClose = async () => {
+    await handleOpenFolder();
     closeWindow();
   };
 
@@ -77,8 +64,8 @@ export default function DownloadDetailsWindow() {
         <Label variant={statusColor(item.status)} style={{ fontSize: 11 }}>{statusString(item.status)}</Label>
         {item.status === "completed" && (
           <>
-            <Button size="small" onClick={handleOpenFile}>{t("downloadRow.open")}</Button>
-            <Button size="small" onClick={handleOpenFolder}>{t("downloadRow.openFolder")}</Button>
+            <Button size="small" onClick={handleOpenFileAndClose}>{t("downloadRow.open")}</Button>
+            <Button size="small" onClick={handleOpenFolderAndClose}>{t("downloadRow.openFolder")}</Button>
           </>
         )}
       </div>
