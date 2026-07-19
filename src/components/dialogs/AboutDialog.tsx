@@ -1,63 +1,30 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { Text, Button, Select, Spinner } from "@primer/react";
-import {
-  CheckIcon,
-  DownloadIcon,
-  SyncIcon,
-  LinkExternalIcon,
-  ArrowRightIcon,
-} from "@primer/octicons-react";
+import { SyncIcon } from "@primer/octicons-react";
 import { Dialog } from "@primer/react/experimental";
-import { invoke } from "@tauri-apps/api/core";
-import { getVersion } from "@tauri-apps/api/app";
 import { useSettings } from "../../query/downloadQueries";
+import { useUpdateChecker } from "../../hooks/useUpdateChecker";
+import UpdateResult from "./UpdateResult";
 import { t } from "../../i18n";
-import type { UpdateInfo } from "../../types";
 
 interface AboutDialogProps {
   onClose: () => void;
   onDownloadUpdate: (url: string) => void;
 }
 
-type CheckState = "idle" | "checking" | "done" | "error";
-
 export default function AboutDialog({ onClose, onDownloadUpdate }: AboutDialogProps) {
   console.debug('[ProxyDM FE] AboutDialog mount');
-  const [version, setVersion] = useState("");
   const [proxyName, setProxyName] = useState("");
-  const [checkState, setCheckState] = useState<CheckState>("idle");
-  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
-  const [errorMsg, setErrorMsg] = useState("");
 
   const { settings: loadedSettings } = useSettings();
   const proxies = loadedSettings?.proxies ?? {};
 
-  useEffect(() => {
-    getVersion().then(setVersion).catch(() => setVersion("?"));
-  }, []);
-
-  const handleCheck = async () => {
-    setCheckState("checking");
-    setErrorMsg("");
-    try {
-      const info = await invoke<UpdateInfo>("check_update", {
-        proxyName,
-      });
-      setUpdateInfo(info);
-      setCheckState("done");
-    } catch (e) {
-      setErrorMsg(String(e));
-      setCheckState("error");
-    }
-  };
+  const { version, checkState, updateInfo, errorMsg, handleCheck } = useUpdateChecker(proxyName);
 
   const handleDownload = (url: string) => {
     onDownloadUpdate(url);
     onClose();
   };
-
-  const recommendedAsset = updateInfo?.assets.find((a) => a.recommended);
-  const otherAssets = updateInfo?.assets.filter((a) => !a.recommended) ?? [];
 
   return (
     <Dialog title={t("about.title")} onClose={onClose}>
@@ -118,100 +85,7 @@ export default function AboutDialog({ onClose, onDownloadUpdate }: AboutDialogPr
           </div>
 
           {checkState === "done" && updateInfo && (
-            <div
-              style={{
-                padding: "8px 12px",
-                borderRadius: 6,
-                backgroundColor: updateInfo.has_update
-                  ? "var(--attention-bgColor, #fff8c5)"
-                  : "var(--success-bgColor, #dafbe1)",
-                border: `1px solid ${
-                  updateInfo.has_update
-                    ? "var(--attention-borderColor, #d4a72c)"
-                    : "var(--success-borderColor, #a6d3a0)"
-                }`,
-                fontSize: 13,
-              }}
-            >
-              {updateInfo.has_update ? (
-                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  <Text>
-                    {t("about.newVersion")}: <strong>{updateInfo.latest_version}</strong>
-                    <span style={{ margin: "0 4px", display: "inline-flex", verticalAlign: "middle" }}><ArrowRightIcon size={12} /></span>
-                    <Text size="small" style={{ color: "var(--fgColor-muted, #656d76)" }}>
-                      {t("about.version")} {updateInfo.current_version}
-                    </Text>
-                  </Text>
-
-                  {/* Recommended asset */}
-                  {recommendedAsset && (
-                    <Button
-                      size="small"
-                      variant="primary"
-                      leadingVisual={DownloadIcon}
-                      onClick={() => handleDownload(recommendedAsset.url)}
-                    >
-                      {t("about.downloadUpdate")} ({recommendedAsset.name})
-                    </Button>
-                  )}
-
-                  {/* Other platform assets */}
-                  {otherAssets.length > 0 && (
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-                      {otherAssets.map((asset) => (
-                        <Button
-                          key={asset.name}
-                          size="small"
-                          leadingVisual={DownloadIcon}
-                          onClick={() => handleDownload(asset.url)}
-                        >
-                          {asset.name}
-                        </Button>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* Release notes */}
-                  {updateInfo.release_notes && (
-                    <div>
-                      <Text weight="semibold" size="small" style={{ display: "block", marginBottom: 4 }}>
-                        {t("about.whatsNew")}
-                      </Text>
-                      <div
-                        style={{
-                          maxHeight: 200,
-                          overflow: "auto",
-                          padding: "8px 10px",
-                          borderRadius: 6,
-                          fontSize: 12,
-                          lineHeight: 1.6,
-                          whiteSpace: "pre-wrap",
-                          fontFamily: "ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace",
-                          backgroundColor: "var(--bgColor-muted, #f6f8fa)",
-                          border: "1px solid var(--borderColor-default, #d0d7de)",
-                        }}
-                      >
-                        {updateInfo.release_notes}
-                      </div>
-                    </div>
-                  )}
-
-                  <a
-                    href={updateInfo.release_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    style={{ fontSize: 12, display: "inline-flex", alignItems: "center", gap: 4 }}
-                  >
-                    {t("about.releasePage")} <LinkExternalIcon size={12} />
-                  </a>
-                </div>
-              ) : (
-                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <CheckIcon size={16} />
-                  <Text>{t("about.upToDate")}</Text>
-                </div>
-              )}
-            </div>
+            <UpdateResult updateInfo={updateInfo} onDownload={handleDownload} />
           )}
 
           {checkState === "error" && (
