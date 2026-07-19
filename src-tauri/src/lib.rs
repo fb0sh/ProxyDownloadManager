@@ -193,7 +193,7 @@ pub fn run() {
 
             let danger_accept_invalid_certs = settings.danger_accept_invalid_certs;
             let next_id_start = db.max_id().unwrap_or(0) + 1;
-            let worker_pool = crate::worker::WorkerPool::new(8, event_tx.clone(), danger_accept_invalid_certs, next_id_start);
+            let worker_pool = crate::worker::WorkerPool::new(8, event_tx.clone(), danger_accept_invalid_certs, next_id_start, settings.global_rate_limit);
             let logger = crate::logger::Logger::new().expect("Failed to initialize logger");
 
             let network_svc = Arc::new(NetworkService::new(worker_pool.pool_ref()));

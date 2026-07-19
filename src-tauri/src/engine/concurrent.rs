@@ -126,7 +126,11 @@ impl ConcurrentDownloader {
                                 retries_left -= 1;
                                 queue.push(task);
                             } else {
-                                log::error!("[ProxyDM] retries exhausted for offset={}, stopping", task.offset);
+                                log::error!("retries exhausted for offset={}, stopping", task.offset);
+                                // Set cancel flag so other workers stop and the
+                                // concurrent downloader enters the cancel path
+                                // (saves resume state instead of degrading to single)
+                                cancel.store(true, Ordering::Relaxed);
                                 let _ = event_tx.send(crate::types::Event {
                                     kind: crate::types::EventKind::DownloadErrored,
                                     download_id,

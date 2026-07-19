@@ -14,17 +14,19 @@ pub struct WorkerPool {
     event_tx: mpsc::UnboundedSender<Event>,
     active: Arc<Mutex<HashMap<u64, (Arc<AtomicBool>, tokio::task::JoinHandle<()>)>>>,
     next_id: AtomicU64,
+    global_rate_limit: u64,
 }
 
 impl WorkerPool {
-    pub fn new(max_workers: u32, event_tx: mpsc::UnboundedSender<Event>, danger_accept_invalid_certs: bool, next_id_start: u64) -> Self {
-        log::info!("[ProxyDM] WorkerPool starting next_id from {}", next_id_start);
+    pub fn new(max_workers: u32, event_tx: mpsc::UnboundedSender<Event>, danger_accept_invalid_certs: bool, next_id_start: u64, global_rate_limit: u64) -> Self {
+        log::info!("WorkerPool starting next_id from {}", next_id_start);
         Self {
             semaphore: Arc::new(Semaphore::new(max_workers as usize)),
             pool: Arc::new(NetworkPool::new(danger_accept_invalid_certs)),
             event_tx,
             active: Arc::new(Mutex::new(HashMap::new())),
             next_id: AtomicU64::new(next_id_start),
+            global_rate_limit,
         }
     }
 
@@ -47,10 +49,11 @@ impl WorkerPool {
         let event_tx = self.event_tx.clone();
         let pool = self.pool.clone();
         let active_map = self.active.clone();
+        let global_rate_limit = self.global_rate_limit;
 
         let handle = tokio::spawn(async move {
             let limiter = Arc::new(MultiLimiter::new(
-                0, // global rate limit handled elsewhere
+                global_rate_limit,
                 cfg.rate_limit_bps,
             ));
 
@@ -166,7 +169,7 @@ mod tests {
     #[test]
     fn test_next_id_increments() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let pool = WorkerPool::new(4, tx, false, 10);
+        let pool = WorkerPool::new(4, tx, false, 10, 0);
         assert_eq!(pool.next_id(), 10);
         assert_eq!(pool.next_id(), 11);
         assert_eq!(pool.next_id(), 12);
@@ -175,7 +178,7 @@ mod tests {
     #[tokio::test]
     async fn test_new_pool_initial_state() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let pool = WorkerPool::new(8, tx, false, 1);
+        let pool = WorkerPool::new(8, tx, false, 1, 0);
         assert_eq!(pool.next_id(), 1); // first call returns 1, increments to 2
         // Active map should be empty
         let active = pool.active.lock().await;
@@ -185,7 +188,7 @@ mod tests {
     #[tokio::test]
     async fn test_cancel_returns_none_for_unknown_id() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let pool = WorkerPool::new(4, tx, false, 1);
+        let pool = WorkerPool::new(4, tx, false, 1, 0);
         let result = pool.cancel(999).await;
         assert!(result.is_none());
     }
@@ -193,7 +196,7 @@ mod tests {
     #[tokio::test]
     async fn test_cancel_returns_handle_for_active_task() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let pool = WorkerPool::new(4, tx, false, 1);
+        let pool = WorkerPool::new(4, tx, false, 1, 0);
 
         // Add a task — it will fail quickly (unreachable URL) but will be in the active map briefly
         let id = pool.next_id();
@@ -213,7 +216,7 @@ mod tests {
     #[tokio::test]
     async fn test_cancel_and_wait_completes() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let pool = WorkerPool::new(4, tx, false, 1);
+        let pool = WorkerPool::new(4, tx, false, 1, 0);
 
         let id = pool.next_id();
         let _ = pool.add_with_id(test_config(), id, on_resume()).await;
@@ -229,7 +232,7 @@ mod tests {
     #[tokio::test]
     async fn test_cancel_and_wait_for_unknown_id() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let pool = WorkerPool::new(4, tx, false, 1);
+        let pool = WorkerPool::new(4, tx, false, 1, 0);
 
         // Should not panic or hang
         pool.cancel_and_wait(999).await;
@@ -238,7 +241,7 @@ mod tests {
     #[tokio::test]
     async fn test_concurrent_cancel_safety() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let pool = WorkerPool::new(4, tx, false, 1);
+        let pool = WorkerPool::new(4, tx, false, 1, 0);
 
         // Spawn multiple tasks
         let id1 = pool.next_id();
