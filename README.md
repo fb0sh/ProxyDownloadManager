@@ -97,31 +97,45 @@ pnpm tauri dev
 ### 项目结构
 
 ```
-├── src/                          # React 前端
-│   ├── components/dialogs/       # 各对话框组件
-│   ├── components/               # Layout、Toolbar、DownloadTable
-│   ├── hooks/                    # 自定义 Hooks
-│   ├── i18n/                     # 中英文翻译
-│   ├── stores/                   # Zustand 状态管理
-│   ├── query/                    # TanStack Query 配置
-│   └── App.tsx                   # 根组件
-├── src-tauri/                    # Rust 后端
+├── src/                              # React 前端
+│   ├── components/
+│   │   ├── dialogs/                  # SettingsDialog、AboutDialog、PropertiesDialog 等
+│   │   ├── columns.tsx               # DownloadTable 列定义
+│   │   ├── Layout.tsx / Toolbar.tsx  # 布局与工具栏
+│   │   └── DownloadTable.tsx         # 下载列表主表格
+│   ├── hooks/
+│   │   ├── useDownloadEvents.ts      # 统一 Tauri 事件订阅
+│   │   ├── useDownloadDetail.ts      # 下载详情（PropertiesDialog/DetailsWindow 共用）
+│   │   ├── useSettingsForm.ts        # 设置表单状态管理
+│   │   ├── useUpdateChecker.ts       # 版本检查逻辑
+│   │   ├── useContextMenu.ts         # 右键菜单状态
+│   │   └── useWindowManager.ts       # Tauri 窗口创建
+│   ├── contexts/AppContext.tsx        # 全局状态 + actions context
+│   ├── utils/
+│   │   ├── format.ts                 # formatBytes、statusString 等纯函数
+│   │   ├── url.ts                    # looksLikeDownloadUrl、extractFilename
+│   │   └── file.ts                   # openFile、openFolder（Tauri IPC）
+│   ├── constants/events.json         # 事件名定义（与 Rust 共享）
+│   ├── i18n/                         # 中英文翻译
+│   ├── stores/                       # Zustand 状态管理
+│   └── App.tsx                       # 根组件
+├── src-tauri/                        # Rust 后端
 │   └── src/
-│       ├── cmd.rs                # Tauri 命令（IPC 处理器）
-│       ├── lib.rs                # 应用启动、插件、托盘
-│       ├── engine/               # 并发/单线程下载引擎
-│       ├── worker.rs             # 工作池
-│       ├── network/              # HTTP 客户端池、速率限制
-│       ├── ws/                   # WebSocket 服务器（浏览器扩展通信）
-│       ├── state/                # SQLite 数据库、状态快照
-│       ├── config.rs             # TOML 配置加载
-│       ├── probe.rs              # URL 探测（文件大小、Range 支持）
-│       └── types.rs              # 共享类型定义
-├── browsers-extension/           # 浏览器扩展
-│   ├── chrome/
-│   ├── edge/
-│   └── firefox/
-└── docs/                         # 设计文档、截图
+│       ├── types/                    # 类型定义（error/download/config/event 子模块）
+│       ├── engine/                   # 下载引擎（concurrent.rs + file_io.rs + task_download.rs + chunk.rs）
+│       ├── worker.rs                 # 工作池（含全局/单任务限速）
+│       ├── network/                  # HTTP 客户端池、MultiLimiter 速率限制
+│       ├── state/                    # gob.rs（全局状态）、db.rs（SQLite）、runtime.rs
+│       ├── services/                 # SettingsService、NetworkService
+│       ├── probe.rs                  # URL 探测 + mock 测试
+│       ├── filename.rs               # 文件名提取（URL + Content-Disposition）
+│       ├── logger.rs                 # log crate 集成，统一日志
+│       ├── event_bus.rs              # Tauri 前端事件桥接
+│       ├── download_manager.rs       # 下载编排器（ facade 模式）
+│       ├── cmd.rs                    # Tauri IPC 命令
+│       └── lib.rs                    # 应用启动、插件注册
+├── browsers-extension/               # 浏览器扩展（Chrome/Edge/Firefox）
+└── docs/                             # 设计文档
 ```
 
 ## 构建
@@ -139,9 +153,10 @@ pnpm tauri build
 | 桌面框架   | [Tauri 2](https://v2.tauri.app/) |
 | 前端      | [React 19](https://react.dev/)、[TypeScript](https://www.typescriptlang.org/)、[Vite](https://vite.dev/) |
 | UI        | [Primer React 38](https://primer.style/react/)、[Octicons](https://primer.style/octicons/) |
-| 状态管理   | [Zustand 5](https://github.com/pmndrs/zustand)、[TanStack Query 5](https://tanstack.com/query) |
+| 状态管理   | [Zustand 5](https://github.com/pmndrs/zustand) |
 | 后端      | [Rust](https://www.rustlang.org/)、[tokio](https://tokio.rs/)、[reqwest 0.12](https://docs.rs/reqwest/) |
 | 存储      | SQLite via [rusqlite](https://github.com/rusqlite/rusqlite) |
+| 日志      | [log](https://docs.rs/log/) crate（统一 `log::info!` / `log::error!`，输出到 `~/Library/Logs/ProxyDM/proxydm.log`）|
 | 代理      | HTTP / SOCKS5 via `reqwest` |
 | 扩展      | Chrome MV3、Firefox Manifest V2 |
 
@@ -167,16 +182,17 @@ pnpm tauri build
 
 ### 开发约定
 
-- **前端** — React 函数组件 + Hooks，Primer React 保持 UI 一致，i18n 键在 `src/i18n/`
-- **后端** — Rust Tauri 命令在 `cmd.rs`，下载引擎在 `engine/`
-- **浏览器扩展** — Chrome/Edge 使用 MV3，Firefox 使用 Manifest V2，通过 WebSocket（`ws://127.0.0.1:18999`）与桌面端通信
+- **前端** — React 函数组件 + Hooks；事件名统一在 `src/constants/events.json` 定义；i18n 键在 `src/i18n/`
+- **后端** — Tauri 命令在 `cmd.rs`，下载引擎在 `engine/`；日志用 `log::info!` / `log::error!`（不用 `eprintln!`）
+- **事件名同步** — `src-tauri/events.json` 为唯一数据源，`build.rs` 编译时校验与前端拷贝一致
+- **浏览器扩展** — Chrome/Edge MV3，Firefox Manifest V2，WebSocket（`ws://127.0.0.1:18999`）通信
 - **提交格式** — [Conventional Commits](https://www.conventionalcommits.org/)：`feat:`、`fix:`、`docs:`、`refactor:` 等
 
 ### 添加语言
 
 1. 创建 `src/i18n/xx.ts`，导出 `Translations` 对象
 2. 在 `src/i18n/index.ts` 中注册
-3. 在 Rust `types.rs` 和 TypeScript `src/types.ts` 中添加语言代码到 `Settings.language`
+3. 在 `src-tauri/src/types/config.rs` 和 `src/utils/format.ts` 中添加语言代码到 `Settings.language`
 
 ## 许可
 
