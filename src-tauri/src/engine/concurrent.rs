@@ -27,7 +27,12 @@ impl ConcurrentDownloader {
             let remaining = cfg.total_size.saturating_sub(cfg.downloaded);
             let num_conns = 4.max(cfg.connections);
             log::info!("[ProxyDM] concurrent id={} resume from {} bytes, {} remaining", cfg.id, cfg.downloaded, remaining);
-            (chunk::compute_chunks(remaining, num_conns, cfg.downloaded), cfg.downloaded)
+            let base = cfg.downloaded;
+            let tasks: Vec<Task> = chunk::compute_chunks(remaining, num_conns, 0)
+                .into_iter()
+                .map(|t| Task { offset: t.offset + base, length: t.length })
+                .collect();
+            (tasks, base)
         } else {
             (chunk::compute_chunks(cfg.total_size, cfg.connections.max(1), 0), 0)
         };
