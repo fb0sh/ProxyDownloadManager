@@ -182,9 +182,13 @@ pub fn run() {
                 log::error!("[ProxyDM] Failed to deploy browser extensions: {}", e);
             }
 
-            let db = crate::state::db::Db::new().expect("Failed to initialize database");
             let settings_svc = Arc::new(SettingsService::new());
             let settings = settings_svc.get();
+
+            // Initialize the shared home directory from settings
+            crate::state::gob::init_home_dir(settings.home_dir.clone());
+
+            let db = crate::state::db::Db::new().expect("Failed to initialize database");
 
             let _ = crate::tray::build_tray(app.handle(), &settings.global_shortcut);
 

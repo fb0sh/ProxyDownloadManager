@@ -28,8 +28,9 @@ impl Logger {
     }
 
     fn log_path() -> PathBuf {
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        home.join(".ProxyDM/logs/proxydm.log")
+        PathBuf::from(crate::state::gob::state_dir().parent()
+            .unwrap_or(&PathBuf::from("."))
+            .to_path_buf()).join("logs/proxydm.log")
     }
 
     pub fn log(&self, level: &str, msg: &str) {
@@ -145,8 +146,7 @@ fn is_leap(year: i64) -> bool {
 }
 
 pub fn log_path_str() -> String {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    home.join(".ProxyDM/logs/proxydm.log").to_string_lossy().to_string()
+    Logger::log_path().to_string_lossy().to_string()
 }
 
 pub fn read_logs(max_lines: usize) -> Result<Vec<String>, String> {

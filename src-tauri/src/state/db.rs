@@ -35,8 +35,10 @@ pub struct Db {
 
 impl Db {
     fn db_path() -> PathBuf {
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        home.join(".ProxyDM/state/downloads.db")
+        let home = crate::state::gob::state_dir().parent()
+            .unwrap_or(&std::path::PathBuf::from("."))
+            .to_path_buf();
+        home.join("state/downloads.db")
     }
 
     pub fn new() -> PdmResult<Self> {
