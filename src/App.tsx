@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Layout from "./components/Layout";
 import DeleteDialog from "./components/dialogs/DeleteDialog";
 import SettingsDialog from "./components/dialogs/SettingsDialog";
@@ -14,7 +14,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { setLanguage } from "./i18n";
 import type { DownloadItem } from "./types";
-import { AppProvider, useAppContext, type AppActions } from "./contexts/AppContext";
+import { AppProvider, useAppContext, type AppActions, type Dialog } from "./contexts/AppContext";
 
 function AppInner() {
   const { dialog, setDialog, selectedIds, setSelectedIds } = useAppContext();
@@ -61,16 +61,18 @@ function AppInner() {
   );
 }
 
-// useActions is called inside the React tree (AppProvider from main.tsx wraps App),
-// so useAppContext() works. The actions object is memoized per (downloads, selectedIds)
-// which change together during active use.
-function useActions(): AppActions {
+// Takes state setters as params — no useAppContext() dependency,
+// so this can be called at the App level before AppProvider renders.
+function useActions({ setDialog, setSelectedIds, selectedIds }: {
+  setDialog: (d: Dialog) => void;
+  setSelectedIds: (ids: Set<number>) => void;
+  selectedIds: Set<number>;
+}): AppActions {
   const pauseDownload = usePauseDownload();
   const resumeDownload = useResumeDownload();
   const redownloadDownload = useRedownloadDownload();
   const { data: downloads = [] } = useDownloads();
   const { openNewDownload, openDetails } = useWindowManager();
-  const { setSelectedIds, setDialog, selectedIds } = useAppContext();
 
   return useMemo(() => ({
     onNewDownload: () => openNewDownload(),
@@ -106,10 +108,19 @@ function useActions(): AppActions {
 }
 
 export default function App() {
-  const actions = useActions();
+  const [dialog, setDialog] = useState<Dialog>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [filter, setFilter] = useState<"all" | "completed" | "incomplete">("all");
+
+  const actions = useActions({ setDialog, setSelectedIds, selectedIds });
 
   return (
-    <AppProvider actions={actions}>
+    <AppProvider
+      dialog={dialog} setDialog={setDialog}
+      selectedIds={selectedIds} setSelectedIds={setSelectedIds}
+      filter={filter} setFilter={setFilter}
+      actions={actions}
+    >
       <AppInner />
     </AppProvider>
   );

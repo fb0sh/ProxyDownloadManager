@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, type ReactNode } from "react";
+import { createContext, useContext, type ReactNode } from "react";
 import type { DownloadItem } from "../types";
 
 export type Dialog =
@@ -39,16 +39,18 @@ interface AppState {
 const AppContext = createContext<AppState | null>(null);
 
 interface AppProviderProps {
+  dialog: Dialog;
+  setDialog: (d: Dialog) => void;
+  selectedIds: Set<number>;
+  setSelectedIds: (ids: Set<number>) => void;
+  filter: "all" | "completed" | "incomplete";
+  setFilter: (f: "all" | "completed" | "incomplete") => void;
   actions: AppActions;
   onRedownloadItem?: DownloadItem;
   children: ReactNode;
 }
 
-export function AppProvider({ actions, onRedownloadItem, children }: AppProviderProps) {
-  const [dialog, setDialog] = useState<Dialog>(null);
-  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
-  const [filter, setFilter] = useState<"all" | "completed" | "incomplete">("all");
-
+export function AppProvider({ dialog, setDialog, selectedIds, setSelectedIds, filter, setFilter, actions, onRedownloadItem, children }: AppProviderProps) {
   return (
     <AppContext.Provider value={{ dialog, setDialog, selectedIds, setSelectedIds, filter, setFilter, actions, onRedownloadItem }}>
       {children}

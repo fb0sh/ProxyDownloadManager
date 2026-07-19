@@ -1,11 +1,11 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ThemeProvider, BaseStyles, Text } from "@primer/react";
 import {
   DownloadIcon, PlugIcon, ShieldIcon,
   BrowserIcon, PasteIcon, SyncIcon,
 } from "@primer/octicons-react";
-import { setLanguage, t } from "../src/i18n";
+import { setLanguage } from "../src/i18n";
 import {
   usePauseDownload, useResumeDownload, useDownloads, useSettings, useRedownloadDownload,
 } from "../src/query/downloadQueries";
@@ -17,6 +17,7 @@ import LogDialog from "../src/components/dialogs/LogDialog";
 import ExtensionDialog from "../src/components/dialogs/ExtensionDialog";
 import NewDownloadDialog from "../src/components/dialogs/NewDownloadDialog";
 import PropertiesDialog from "../src/components/dialogs/PropertiesDialog";
+import { AppProvider, useAppContext } from "../src/contexts/AppContext";
 import type { DownloadItem } from "../src/types";
 
 /* ─── React Query client ────────────────────────────────────────────── */
@@ -26,7 +27,7 @@ const queryClient = new QueryClient({
 
 /* ─── App shell ─────────────────────────────────────────────────────── */
 
-type Dialog =
+type DemoDialog =
   | { type: "delete"; ids: number[] }
   | { type: "settings" }
   | { type: "about" }
@@ -37,15 +38,12 @@ type Dialog =
   | null;
 
 function AppInner() {
-  const [dialog, setDialog] = useState<Dialog>(null);
-  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
-  const [filter, setFilter] = useState<"all" | "completed" | "incomplete">("all");
-
+  const { dialog, setDialog, selectedIds, setSelectedIds } = useAppContext();
   const pauseDownload = usePauseDownload();
   const resumeDownload = useResumeDownload();
   const redownloadDownload = useRedownloadDownload();
   const { data: downloads = [] } = useDownloads();
-  const { settings: loadedSettings, saveSettings } = useSettings();
+  const { settings: loadedSettings } = useSettings();
 
   useEffect(() => {
     if (loadedSettings) {
@@ -53,32 +51,13 @@ function AppInner() {
     }
   }, [loadedSettings]);
 
+  const selectedForRedownload = selectedIds.size === 1
+    ? downloads.find(d => selectedIds.has(d.id) && (d.status === "completed" || d.status.startsWith("failed")))
+    : undefined;
+
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
-      <Layout
-        onNewDownload={() => setDialog({ type: "newDownload" })}
-        onExtension={() => setDialog({ type: "extension" })}
-        onLog={() => setDialog({ type: "log" })}
-        onSettings={() => setDialog({ type: "settings" })}
-        onAbout={() => setDialog({ type: "about" })}
-        onQuit={() => window.close()}
-        onResumeSelected={async () => { for (const id of selectedIds) await resumeDownload.mutateAsync(id); }}
-        onPauseSelected={() => { for (const id of selectedIds) pauseDownload.mutate(id); }}
-        onDeleteSelected={() => setDialog({ type: "delete", ids: Array.from(selectedIds) })}
-        onStop={(id) => pauseDownload.mutate(id)}
-        onDelete={(ids) => setDialog({ type: "delete", ids })}
-        onProperties={(id) => setDialog({ type: "properties", id })}
-        onRedownload={async (item) => { try { await redownloadDownload.mutateAsync(item.id); } catch {} }}
-        onRedownloadItem={
-          selectedIds.size === 1
-            ? downloads.find(d => selectedIds.has(d.id) && (d.status === "completed" || d.status.startsWith("failed")))
-            : undefined
-        }
-        selectedIds={selectedIds}
-        onSelectChange={setSelectedIds}
-        filter={filter}
-        onFilterChange={setFilter}
-      />
+      <Layout onRedownloadItem={selectedForRedownload} />
 
       {dialog?.type === "delete" && (
         <DeleteDialog ids={dialog.ids} onClose={() => { setDialog(null); setSelectedIds(new Set()); }} />
@@ -94,6 +73,42 @@ function AppInner() {
         <PropertiesDialog id={dialog.id} onClose={() => setDialog(null)} />
       )}
     </div>
+  );
+}
+
+function AppWithProvider() {
+  const [dialog, setDialog] = useState<DemoDialog>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [filter, setFilter] = useState<"all" | "completed" | "incomplete">("all");
+
+  // Demo actions — minimal, no quit/real operations
+  const actions = {
+    onNewDownload: () => setDialog({ type: "newDownload" }),
+    onExtension: () => setDialog({ type: "extension" }),
+    onLog: () => setDialog({ type: "log" }),
+    onSettings: () => setDialog({ type: "settings" }),
+    onAbout: () => setDialog({ type: "about" }),
+    onQuit: () => {},
+    onResumeSelected: async () => {},
+    onPauseSelected: () => {},
+    onDeleteSelected: () => {
+      if (selectedIds.size > 0) setDialog({ type: "delete", ids: Array.from(selectedIds) });
+    },
+    onStop: () => {},
+    onDelete: (ids: number[]) => setDialog({ type: "delete", ids }),
+    onProperties: (id: number) => setDialog({ type: "properties", id }),
+    onRedownload: async () => {},
+  };
+
+  return (
+    <AppProvider
+      dialog={dialog} setDialog={setDialog as any}
+      selectedIds={selectedIds} setSelectedIds={setSelectedIds}
+      filter={filter} setFilter={setFilter}
+      actions={actions}
+    >
+      <AppInner />
+    </AppProvider>
   );
 }
 
@@ -288,7 +303,7 @@ function Page() {
               <QueryClientProvider client={queryClient}>
                 <ThemeProvider colorMode="day">
                   <BaseStyles>
-                    <AppInner />
+                    <AppWithProvider />
                   </BaseStyles>
                 </ThemeProvider>
               </QueryClientProvider>
