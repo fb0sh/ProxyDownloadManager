@@ -1,13 +1,10 @@
 import { createContext, useContext, type ReactNode } from "react";
 import type { DownloadItem } from "../types";
+import type { SharedDialog } from "../components/DialogRenderer";
+import type { DialogActions } from "../hooks/useDialog";
+import type { SelectionActions } from "../hooks/useSelection";
 
-export type Dialog =
-  | { type: "delete"; ids: number[] }
-  | { type: "settings" }
-  | { type: "about" }
-  | { type: "extension" }
-  | { type: "log" }
-  | null;
+export type { SharedDialog as Dialog };
 
 export interface AppActions {
   onNewDownload: () => void;
@@ -25,24 +22,25 @@ export interface AppActions {
   onRedownload: (item: DownloadItem) => void;
 }
 
-interface AppState {
-  dialog: Dialog;
-  setDialog: (d: Dialog) => void;
+/** App-wide state with behavior-rich hooks instead of raw setters. */
+interface AppCtx {
+  dialog: SharedDialog;
+  dialogActions: DialogActions;
   selectedIds: Set<number>;
-  setSelectedIds: (ids: Set<number>) => void;
+  selectionActions: SelectionActions;
   filter: "all" | "completed" | "incomplete";
   setFilter: (f: "all" | "completed" | "incomplete") => void;
   actions: AppActions;
   onRedownloadItem?: DownloadItem;
 }
 
-const AppContext = createContext<AppState | null>(null);
+const AppContext = createContext<AppCtx | null>(null);
 
 interface AppProviderProps {
-  dialog: Dialog;
-  setDialog: (d: Dialog) => void;
+  dialog: SharedDialog;
+  dialogActions: DialogActions;
   selectedIds: Set<number>;
-  setSelectedIds: (ids: Set<number>) => void;
+  selectionActions: SelectionActions;
   filter: "all" | "completed" | "incomplete";
   setFilter: (f: "all" | "completed" | "incomplete") => void;
   actions: AppActions;
@@ -50,9 +48,20 @@ interface AppProviderProps {
   children: ReactNode;
 }
 
-export function AppProvider({ dialog, setDialog, selectedIds, setSelectedIds, filter, setFilter, actions, onRedownloadItem, children }: AppProviderProps) {
+export function AppProvider({
+  dialog, dialogActions,
+  selectedIds, selectionActions,
+  filter, setFilter,
+  actions, onRedownloadItem,
+  children,
+}: AppProviderProps) {
   return (
-    <AppContext.Provider value={{ dialog, setDialog, selectedIds, setSelectedIds, filter, setFilter, actions, onRedownloadItem }}>
+    <AppContext.Provider value={{
+      dialog, dialogActions,
+      selectedIds, selectionActions,
+      filter, setFilter,
+      actions, onRedownloadItem,
+    }}>
       {children}
     </AppContext.Provider>
   );

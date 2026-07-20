@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useSettings } from "../query/downloadQueries";
-import { invoke } from "@tauri-apps/api/core";
+import { tauriClient } from "../tauriClient";
 import { open } from "@tauri-apps/plugin-dialog";
 import { setLanguage } from "../i18n";
 import type { Settings } from "../types";
@@ -49,7 +49,7 @@ export function useSettingsForm(onClose: () => void) {
   const handleTestProxy = async (name: string) => {
     setTestResults((prev) => ({ ...prev, [name]: null }));
     try {
-      const result = await invoke<{ ok: boolean; latency_ms: number; status?: number; error?: string }>("test_proxy", { proxyName: name });
+      const result = await tauriClient.testProxy(name);
       setTestResults((prev) => ({ ...prev, [name]: result }));
     } catch (e) {
       setTestResults((prev) => ({ ...prev, [name]: { ok: false, latency_ms: 0, error: String(e) } }));

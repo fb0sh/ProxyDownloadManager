@@ -1,17 +1,11 @@
 import { useState, useEffect, useRef } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { tauriClient } from "../tauriClient";
 import type { DownloadItem } from "../types";
 
 /** Extract file extension from a filename, lowercased. */
 function ext(name: string): string {
   const i = name.lastIndexOf(".");
   return i > 0 ? name.slice(i + 1).toLowerCase() : "";
-}
-
-interface IconData {
-  rgba: string; // base64-encoded raw RGBA bytes
-  width: number;
-  height: number;
 }
 
 /** Map of extension → <img> data URL (rendered via canvas) */
@@ -66,6 +60,7 @@ function rgbaToDataURL(rgbaBase64: string, width: number, height: number): strin
     ctx.putImageData(imageData, 0, 0);
     return canvas.toDataURL("image/png");
   } catch {
+    // icon conversion failed — use fallback
     return FALLBACK;
   }
 }
@@ -95,12 +90,10 @@ export function useFileIcons(downloads: DownloadItem[]): IconMap {
       for (const e of needed) {
         if (cancelled) break;
         try {
-          const data = await invoke<IconData>("get_file_icon", {
-            fileName: `file.${e}`,
-          });
+          const data = await tauriClient.getFileIcon(`file.${e}`);
           const url = convertRef.current(data.rgba, data.width, data.height);
           next.set(e, url);
-        } catch {
+        } catch { /* icon load failed — use fallback */
           next.set(e, FALLBACK);
         }
       }

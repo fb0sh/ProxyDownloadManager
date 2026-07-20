@@ -5,6 +5,37 @@
 
 ## [Unreleased]
 
+## [0.9.7] - 2026-07-20
+
+### Added
+
+- `PdmError` 实现 `serde::Serialize`，Tauri 命令返回结构化错误（tagged union），前端可匹配 `error.kind`
+- 前端新增 `PdmError` 类型（`src/types.ts`）
+- `DownloadStateFacade` 新增生命周期方法 `on_paused(id)` / `on_deleted(id)`，封装 gob 持久化决策
+- 引擎集成测试：mock HTTP server + 4 个端到端测试（单引擎/并发引擎/进度事件/取消）
+- `EventTransformer` 纯函数：引擎事件 → 结构化 `EventAction`，6 个单元测试
+- `tauriClient.ts` 完整化：8 个新命令（exitApp, openFile, readLogs, getExtensionsDir, openExtensionsFolder, getFileIcon, checkUpdate, testProxy）
+- `DialogRenderer` 共享组件：消除 App.tsx 与 src-present/App.tsx 的对话框渲染重复
+- `useDialog()` / `useSelection()` 自定义 hooks，AppContext 深化
+- 浏览器扩展 `shared/` 共享源码 + `build.sh` 构建脚本
+- `patchDownloadProgress` 纯函数及 5 个 vitest 测试
+
+### Changed
+
+- `DownloadManager` 移除 `network` 依赖，`test_proxy`/`check_update` 直接通过 `AppState` 调用
+- 所有 Tauri 命令返回 `Result<T, PdmError>`（不再 `.map_err(|e| e.to_string())`）
+- `save_gob` → `save_resume_state`，`load_gob` → `load_resume_state`（语义更清晰）
+- 前端 `invoke()` 调用全部经 `tauriClient`，零裸 invoke
+- `parse_message()` 从 WebSocket handle_connection 提取为纯函数 + 5 个测试
+- `sendReliable()` 签名简化（移除未使用的 referrer/tabTitle 参数）
+
+### Fixed
+
+- 19 个空 `catch {}` 块全部添加注释（预期失败 vs 需追踪的异常）
+- 浏览器扩展删除死代码 `send()` 和 `looksLikeDownload()`
+- 移除 content.js + `host_permissions: ["<all_urls>"]`（无需权限的空脚本）
+- 移除未使用的 zustand 依赖
+
 ## [0.6.2] - 2026-07-09
 
 ### Fixed

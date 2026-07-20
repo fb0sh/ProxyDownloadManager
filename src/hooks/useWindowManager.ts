@@ -20,7 +20,7 @@ export function useWindowManager() {
     });
     win.once("tauri://created", async () => {
       if (url) {
-        try { await win.emit("new-download-url", url); } catch {}
+        try { await win.emit("new-download-url", url); } catch { /* window may have closed */ }
       }
       await win.show().catch(() => {});
       await win.unminimize().catch(() => {});

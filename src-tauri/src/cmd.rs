@@ -2,6 +2,8 @@ use crate::types::*;
 use crate::download_manager::DownloadManager;
 use crate::event_bus::EventBus;
 use crate::icons::{IconCache, IconData};
+use crate::services::settings_service::SettingsService;
+use crate::services::network_service::NetworkService;
 use std::process::Command as StdCommand;
 use std::sync::Arc;
 use tauri::State;
@@ -10,13 +12,15 @@ pub struct AppState {
     pub dm: Arc<DownloadManager>,
     pub app_handle: tauri::AppHandle,
     pub bus: Arc<EventBus>,
+    pub settings: Arc<SettingsService>,
+    pub network: Arc<NetworkService>,
 }
 
 // ── Tauri commands: thin adapters ──
 
 #[tauri::command]
-pub fn list_downloads(state: State<'_, Arc<AppState>>) -> Result<Vec<DownloadItem>, String> {
-    state.dm.list_items().map_err(|e| e.to_string())
+pub fn list_downloads(state: State<'_, Arc<AppState>>) -> Result<Vec<DownloadItem>, PdmError> {
+    state.dm.list_items()
 }
 
 #[tauri::command]
@@ -27,30 +31,30 @@ pub async fn start_download(
     save_path: String,
     proxy_name: String,
     connections: u32,
-) -> Result<u64, String> {
-    state.dm.start_download(url, filename, save_path, proxy_name, connections).await.map_err(|e| e.to_string())
+) -> Result<u64, PdmError> {
+    state.dm.start_download(url, filename, save_path, proxy_name, connections).await
 }
 
 #[tauri::command]
 pub async fn redownload_download(
     state: State<'_, Arc<AppState>>,
     id: u64,
-) -> Result<u64, String> {
-    state.dm.redownload_download(id).await.map_err(|e| e.to_string())
+) -> Result<u64, PdmError> {
+    state.dm.redownload_download(id).await
 }
 
 #[tauri::command]
-pub async fn pause_download(state: State<'_, Arc<AppState>>, id: u64) -> Result<(), String> {
-    state.dm.pause_download(id).await.map_err(|e| e.to_string())
+pub async fn pause_download(state: State<'_, Arc<AppState>>, id: u64) -> Result<(), PdmError> {
+    state.dm.pause_download(id).await
 }
 
 #[tauri::command]
-pub async fn resume_download(state: State<'_, Arc<AppState>>, id: u64) -> Result<(), String> {
-    state.dm.resume_download(id).await.map_err(|e| e.to_string())
+pub async fn resume_download(state: State<'_, Arc<AppState>>, id: u64) -> Result<(), PdmError> {
+    state.dm.resume_download(id).await
 }
 
 #[tauri::command]
-pub async fn cancel_download(state: State<'_, Arc<AppState>>, id: u64) -> Result<(), String> {
+pub async fn cancel_download(state: State<'_, Arc<AppState>>, id: u64) -> Result<(), PdmError> {
     state.dm.cancel_download(id).await;
     Ok(())
 }
@@ -60,24 +64,23 @@ pub async fn delete_download(
     state: State<'_, Arc<AppState>>,
     id: u64,
     delete_file: bool,
-) -> Result<(), String> {
-    state.dm.delete_download(id, delete_file).await.map_err(|e| e.to_string())
+) -> Result<(), PdmError> {
+    state.dm.delete_download(id, delete_file).await
 }
 
 // ── Settings ──
 
 #[tauri::command]
-pub fn get_settings(state: State<'_, Arc<AppState>>) -> Result<Settings, String> {
-    Ok(state.dm.settings.get())
+pub fn get_settings(state: State<'_, Arc<AppState>>) -> Result<Settings, PdmError> {
+    Ok(state.settings.get())
 }
 
 #[tauri::command]
-pub fn save_settings(state: State<'_, Arc<AppState>>, settings: Settings) -> Result<(), String> {
+pub fn save_settings(state: State<'_, Arc<AppState>>, settings: Settings) -> Result<(), PdmError> {
     log::info!("[ProxyDM] save_settings lang={} dl_dir={} max_conns={} tls_invalid={}",
         settings.language, settings.download_dir, settings.max_connections, settings.danger_accept_invalid_certs);
-    state.dm.log_info(&format!("Settings saved: language={} download_dir={}", settings.language, settings.download_dir));
 
-    let result = state.dm.settings.save(&settings).map_err(|e| e.to_string())?;
+    let result = state.settings.save(&settings)?;
 
     if result.tls_changed {
         state.dm.clear_client_pool();
@@ -177,6 +180,7 @@ pub fn get_extensions_dir(app: tauri::AppHandle) -> Result<String, String> {
 pub async fn test_proxy(
     state: State<'_, Arc<AppState>>,
     proxy_name: String,
-) -> Result<serde_json::Value, String> {
-    state.dm.test_proxy(&proxy_name).await.map_err(|e| e.to_string())
+) -> Result<serde_json::Value, PdmError> {
+    let proxy_url = state.settings.resolve_proxy_url(&proxy_name);
+    state.network.test_proxy(proxy_url.as_deref()).await
 }

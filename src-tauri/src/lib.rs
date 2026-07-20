@@ -15,6 +15,7 @@ mod download_manager;
 mod update;
 mod platform;
 mod event_bus;
+mod event_handler;
 mod services;
 
 use crate::cmd::AppState;
@@ -208,8 +209,7 @@ pub fn run() {
                 worker_pool,
                 logger,
                 crate::state::runtime::DownloadManagerState::new(),
-                settings_svc,
-                network_svc,
+                settings_svc.clone(),
                 bus.clone(),
             ));
 
@@ -217,6 +217,8 @@ pub fn run() {
                 dm: dm.clone(),
                 app_handle: app.handle().clone(),
                 bus: bus.clone(),
+                settings: settings_svc.clone(),
+                network: network_svc.clone(),
             });
             app.manage(state);
 

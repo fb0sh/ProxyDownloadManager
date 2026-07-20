@@ -1,8 +1,8 @@
-import { invoke } from "@tauri-apps/api/core";
+import { tauriClient } from "../tauriClient";
 
 export async function openFile(path: string): Promise<void> {
   try {
-    await invoke("open_file", { path });
+    await tauriClient.openFile(path);
   } catch (e) {
     console.error("[ProxyDM] open file error:", e);
   }
@@ -13,8 +13,9 @@ export async function openFolder(path: string): Promise<void> {
     const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
     await revealItemInDir(path);
   } catch {
+    // plugin-opener unavailable — fall back to open parent directory
     try {
-      await invoke("open_file", { path: path.replace(/[/\\][^/\\]*$/, "") || "." });
+      await tauriClient.openFile(path.replace(/[/\\][^/\\]*$/, "") || ".");
     } catch (e) {
       console.error("[ProxyDM] open folder error:", e);
     }

@@ -76,3 +76,16 @@ export interface UpdateInfo {
   release_notes: string;
   assets: AssetInfo[];
 }
+
+/** Structured error type matching Rust's PdmError (tagged union). */
+export type PdmError =
+  | { kind: "cancelled" }
+  | { kind: "http"; value: number }
+  | { kind: "client_build"; value: string }
+  | { kind: "probe"; value: string }
+  | { kind: "not_found"; value: number }
+  | { kind: "db"; value: string }
+  | { kind: "config"; value: string }
+  | { kind: "io"; value: string }
+  | { kind: "network"; value: string }
+  | { kind: "other"; value: string };

@@ -1,9 +1,12 @@
 // =============================================================================
-// background.js — ProxyDM Browser Extension
+// background.js — ProxyDM Browser Extension (shared source)
 //
 // Click toolbar icon → toggle extension on/off (icon changes).
 // When enabled: intercept downloads, send URL to ProxyDM via WebSocket,
 // cancel the browser download so ProxyDM handles it.
+//
+// This file is the single source of truth. Run build.sh to sync to
+// chrome/, edge/, firefox/ directories.
 // =============================================================================
 
 const WS_URL = 'ws://127.0.0.1:18999';
@@ -86,7 +89,7 @@ function connect() {
     ws = null;
     scheduleReconnect();
   };
-  socket.onerror = (evt) => {
+  socket.onerror = () => {
     if (ws !== socket) return;
     console.warn('[ProxyDM] WS error');
     ws = null;
@@ -104,22 +107,9 @@ function disconnect() {
   if (ws) { ws.close(); ws = null; }
 }
 
-function send(url, referrer, tabTitle) {
-  if (!ws || ws.readyState !== WebSocket.OPEN) {
-    console.warn('[ProxyDM] send: WS not open, reconnecting');
-    connect(); return false;
-  }
-  try {
-    console.log('[ProxyDM] WS send:', url);
-    ws.send(url);
-    return true;
-  } catch (e) {
-    console.warn('[ProxyDM] WS send error:', e);
-    return false;
-  }
-}
+// ─── Reliable send (fresh WebSocket per message) ──────────────────────────────
 
-function sendReliable(url, referrer, tabTitle) {
+function sendReliable(url) {
   console.log('[ProxyDM] WS sendReliable:', url);
   return new Promise((resolve) => {
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
@@ -191,7 +181,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     case 'dl-page': url = tab?.url; break;
     case 'dl-sel':  url = extractUrl(info.selectionText); break;
   }
-  if (url && !(await sendReliable(url, tab?.url || '', tab?.title || ''))) notifyNotRunning();
+  if (url && !(await sendReliable(url))) notifyNotRunning();
 });
 
 // ─── Download interception ────────────────────────────────────────────────────
@@ -211,7 +201,7 @@ chrome.downloads.onCreated.addListener(async (item) => {
   console.log('[ProxyDM] download intercepted:', downloadUrl, 'file:', item.filename);
 
   chrome.tabs.query({ active: true, currentWindow: true }, async ([tab]) => {
-    const ok = await sendReliable(downloadUrl, tab?.url || '', tab?.title || '');
+    const ok = await sendReliable(downloadUrl);
     console.log('[ProxyDM] sent to app:', ok);
     if (ok) {
       chrome.downloads.cancel(item.id, () => {
@@ -241,12 +231,12 @@ chrome.runtime.onStartup.addListener(async () => {
   if (on) { createContextMenus(); connect(); }
 });
 
-// ─── Message from content script ──────────────────────────────────────────────
+// ─── Message from content script (if present) ─────────────────────────────────
 
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
   console.log('[ProxyDM] content script message:', request.action, request.url?.slice(0, 80));
   if (request.action === 'sendUrl') {
-    sendReliable(request.url, '', '').then((ok) => sendResponse({ ok }));
+    sendReliable(request.url).then((ok) => sendResponse({ ok }));
     return true;
   }
 });
@@ -288,21 +278,6 @@ function getDownloadUrl(item) {
 function isRestoredDownloadEvent(item) {
   const startTime = Date.parse(item.startTime || '');
   return Number.isFinite(startTime) && startTime + STARTUP_GRACE_MS < startedAt;
-}
-
-function looksLikeDownload(url) {
-  const path = url.split(/[?#]/)[0].toLowerCase();
-  const exts = ['.zip','.rar','.7z','.tar','.gz','.xz','.bz2','.zst',
-    '.tar.gz','.tar.xz','.tar.bz2','.tgz','.txz',
-    '.exe','.msi','.dmg','.pkg','.apk','.deb','.rpm',
-    '.iso','.img','.vhd',
-    '.pdf','.epub','.mobi',
-    '.mp4','.mkv','.avi','.mov','.wmv','.webm','.m4v',
-    '.mp3','.flac','.wav','.aac','.ogg','.opus','.m4a',
-    '.jar','.war','.nupkg','.whl',
-    '.ttf','.otf','.woff','.woff2',
-    '.dmp','.core','.crx','.xpi'];
-  return exts.some(e => path.endsWith(e));
 }
 
 function extractUrl(text) {

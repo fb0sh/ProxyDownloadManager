@@ -12,7 +12,7 @@ async function readClipboardUrl(): Promise<string | null> {
     if (text && (text.startsWith("http://") || text.startsWith("https://") || text.startsWith("ftp://")) && looksLikeDownloadUrl(text)) {
       return text;
     }
-  } catch {}
+  } catch { /* clipboard read failed */ }
   return null;
 }
 
@@ -95,7 +95,7 @@ export default function NewDownloadWindow() {
       try {
         const { emit } = await import("@tauri-apps/api/event");
         await emit("download-created");
-      } catch {}
+      } catch { /* emit event failed — non-critical */ }
       getCurrentWebviewWindow().close();
     } catch (err) {
       console.error("Download failed:", err);

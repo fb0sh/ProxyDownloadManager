@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Text, Button, Spinner } from "@primer/react";
 import { FileDirectoryIcon, CopyIcon } from "@primer/octicons-react";
 import { Dialog } from "@primer/react/experimental";
-import { invoke } from "@tauri-apps/api/core";
+import { tauriClient } from "../../tauriClient";
 import { t } from "../../i18n";
 
 interface ExtensionDialogProps {
@@ -18,7 +18,7 @@ export default function ExtensionDialog({ onClose }: ExtensionDialogProps) {
   const [copyLabel, setCopyLabel] = useState<string>(t("extension.copy"));
 
   useEffect(() => {
-    invoke<string>("get_extensions_dir")
+    tauriClient.getExtensionsDir()
       .then((dir) => {
         setExtDir(dir);
         setLoadState("loaded");
@@ -28,7 +28,7 @@ export default function ExtensionDialog({ onClose }: ExtensionDialogProps) {
 
   const handleOpenDir = async () => {
     try {
-      await invoke("open_extensions_folder");
+      await tauriClient.openExtensionsFolder();
     } catch (e) {
       console.error("Failed to open extensions folder:", e);
     }
@@ -41,7 +41,7 @@ export default function ExtensionDialog({ onClose }: ExtensionDialogProps) {
       setCopyLabel(t("extension.copied"));
       setTimeout(() => setCopyLabel(t("extension.copy")), 2000);
     } catch {
-      // fallback
+      // clipboard API unavailable — fall back to Tauri clipboard
       const ta = await import("@tauri-apps/plugin-clipboard-manager");
       await ta.writeText(extDir);
       setCopyLabel(t("extension.copied"));

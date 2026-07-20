@@ -1,4 +1,5 @@
 use crate::cmd::AppState;
+use crate::types::error::PdmError;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::State;
@@ -72,10 +73,11 @@ pub fn current_platform_suffix() -> &'static str {
 pub async fn check_update(
     state: State<'_, Arc<AppState>>,
     proxy_name: String,
-) -> Result<UpdateInfo, String> {
-    let release_value: serde_json::Value = state.dm.check_update(&proxy_name).await.map_err(|e| e.to_string())?;
+) -> Result<UpdateInfo, PdmError> {
+    let proxy_url = state.settings.resolve_proxy_url(&proxy_name);
+    let release_value: serde_json::Value = state.network.check_update(proxy_url.as_deref()).await?;
     let release: GithubRelease = serde_json::from_value(release_value)
-        .map_err(|e| format!("Failed to parse release info: {}", e))?;
+        .map_err(|e| PdmError::Other(format!("Failed to parse release info: {}", e)))?;
 
     let current_version = format!("v{}", env!("CARGO_PKG_VERSION"));
     let latest_version = release.tag_name.clone();

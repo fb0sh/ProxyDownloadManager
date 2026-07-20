@@ -16,9 +16,8 @@ export function looksLikeDownloadUrl(text: string): boolean {
     const url = new URL(text);
     const path = url.pathname.toLowerCase();
     return DOWNLOAD_EXTENSIONS.some((ext) => path.endsWith(ext));
-  } catch {
+  } catch { /* invalid URL — not a download link */ }
     return false;
-  }
 }
 
 export function extractFilename(url: string): string {
@@ -50,9 +49,8 @@ export function extractFilename(url: string): string {
     }
 
     return "";
-  } catch {
-    return "";
-  }
+  } catch { /* malformed URL */ }
+  return "";
 }
 
 export function applyFilter(items: DownloadItem[], f: "all" | "completed" | "incomplete") {

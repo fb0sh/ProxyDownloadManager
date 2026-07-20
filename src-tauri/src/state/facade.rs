@@ -96,10 +96,43 @@ impl DownloadStateFacade {
         }
     }
 
-    // ── gob accessors ──
+    /// Mark download as paused: flush progress, save resume state if needed,
+    /// update DB status to Paused. The caller has already cancelled the engine.
+    pub fn on_paused(&self, id: u64) -> PdmResult<()> {
+        self.flush();
+        if let Ok(Some(mut item)) = self.db.get_by_id(id) {
+            if matches!(item.status, DownloadStatus::Downloading) {
+                if item.resumable != Some(true) {
+                    self.save_gob_for_non_resumable(&item);
+                }
+                item.status = DownloadStatus::Paused;
+                self.db.update_download(&item)?;
+            }
+        }
+        Ok(())
+    }
 
-    /// Save gob state for non-resumable downloads (single engine).
-    pub fn save_gob_for_non_resumable(&self, item: &DownloadItem) {
+    /// Delete a download: remove from DB and delete resume state.
+    pub fn on_deleted(&self, id: u64) -> PdmResult<()> {
+        self.db.delete_download(id)?;
+        let _ = gob::delete_state(id);
+        Ok(())
+    }
+
+    // ── gob accessors (public: needed by engine cancel callbacks and resume logic) ──
+
+    /// Save engine resume state (called by engine cancel callback).
+    pub fn save_resume_state(&self, id: u64, state: &DownloadState) {
+        let _ = gob::save_state(id, state);
+    }
+
+    /// Load engine resume state for reconstructing engine config on resume.
+    pub fn load_resume_state(&self, id: u64) -> Option<DownloadState> {
+        gob::load_state(id).ok().flatten()
+    }
+
+    /// Save gob state for non-resumable downloads (used internally by on_paused).
+    fn save_gob_for_non_resumable(&self, item: &DownloadItem) {
         let remaining = item.total_size.saturating_sub(item.downloaded);
         if remaining > 0 {
             let saved = DownloadState {
@@ -115,21 +148,6 @@ impl DownloadStateFacade {
             };
             let _ = gob::save_state(item.id, &saved);
         }
-    }
-
-    /// Delete gob state for a download.
-    pub fn delete_gob(&self, id: u64) {
-        let _ = gob::delete_state(id);
-    }
-
-    /// Load gob state for resume.
-    pub fn load_gob(&self, id: u64) -> Option<DownloadState> {
-        gob::load_state(id).ok().flatten()
-    }
-
-    /// Save gob state directly (used by engine cancel callbacks).
-    pub fn save_gob(&self, id: u64, state: &DownloadState) {
-        let _ = gob::save_state(id, state);
     }
 
     // ── Flush ──
@@ -252,23 +270,30 @@ mod tests {
     }
 
     #[test]
-    fn test_save_gob_for_non_resumable() {
-        let (facade, dir) = test_facade("gob");
+    fn test_on_paused_saves_gob_for_non_resumable() {
+        let (facade, dir) = test_facade("paused");
         let mut item = sample_item(9);
         item.downloaded = 300;
         item.total_size = 1000;
-        item.resumable = Some(false);
+        item.resumable = Some(false); // non-resumable
+        item.status = DownloadStatus::Downloading;
+        facade.insert_item(&item).unwrap();
 
-        facade.save_gob_for_non_resumable(&item);
+        facade.on_paused(9).unwrap();
 
-        let loaded = facade.load_gob(9).unwrap();
+        // Should have saved gob for resume
+        let loaded = facade.load_resume_state(9).unwrap();
         assert_eq!(loaded.downloaded, 300);
         assert_eq!(loaded.tasks.len(), 1);
         assert_eq!(loaded.tasks[0].offset, 300);
         assert_eq!(loaded.tasks[0].length, 700);
 
-        facade.delete_gob(9);
-        assert!(facade.load_gob(9).is_none());
+        // DB status should be Paused
+        let got = facade.get_item(9).unwrap().unwrap();
+        assert!(matches!(got.status, DownloadStatus::Paused));
+
+        facade.on_deleted(9).unwrap();
+        assert!(facade.load_resume_state(9).is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -292,7 +317,7 @@ mod tests {
             proxy_name: "".to_string(),
             workers: 4,
         };
-        facade.save_gob(10, &state);
+        facade.save_resume_state(10, &state);
 
         // Second start (resume) — runtime should be seeded from gob (500)
         facade.on_started(10);

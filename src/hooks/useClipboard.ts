@@ -22,7 +22,7 @@ export function useClipboardDetection() {
           }
         }
       } catch {
-        // Clipboard access denied
+        // Clipboard access denied — expected in sandboxed contexts
       }
     }, 2000);
 

@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Button, Text } from "@primer/react";
 import { Dialog } from "@primer/react/experimental";
-import { invoke } from "@tauri-apps/api/core";
+import { tauriClient } from "../../tauriClient";
 import { t } from "../../i18n";
 
 interface LogDialogProps {
@@ -16,11 +16,9 @@ export default function LogDialog({ onClose }: LogDialogProps) {
   const loadLogs = async () => {
     setLoading(true);
     try {
-      const data = await invoke<string[]>("read_logs", { maxLines: 50 });
+      const data = await tauriClient.readLogs(50);
       setLogs(data);
-    } catch {
-      setLogs(["[ERROR] Failed to read logs"]);
-    }
+    } catch { setLogs(["[ERROR] Failed to read logs"]); }
     setLoading(false);
   };
 

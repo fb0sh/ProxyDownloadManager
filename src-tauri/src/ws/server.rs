@@ -8,6 +8,48 @@ use tungstenite::Message;
 
 use crate::types::{Event, PendingDownloadRequest};
 
+/// Parse a WebSocket text message into a PendingDownloadRequest.
+/// Three-tier fallback:
+/// 1. Browser extension JSON: { action, url, filename, proxy_name, connections }
+/// 2. Direct PendingDownloadRequest JSON
+/// 3. Raw text treated as URL
+pub fn parse_message(text: &str) -> PendingDownloadRequest {
+    #[derive(serde::Deserialize)]
+    struct Incoming {
+        #[serde(default)]
+        action: String,
+        #[serde(default)]
+        url: String,
+        #[serde(default)]
+        filename: String,
+        #[serde(default)]
+        proxy_name: String,
+        connections: Option<u32>,
+    }
+
+    serde_json::from_str::<Incoming>(text)
+        .ok()
+        .filter(|i| !i.url.is_empty())
+        .map(|i| PendingDownloadRequest {
+            url: i.url,
+            filename: i.filename,
+            proxy_name: i.proxy_name,
+            connections: i.connections.unwrap_or(1),
+        })
+        .or_else(|| {
+            serde_json::from_str::<PendingDownloadRequest>(text).ok()
+        })
+        .unwrap_or_else(|| {
+            let filename = text.rsplit('/').next().unwrap_or("").to_string();
+            PendingDownloadRequest {
+                url: text.to_string(),
+                filename,
+                proxy_name: String::new(),
+                connections: 1,
+            }
+        })
+}
+
 pub struct WsServer {
     event_tx: tokio::sync::mpsc::UnboundedSender<Event>,
     request_tx: tokio::sync::mpsc::UnboundedSender<PendingDownloadRequest>,
@@ -112,45 +154,7 @@ impl WsServer {
                     let max_preview = text.char_indices().nth(200).map(|(i, _)| i).unwrap_or(text.len());
                     log::info!("[ProxyDM WS] Received: {}", &text[..max_preview]);
 
-                    // Try parsing as browser extension JSON first:
-                    // { action: "add", url: "...", referrer, tab_title, filename, proxy_name, connections }
-                    #[derive(serde::Deserialize)]
-                    struct Incoming {
-                        #[serde(default)]
-                        action: String,
-                        #[serde(default)]
-                        url: String,
-                        #[serde(default)]
-                        filename: String,
-                        #[serde(default)]
-                        proxy_name: String,
-                        connections: Option<u32>,
-                    }
-
-                    let request = serde_json::from_str::<Incoming>(&text)
-                        .ok()
-                        .filter(|i| !i.url.is_empty())
-                        .map(|i| PendingDownloadRequest {
-                            url: i.url,
-                            filename: i.filename,
-                            proxy_name: i.proxy_name,
-                            connections: i.connections.unwrap_or(1),
-                        })
-                        .or_else(|| {
-                            // Fallback: try direct PendingDownloadRequest
-                            serde_json::from_str::<PendingDownloadRequest>(&text).ok()
-                        })
-                        .unwrap_or_else(|| {
-                            // Last resort: treat raw text as URL
-                            let url = text.clone();
-                            let filename = url.rsplit('/').next().unwrap_or("").to_string();
-                            PendingDownloadRequest {
-                                url,
-                                filename,
-                                proxy_name: String::new(),
-                                connections: 1,
-                            }
-                        });
+                    let request = parse_message(&text);
 
                     log::info!("[ProxyDM WS] Sending to request_tx... url={}", request.url);
 
@@ -189,5 +193,55 @@ impl WsServer {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_browser_extension_json() {
+        let json = r#"{"action":"add","url":"https://example.com/file.zip","filename":"file.zip","proxy_name":"my-proxy","connections":8}"#;
+        let req = parse_message(json);
+        assert_eq!(req.url, "https://example.com/file.zip");
+        assert_eq!(req.filename, "file.zip");
+        assert_eq!(req.proxy_name, "my-proxy");
+        assert_eq!(req.connections, 8);
+    }
+
+    #[test]
+    fn test_parse_pending_request_json() {
+        let json = r#"{"url":"https://example.com/data.bin","filename":"data.bin","proxy_name":"","connections":4}"#;
+        let req = parse_message(json);
+        assert_eq!(req.url, "https://example.com/data.bin");
+        assert_eq!(req.filename, "data.bin");
+        assert_eq!(req.connections, 4);
+    }
+
+    #[test]
+    fn test_parse_raw_url() {
+        let url = "https://cdn.example.com/video.mp4";
+        let req = parse_message(url);
+        assert_eq!(req.url, url);
+        assert_eq!(req.filename, "video.mp4");
+        assert_eq!(req.connections, 1);
+        assert!(req.proxy_name.is_empty());
+    }
+
+    #[test]
+    fn test_parse_empty_json_falls_back_to_raw() {
+        let json = r#"{"action":"","url":""}"#;
+        let req = parse_message(json);
+        assert_eq!(req.url, json);
+        assert_eq!(req.connections, 1);
+    }
+
+    #[test]
+    fn test_parse_browser_json_without_connections() {
+        let json = r#"{"action":"add","url":"https://x.com/a.zip","filename":"a.zip"}"#;
+        let req = parse_message(json);
+        assert_eq!(req.url, "https://x.com/a.zip");
+        assert_eq!(req.connections, 1); // default
     }
 }

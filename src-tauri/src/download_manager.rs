@@ -4,9 +4,10 @@ use crate::state::facade::DownloadStateFacade;
 use crate::worker::WorkerPool;
 use crate::engine::OnResumeState;
 use crate::event_bus::{EventBus, FrontendEvent};
+use crate::event_handler::{transform_event, EventAction};
 use crate::logger::Logger;
 use crate::state::runtime::DownloadManagerState;
-use crate::services::{settings_service::SettingsService, network_service::NetworkService};
+use crate::services::settings_service::SettingsService;
 use std::sync::{Arc, Mutex};
 
 pub struct DownloadManager {
@@ -14,7 +15,6 @@ pub struct DownloadManager {
     pub(crate) worker_pool: WorkerPool,
     logger: Mutex<Logger>,
     pub(crate) settings: Arc<SettingsService>,
-    pub(crate) network: Arc<NetworkService>,
     bus: Arc<EventBus>,
 }
 
@@ -25,7 +25,6 @@ impl DownloadManager {
         logger: Logger,
         runtime: DownloadManagerState,
         settings: Arc<SettingsService>,
-        network: Arc<NetworkService>,
         bus: Arc<EventBus>,
     ) -> Self {
         Self {
@@ -33,7 +32,6 @@ impl DownloadManager {
             worker_pool,
             logger: Mutex::new(logger),
             settings,
-            network,
             bus,
         }
     }
@@ -52,7 +50,7 @@ impl DownloadManager {
 
     fn make_resume_callback(&self) -> OnResumeState {
         let facade = self.facade.clone();
-        Box::new(move |id, state| { facade.save_gob(id, state); })
+        Box::new(move |id, state| { facade.save_resume_state(id, state); })
     }
 
     // ── Delegate methods (encapsulate facade/worker_pool access) ──
@@ -73,7 +71,8 @@ impl DownloadManager {
         self.worker_pool.clear_clients();
     }
 
-    /// Handle an event from the download engine. Emits frontend events via the bus.
+    /// Handle an event from the download engine. Uses EventTransformer
+    /// to map engine events → structured actions, then applies them.
     pub fn handle_event(&self, event: Event) {
         let id = event.download_id;
 
@@ -85,39 +84,40 @@ impl DownloadManager {
 
         self.log_info(&format!("Event: {:?} id={}{}", event.kind, id, url_info));
 
+        // Emit error to frontend before applying state change (so frontend
+        // always sees the error regardless of state transition outcome).
         if matches!(event.kind, EventKind::DownloadErrored) {
             let msg = event.data.clone().unwrap_or_default();
             let url = url_info.trim_start_matches(" url=").to_string();
             self.bus.emit(FrontendEvent::DownloadError, serde_json::json!({ "id": id, "url": url, "message": msg }));
         }
 
-        match event.kind {
-            EventKind::DownloadStarted => {
-                self.facade.on_started(id);
-                self.bus.emit(FrontendEvent::DownloadStarted, serde_json::json!(id));
+        let action = transform_event(&event);
+
+        match action {
+            EventAction::DownloadStarted(dl_id) => {
+                self.facade.on_started(dl_id);
+                self.bus.emit(FrontendEvent::DownloadStarted, serde_json::json!(dl_id));
             }
-            EventKind::DownloadCompleted => {
-                let file_name = self.facade.get_item(id)
+            EventAction::DownloadCompleted(dl_id) => {
+                let file_name = self.facade.get_item(dl_id)
                     .ok()
                     .flatten()
                     .map(|item| item.file_name)
                     .unwrap_or_default();
-                self.facade.on_completed(id);
-                self.bus.emit(FrontendEvent::DownloadCompleted, serde_json::json!({ "id": id, "file_name": file_name }));
+                self.facade.on_completed(dl_id);
+                self.bus.emit(FrontendEvent::DownloadCompleted,
+                    serde_json::json!({ "id": dl_id, "file_name": file_name }));
             }
-            EventKind::DownloadErrored => {
-                let msg = event.data.unwrap_or_default();
-                self.facade.on_error(id, msg);
+            EventAction::DownloadErrored(dl_id, msg) => {
+                self.facade.on_error(dl_id, msg);
             }
-            EventKind::DownloadProgress => {
-                if let Some(data) = &event.data {
-                    if let Ok(downloaded) = data.parse::<u64>() {
-                        self.facade.update_progress(id, downloaded);
-                        self.bus.emit(FrontendEvent::DownloadProgress, serde_json::json!({ "id": id, "downloaded": downloaded }));
-                    }
-                }
+            EventAction::UpdateProgress(dl_id, downloaded) => {
+                self.facade.update_progress(dl_id, downloaded);
+                self.bus.emit(FrontendEvent::DownloadProgress,
+                    serde_json::json!({ "id": dl_id, "downloaded": downloaded }));
             }
-            _ => {}
+            EventAction::Noop => {}
         }
     }
 
@@ -150,21 +150,11 @@ impl DownloadManager {
         }).await
     }
 
-    /// Pause a download: cancel workers → flush → save gob → update DB.
+    /// Pause a download: cancel workers → persist state → emit event.
     pub async fn pause_download(&self, id: u64) -> PdmResult<()> {
         self.log_info(&format!("Pause id={}", id));
         self.worker_pool.cancel_and_wait(id).await;
-        self.facade.flush();
-
-        if let Ok(Some(mut item)) = self.facade.get_item(id) {
-            if matches!(item.status, DownloadStatus::Downloading) {
-                if item.resumable != Some(true) {
-                    self.facade.save_gob_for_non_resumable(&item);
-                }
-                item.status = DownloadStatus::Paused;
-                let _ = self.facade.update_item(&item);
-            }
-        }
+        self.facade.on_paused(id)?;
         self.bus.emit(FrontendEvent::DownloadPaused, serde_json::json!({ "id": id }));
         Ok(())
     }
@@ -173,7 +163,7 @@ impl DownloadManager {
     pub async fn resume_download(&self, id: u64) -> PdmResult<()> {
         self.log_info(&format!("Resume id={}", id));
 
-        if let Some(saved_state) = self.facade.load_gob(id) {
+        if let Some(saved_state) = self.facade.load_resume_state(id) {
             let supports_range = if let Ok(Some(mut item)) = self.facade.get_item(id) {
                 item.status = DownloadStatus::Downloading;
                 item.last_try = now_str();
@@ -220,8 +210,7 @@ impl DownloadManager {
         };
 
         self.worker_pool.cancel_and_wait(id).await;
-        self.facade.delete_item(id)?;
-        self.facade.delete_gob(id);
+        self.facade.on_deleted(id)?;
 
         if let Some(path) = save_path {
             let p = std::path::Path::new(&path);
@@ -242,19 +231,7 @@ impl DownloadManager {
         self.bus.emit(FrontendEvent::DownloadCancelled, serde_json::json!({ "id": id }));
     }
 
-    /// Delegate check_update to the network service.
-    pub async fn check_update(&self, proxy_name: &str) -> PdmResult<serde_json::Value> {
-        let proxy_url = self.settings.resolve_proxy_url(proxy_name);
-        self.network.check_update(proxy_url.as_deref()).await
-    }
-
-    /// Delegate test_proxy to the network service.
-    pub async fn test_proxy(&self, proxy_name: &str) -> PdmResult<serde_json::Value> {
-        let proxy_url = self.settings.resolve_proxy_url(proxy_name);
-        self.network.test_proxy(proxy_url.as_deref()).await
-    }
-
-    /// Shared pipeline: probe → plan chunks → disk check → DB insert → spawn worker.
+    // ── Shared pipeline: probe → plan chunks → disk check → DB insert → spawn worker. ──
     async fn execute_download(&self, spec: DownloadSpec) -> PdmResult<u64> {
         let pool = self.worker_pool.pool_ref();
         let headers = std::collections::HashMap::new();

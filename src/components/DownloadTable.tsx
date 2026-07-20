@@ -14,7 +14,8 @@ interface DownloadTableProps {
 }
 
 export default function DownloadTable({ filter }: DownloadTableProps) {
-  const { selectedIds, setSelectedIds, actions } = useAppContext();
+  const { selectedIds, selectionActions, actions } = useAppContext();
+  const { select, clearSelection } = selectionActions;
   const { onStop, onDelete, onProperties, onRedownload } = actions;
   const { data: downloads = [], isLoading } = useDownloads();
   console.debug('[ProxyDM FE] DownloadTable render filter=', filter, 'count=', downloads.length);
@@ -28,17 +29,14 @@ export default function DownloadTable({ filter }: DownloadTableProps) {
 
   const toggleSelectAll = () => {
     if (selectAllChecked) {
-      setSelectedIds(new Set());
+      clearSelection();
     } else {
-      setSelectedIds(new Set(filtered.map((d) => d.id)));
+      select(new Set(filtered.map((d) => d.id)));
     }
   };
 
   const toggleSelect = (id: number) => {
-    const next = new Set(selectedIds);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    setSelectedIds(next);
+    selectionActions.toggle(id);
   };
 
   const handleOpen = async (path: string) => {

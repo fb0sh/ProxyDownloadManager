@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
+import { tauriClient } from "../tauriClient";
 import type { UpdateInfo } from "../types";
 
 export type CheckState = "idle" | "checking" | "done" | "error";
@@ -19,9 +19,7 @@ export function useUpdateChecker(proxyName: string) {
     setCheckState("checking");
     setErrorMsg("");
     try {
-      const info = await invoke<UpdateInfo>("check_update", {
-        proxyName,
-      });
+      const info = await tauriClient.checkUpdate(proxyName);
       setUpdateInfo(info);
       setCheckState("done");
     } catch (e) {

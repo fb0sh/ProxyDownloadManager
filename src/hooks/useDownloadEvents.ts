@@ -9,6 +9,16 @@ import type { DownloadItem } from "../types";
 import { EVENTS } from "../constants/events";
 import { useWindowManager } from "./useWindowManager";
 
+/** Patch a download-list cache with updated progress for a single download. */
+export function patchDownloadProgress(
+  cache: DownloadItem[] | undefined,
+  id: number,
+  downloaded: number,
+): DownloadItem[] | undefined {
+  if (!cache) return cache;
+  return cache.map((d) => (d.id === id ? { ...d, downloaded } : d));
+}
+
 interface DownloadEventsOptions {
   queryClient: QueryClient;
 }
@@ -24,11 +34,12 @@ async function sendDownloadNotification(id: number, title: string, body?: string
     }
     sendNotification({ title, body: body ?? `Download #${id}` });
   } catch {
+    // Tauri notification API unavailable — fall back to web Notification
     try {
       if (window.Notification.permission === "granted") {
         new window.Notification(title, { body: body ?? `Download #${id}` });
       }
-    } catch {}
+    } catch { /* web Notification also unavailable */ }
   }
 }
 
@@ -62,7 +73,7 @@ export function useDownloadEvents({ queryClient }: DownloadEventsOptions) {
         try {
           const mainWin = await WebviewWindow.getByLabel("main");
           if (mainWin) { await mainWin.show(); await mainWin.setFocus(); }
-        } catch {}
+        } catch { /* main window may not exist */ }
       })
     );
 
@@ -70,10 +81,9 @@ export function useDownloadEvents({ queryClient }: DownloadEventsOptions) {
     unlisteners.push(
       listen<{ id: number; downloaded: number }>(EVENTS.DOWNLOAD_PROGRESS, (event) => {
         const { id, downloaded } = event.payload;
-        queryClient.setQueryData<DownloadItem[]>(["downloads"], (old) => {
-          if (!old) return old;
-          return old.map((d) => (d.id === id ? { ...d, downloaded } : d));
-        });
+        queryClient.setQueryData<DownloadItem[]>(["downloads"], (old) =>
+          patchDownloadProgress(old, id, downloaded)
+        );
       })
     );
 
@@ -121,7 +131,7 @@ export function useDownloadEvents({ queryClient }: DownloadEventsOptions) {
           try {
             const mainWin = await WebviewWindow.getByLabel("main");
             if (mainWin) { await mainWin.show(); await mainWin.setFocus(); }
-          } catch {}
+          } catch { /* main window may not exist */ }
         } else if (id) {
           openDetails(Number(id));
         }

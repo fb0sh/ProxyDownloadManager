@@ -11,7 +11,7 @@ export function useDownloadDetail(id: number | undefined) {
       await navigator.clipboard.writeText(item?.url ?? "");
       setUrlCopied(true);
       setTimeout(() => setUrlCopied(false), 2000);
-    } catch {} // clipboard not available
+    } catch { /* clipboard not available */ }
   };
 
   const handleOpenFile = async () => {

@@ -10,14 +10,12 @@ import {
   usePauseDownload, useResumeDownload, useDownloads, useSettings, useRedownloadDownload,
 } from "../src/query/downloadQueries";
 import Layout from "../src/components/Layout";
-import DeleteDialog from "../src/components/dialogs/DeleteDialog";
-import SettingsDialog from "../src/components/dialogs/SettingsDialog";
-import AboutDialog from "../src/components/dialogs/AboutDialog";
-import LogDialog from "../src/components/dialogs/LogDialog";
-import ExtensionDialog from "../src/components/dialogs/ExtensionDialog";
+import DialogRenderer from "../src/components/DialogRenderer";
 import NewDownloadDialog from "../src/components/dialogs/NewDownloadDialog";
 import PropertiesDialog from "../src/components/dialogs/PropertiesDialog";
 import { AppProvider, useAppContext } from "../src/contexts/AppContext";
+import { useDialog } from "../src/hooks/useDialog";
+import { useSelection } from "../src/hooks/useSelection";
 import type { DownloadItem } from "../src/types";
 
 /* ─── React Query client ────────────────────────────────────────────── */
@@ -58,41 +56,48 @@ function AppInner() {
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
       <Layout onRedownloadItem={selectedForRedownload} />
-
-      {dialog?.type === "delete" && (
-        <DeleteDialog ids={dialog.ids} onClose={() => { setDialog(null); setSelectedIds(new Set()); }} />
-      )}
-      {dialog?.type === "settings" && <SettingsDialog onClose={() => setDialog(null)} />}
-      {dialog?.type === "about" && <AboutDialog onClose={() => setDialog(null)} onDownloadUpdate={() => {}} />}
-      {dialog?.type === "extension" && <ExtensionDialog onClose={() => setDialog(null)} />}
-      {dialog?.type === "log" && <LogDialog onClose={() => setDialog(null)} />}
-      {dialog?.type === "newDownload" && (
-        <NewDownloadDialog onClose={() => setDialog(null)} initialUrl={dialog.url || ""} />
-      )}
-      {dialog?.type === "properties" && (
-        <PropertiesDialog id={dialog.id} onClose={() => setDialog(null)} />
-      )}
+      <DialogRenderer
+        dialog={dialog}
+        onClose={() => { setDialog(null); setSelectedIds(new Set()); }}
+        onDownloadUpdate={() => {}}
+        renderExtras={(d) => {
+          if (d.type === "newDownload") {
+            return <NewDownloadDialog onClose={() => setDialog(null)} initialUrl={d.url || ""} />;
+          }
+          if (d.type === "properties") {
+            return <PropertiesDialog id={d.id} onClose={() => setDialog(null)} />;
+          }
+          return null;
+        }}
+      />
     </div>
   );
 }
 
 function AppWithProvider() {
   const [dialog, setDialog] = useState<DemoDialog>(null);
-  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const dialogHooks = useDialog();
+  const selection = useSelection();
   const [filter, setFilter] = useState<"all" | "completed" | "incomplete">("all");
 
-  // Demo actions — minimal, no quit/real operations
+  // Bridge: useDialog provides SharedDialog actions; extend with demo-specific dialog types
+  const dialogActions = {
+    ...dialogHooks,
+    // Override closeDialog to use the wider DemoDialog setter
+    closeDialog: () => setDialog(null),
+  };
+
   const actions = {
     onNewDownload: () => setDialog({ type: "newDownload" }),
-    onExtension: () => setDialog({ type: "extension" }),
-    onLog: () => setDialog({ type: "log" }),
-    onSettings: () => setDialog({ type: "settings" }),
-    onAbout: () => setDialog({ type: "about" }),
+    onExtension: () => dialogActions.openExtension(),
+    onLog: () => dialogActions.openLog(),
+    onSettings: () => dialogActions.openSettings(),
+    onAbout: () => dialogActions.openAbout(),
     onQuit: () => {},
     onResumeSelected: async () => {},
     onPauseSelected: () => {},
     onDeleteSelected: () => {
-      if (selectedIds.size > 0) setDialog({ type: "delete", ids: Array.from(selectedIds) });
+      if (selection.selectedIds.size > 0) setDialog({ type: "delete", ids: Array.from(selection.selectedIds) });
     },
     onStop: () => {},
     onDelete: (ids: number[]) => setDialog({ type: "delete", ids }),
@@ -102,8 +107,10 @@ function AppWithProvider() {
 
   return (
     <AppProvider
-      dialog={dialog} setDialog={setDialog as any}
-      selectedIds={selectedIds} setSelectedIds={setSelectedIds}
+      dialog={dialog}
+      dialogActions={dialogActions}
+      selectedIds={selection.selectedIds}
+      selectionActions={selection}
       filter={filter} setFilter={setFilter}
       actions={actions}
     >

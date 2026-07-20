@@ -1,7 +1,9 @@
 use std::fmt;
 
 /// Structured error type for the ProxyDownloadManager domain.
-#[derive(Debug, Clone, PartialEq)]
+/// Implements Serialize so Tauri commands can return typed errors to the frontend.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum PdmError {
     /// Download was cancelled by the user.
     Cancelled,
