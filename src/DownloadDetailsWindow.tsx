@@ -43,7 +43,7 @@ export default function DownloadDetailsWindow() {
   const {
     item,
     urlCopied,
-    actionPending,
+    pendingAction,
     handleCopyUrl,
     handleOpenFile,
     handleOpenFolder,
@@ -54,12 +54,12 @@ export default function DownloadDetailsWindow() {
   const closeWindow = () => { getCurrentWebviewWindow().close(); };
 
   const handleOpenFileAndClose = async () => {
-    await handleOpenFile();
-    closeWindow();
+    const ok = await handleOpenFile();
+    if (ok) closeWindow();
   };
   const handleOpenFolderAndClose = async () => {
-    await handleOpenFolder();
-    closeWindow();
+    const ok = await handleOpenFolder();
+    if (ok) closeWindow();
   };
 
   if (!idParam) return <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100vh" }}><Text>No download ID provided</Text></div>;
@@ -67,8 +67,11 @@ export default function DownloadDetailsWindow() {
 
   const resumable = item.resumable === true ? t("properties.yes") : item.resumable === false ? t("properties.no") : t("properties.unknown");
   const pct = overallPercent(item.downloaded, item.total_size, item.status);
-  const canPause = item.status === "downloading";
-  const canResume = item.status === "paused" || item.status === "queued";
+  const busy = pendingAction !== null;
+  // Keep the clicked control visible+disabled until success (status may lag).
+  const showPause = item.status === "downloading" || pendingAction === "pause";
+  const showResume = item.status === "paused" || item.status === "queued" || pendingAction === "resume";
+  const showOpen = item.status === "completed" || pendingAction === "openFile" || pendingAction === "openFolder";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh", fontSize: 12, background: "var(--bgColor-default, #fff)" }}>
@@ -82,20 +85,24 @@ export default function DownloadDetailsWindow() {
           {item.file_name}
         </Text>
         <Label variant={statusColor(item.status)} style={{ fontSize: 11 }}>{statusString(item.status)}</Label>
-        {canPause && (
-          <Button size="small" onClick={handlePause} disabled={actionPending}>
+        {showPause && (
+          <Button size="small" onClick={handlePause} disabled={busy}>
             {t("toolbar.stop")}
           </Button>
         )}
-        {canResume && (
-          <Button size="small" onClick={handleResume} disabled={actionPending} variant="primary">
+        {showResume && (
+          <Button size="small" onClick={handleResume} disabled={busy} variant="primary">
             {t("toolbar.resume")}
           </Button>
         )}
-        {item.status === "completed" && (
+        {showOpen && (
           <>
-            <Button size="small" onClick={handleOpenFileAndClose}>{t("downloadRow.open")}</Button>
-            <Button size="small" onClick={handleOpenFolderAndClose}>{t("downloadRow.openFolder")}</Button>
+            <Button size="small" onClick={handleOpenFileAndClose} disabled={busy}>
+              {t("downloadRow.open")}
+            </Button>
+            <Button size="small" onClick={handleOpenFolderAndClose} disabled={busy}>
+              {t("downloadRow.openFolder")}
+            </Button>
           </>
         )}
       </div>
@@ -155,6 +162,7 @@ export default function DownloadDetailsWindow() {
           </Text>
           <Button size="small" onClick={handleCopyUrl}
             leadingVisual={CopyIcon}
+            disabled={busy}
             style={{ flexShrink: 0 }}
           >
             {urlCopied ? "✓" : ""}

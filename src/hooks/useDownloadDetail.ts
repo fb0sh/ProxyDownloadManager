@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { flushSync } from "react-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -11,15 +12,17 @@ import { patchDownloadProgress } from "./useDownloadEvents";
 import { EVENTS } from "../constants/events";
 import type { DownloadItem } from "../types";
 
+export type DetailPendingAction = "pause" | "resume" | "openFile" | "openFolder" | "copyUrl" | null;
+
 export function useDownloadDetail(id: number | undefined) {
   const item = useDownload(id);
   const queryClient = useQueryClient();
   const pauseDownload = usePauseDownload();
   const resumeDownload = useResumeDownload();
   const [urlCopied, setUrlCopied] = useState(false);
-  const [actionPending, setActionPending] = useState(false);
+  /** Which action is in-flight; null = interactive. */
+  const [pendingAction, setPendingAction] = useState<DetailPendingAction>(null);
 
-  // Details is a separate webview — subscribe to progress for live Progress Map.
   useEffect(() => {
     if (id === undefined) return;
     let cancelled = false;
@@ -41,7 +44,6 @@ export function useDownloadDetail(id: number | undefined) {
       })
     );
 
-    // Pause/resume from this window or main window: refresh item status.
     for (const name of [
       EVENTS.DOWNLOAD_PAUSED,
       EVENTS.DOWNLOAD_RESUMED,
@@ -62,52 +64,65 @@ export function useDownloadDetail(id: number | undefined) {
     };
   }, [id, queryClient]);
 
-  const handleCopyUrl = async () => {
+  /**
+   * Click → flushSync disable (gray) immediately → await work →
+   * clear pending only after success (or failure so user can retry).
+   * @returns true if work succeeded
+   */
+  const runAction = async (
+    action: NonNullable<DetailPendingAction>,
+    work: () => Promise<void>,
+  ): Promise<boolean> => {
+    if (pendingAction !== null) return false;
+    flushSync(() => {
+      setPendingAction(action);
+    });
     try {
+      await work();
+      setPendingAction(null);
+      return true;
+    } catch (e) {
+      console.error(`[ProxyDM] details ${action} failed:`, e);
+      setPendingAction(null);
+      return false;
+    }
+  };
+
+  const handleCopyUrl = () =>
+    runAction("copyUrl", async () => {
       await navigator.clipboard.writeText(item?.url ?? "");
       setUrlCopied(true);
       setTimeout(() => setUrlCopied(false), 2000);
-    } catch { /* clipboard not available */ }
-  };
+    });
 
-  const handleOpenFile = async () => {
-    if (!item) return;
-    await openFile(item.save_path);
-  };
+  const handleOpenFile = () =>
+    runAction("openFile", async () => {
+      if (!item) throw new Error("no item");
+      await openFile(item.save_path);
+    });
 
-  const handleOpenFolder = async () => {
-    if (!item) return;
-    await openFolder(item.save_path);
-  };
+  const handleOpenFolder = () =>
+    runAction("openFolder", async () => {
+      if (!item) throw new Error("no item");
+      await openFolder(item.save_path);
+    });
 
-  const handlePause = async () => {
-    if (id === undefined || actionPending) return;
-    setActionPending(true);
-    try {
+  const handlePause = () =>
+    runAction("pause", async () => {
+      if (id === undefined) throw new Error("no id");
       await pauseDownload.mutateAsync(id);
-    } catch (e) {
-      console.error("[ProxyDM] pause from details failed:", e);
-    } finally {
-      setActionPending(false);
-    }
-  };
+    });
 
-  const handleResume = async () => {
-    if (id === undefined || actionPending) return;
-    setActionPending(true);
-    try {
+  const handleResume = () =>
+    runAction("resume", async () => {
+      if (id === undefined) throw new Error("no id");
       await resumeDownload.mutateAsync(id);
-    } catch (e) {
-      console.error("[ProxyDM] resume from details failed:", e);
-    } finally {
-      setActionPending(false);
-    }
-  };
+    });
 
   return {
     item,
     urlCopied,
-    actionPending,
+    pendingAction,
     handleCopyUrl,
     handleOpenFile,
     handleOpenFolder,
