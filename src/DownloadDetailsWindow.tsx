@@ -30,10 +30,26 @@ const v: React.CSSProperties = {
   flex: 1, minWidth: 0, wordBreak: "break-all", color: "var(--fgColor-default, #1f2328)",
 };
 
+/** Overall download percent 0–100. */
+function overallPercent(downloaded: number, totalSize: number, status: string | object): number {
+  if (status === "completed") return 100;
+  if (totalSize <= 0) return 0;
+  return Math.min(100, Math.floor((Math.min(downloaded, totalSize) / totalSize) * 100));
+}
+
 export default function DownloadDetailsWindow() {
   const idParam = new URLSearchParams(window.location.search).get("id");
   const id = useDownloadIdFromUrl();
-  const { item, urlCopied, handleCopyUrl, handleOpenFile, handleOpenFolder } = useDownloadDetail(id);
+  const {
+    item,
+    urlCopied,
+    actionPending,
+    handleCopyUrl,
+    handleOpenFile,
+    handleOpenFolder,
+    handlePause,
+    handleResume,
+  } = useDownloadDetail(id);
 
   const closeWindow = () => { getCurrentWebviewWindow().close(); };
 
@@ -50,10 +66,13 @@ export default function DownloadDetailsWindow() {
   if (!item) return <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100vh" }}><Text>Loading...</Text></div>;
 
   const resumable = item.resumable === true ? t("properties.yes") : item.resumable === false ? t("properties.no") : t("properties.unknown");
+  const pct = overallPercent(item.downloaded, item.total_size, item.status);
+  const canPause = item.status === "downloading";
+  const canResume = item.status === "paused" || item.status === "queued";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh", fontSize: 12, background: "var(--bgColor-default, #fff)" }}>
-      {/* Header */}
+      {/* Header: title + status + actions */}
       <div style={{
         display: "flex", alignItems: "center", gap: 8,
         padding: "10px 14px", borderBottom: "1px solid var(--borderColor-muted, #d8dee4)",
@@ -63,12 +82,62 @@ export default function DownloadDetailsWindow() {
           {item.file_name}
         </Text>
         <Label variant={statusColor(item.status)} style={{ fontSize: 11 }}>{statusString(item.status)}</Label>
+        {canPause && (
+          <Button size="small" onClick={handlePause} disabled={actionPending}>
+            {t("toolbar.stop")}
+          </Button>
+        )}
+        {canResume && (
+          <Button size="small" onClick={handleResume} disabled={actionPending} variant="primary">
+            {t("toolbar.resume")}
+          </Button>
+        )}
         {item.status === "completed" && (
           <>
             <Button size="small" onClick={handleOpenFileAndClose}>{t("downloadRow.open")}</Button>
             <Button size="small" onClick={handleOpenFolderAndClose}>{t("downloadRow.openFolder")}</Button>
           </>
         )}
+      </div>
+
+      {/* Overall progress — under title, above URL */}
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        padding: "8px 14px",
+        borderBottom: "1px solid var(--borderColor-muted, #d8dee4)",
+      }}>
+        <div
+          role="progressbar"
+          aria-valuenow={pct}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          style={{
+            flex: 1,
+            height: 8,
+            borderRadius: 4,
+            background: "var(--bgColor-muted, #eaeef2)",
+            overflow: "hidden",
+          }}
+        >
+          <div style={{
+            width: `${pct}%`,
+            height: "100%",
+            background: "var(--bgColor-success-emphasis, #1a7f37)",
+            transition: "width 0.2s ease-out",
+            borderRadius: 4,
+          }} />
+        </div>
+        <Text size="small" weight="semibold" style={{
+          flexShrink: 0,
+          minWidth: 40,
+          textAlign: "right",
+          fontVariantNumeric: "tabular-nums",
+          color: "var(--fgColor-default, #1f2328)",
+        }}>
+          {pct}%
+        </Text>
       </div>
 
       {/* URL */}
@@ -93,10 +162,10 @@ export default function DownloadDetailsWindow() {
         </div>
       </div>
 
-      {/* Content */}
+      {/* Content cards */}
       <div style={{ padding: "10px 14px", flex: 1, overflow: "auto", display: "flex", flexDirection: "column", gap: 10 }}>
 
-        {/* File */}
+        {/* 1. File */}
         <div style={card}>
           <div style={hdr}>{t("properties.file")}</div>
           <div style={bd}>
@@ -106,7 +175,15 @@ export default function DownloadDetailsWindow() {
           </div>
         </div>
 
-        {/* Download */}
+        {/* 2. Progress Map */}
+        <div style={card}>
+          <div style={hdr}>{t("properties.progressMap")}</div>
+          <div style={bd}>
+            <ProgressMap parts={item.parts ?? []} />
+          </div>
+        </div>
+
+        {/* 3. Download */}
         <div style={card}>
           <div style={hdr}>{t("properties.download")}</div>
           <div style={bd}>
@@ -116,20 +193,12 @@ export default function DownloadDetailsWindow() {
           </div>
         </div>
 
-        {/* Network */}
+        {/* 4. Network */}
         <div style={card}>
           <div style={hdr}>{t("properties.network")}</div>
           <div style={bd}>
             <div style={r}><span style={l}>{t("properties.connections")}</span><span style={v}>{String(item.connections)}</span></div>
             <div style={r}><span style={l}>{t("properties.proxy")}</span><span style={v}>{item.proxy_name || "—"}</span></div>
-          </div>
-        </div>
-
-        {/* Progress Map — fixed Parts, 8 cols, green bottom-up fill */}
-        <div style={card}>
-          <div style={hdr}>{t("properties.progressMap")}</div>
-          <div style={bd}>
-            <ProgressMap parts={item.parts ?? []} />
           </div>
         </div>
 
