@@ -73,12 +73,26 @@ impl DownloadStateFacade {
     // ── Lifecycle events ──
 
     /// Initialize runtime for a newly started download.
-    /// If a gob file exists (resume case), seed runtime with saved progress
-    /// so that flush_to_db doesn't reset the DB value to 0.
+    /// Seed total + per-part progress from DB (and gob) so Progress Map / list
+    /// don't flash 0 after pause→resume before the first engine event.
     pub fn on_started(&self, id: u64) {
         let saved = gob::load_state(id).ok().flatten();
         self.runtime.register(id);
-        if let Some(s) = saved {
+        if let Ok(Some(item)) = self.db.get_by_id(id) {
+            let part_dl: Vec<u64> = item.parts.iter().map(|p| p.downloaded).collect();
+            let downloaded = saved
+                .as_ref()
+                .map(|s| s.downloaded)
+                .unwrap_or(item.downloaded)
+                .max(item.downloaded);
+            if downloaded > 0 || !part_dl.is_empty() {
+                self.runtime.update_progress(
+                    id,
+                    downloaded,
+                    if part_dl.is_empty() { None } else { Some(part_dl) },
+                );
+            }
+        } else if let Some(s) = saved {
             if s.downloaded > 0 {
                 self.runtime.update_progress(id, s.downloaded, None);
             }
@@ -142,8 +156,25 @@ impl DownloadStateFacade {
     /// update DB status to Paused. The caller has already cancelled the engine.
     pub fn on_paused(&self, id: u64) -> PdmResult<()> {
         self.flush();
+        // Merge runtime totals into the item row so part.downloaded is durable for resume.
         if let Ok(Some(mut item)) = self.db.get_by_id(id) {
             if matches!(item.status, DownloadStatus::Downloading) {
+                if let Some(dl) = self.runtime.get_downloaded(id) {
+                    item.downloaded = dl;
+                }
+                if let Some(parts) = self.runtime.get_part_downloaded(id) {
+                    for (i, d) in parts.iter().enumerate() {
+                        if let Some(part) = item.parts.get_mut(i) {
+                            part.downloaded = *d;
+                            let len = part.end.saturating_sub(part.start);
+                            if *d >= len && len > 0 {
+                                part.status = PartStatus::Completed;
+                            } else if *d > 0 {
+                                part.status = PartStatus::Downloading;
+                            }
+                        }
+                    }
+                }
                 if item.resumable != Some(true) {
                     self.save_gob_for_non_resumable(&item);
                 }
@@ -151,6 +182,8 @@ impl DownloadStateFacade {
                 self.db.update_download(&item)?;
             }
         }
+        // Active engine is stopped — drop runtime so list_items reads DB parts.
+        self.runtime.remove(id);
         Ok(())
     }
 

@@ -4,6 +4,7 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { formatBytes } from "./utils/format";
 import { formatTimestamp, statusColor, statusString } from "./utils/download";
 import { useDownloadDetail, useDownloadIdFromUrl } from "./hooks/useDownloadDetail";
+import { useDownloadSpeed } from "./hooks/useDownloadSpeed";
 import ProgressMap from "./components/ProgressMap";
 import { t } from "./i18n";
 
@@ -51,6 +52,10 @@ export default function DownloadDetailsWindow() {
     handleResume,
   } = useDownloadDetail(id);
 
+  // Hooks must run before any early return
+  const speedInputs = item?.status === "downloading" && item ? [item] : [];
+  const speeds = useDownloadSpeed(speedInputs);
+
   const closeWindow = () => { getCurrentWebviewWindow().close(); };
 
   const handleOpenFileAndClose = async () => {
@@ -64,6 +69,14 @@ export default function DownloadDetailsWindow() {
 
   if (!idParam) return <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100vh" }}><Text>No download ID provided</Text></div>;
   if (!item) return <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100vh" }}><Text>Loading...</Text></div>;
+
+  const speedInfo = speeds.get(item.id);
+  const speedLabel =
+    item.status === "downloading" && speedInfo && speedInfo.bps > 0
+      ? `(${speedInfo.display})`
+      : item.status === "downloading"
+        ? "(—)"
+        : null;
 
   const resumable = item.resumable === true ? t("properties.yes") : item.resumable === false ? t("properties.no") : t("properties.unknown");
   const pct = overallPercent(item.downloaded, item.total_size, item.status);
@@ -142,9 +155,20 @@ export default function DownloadDetailsWindow() {
           textAlign: "right",
           fontVariantNumeric: "tabular-nums",
           color: "var(--fgColor-default, #1f2328)",
+          whiteSpace: "nowrap",
         }}>
           {pct}%
         </Text>
+        {speedLabel && (
+          <Text size="small" style={{
+            flexShrink: 0,
+            fontVariantNumeric: "tabular-nums",
+            color: "var(--fgColor-muted, #656d76)",
+            whiteSpace: "nowrap",
+          }}>
+            {speedLabel}
+          </Text>
+        )}
       </div>
 
       {/* URL */}

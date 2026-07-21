@@ -127,6 +127,34 @@ pub fn encode_progress_data(downloaded: u64, parts: &[u64], reset_to_single: boo
     .to_string()
 }
 
+/// Rebuild remaining Range tasks from fixed parts (for resume when gob tasks missing).
+/// Each incomplete part becomes `Task { offset: start + done, length: remaining }`.
+pub fn remaining_tasks_from_parts(
+    ranges: &[PartRange],
+    part_downloaded: &[u64],
+) -> Vec<crate::types::Task> {
+    ranges
+        .iter()
+        .enumerate()
+        .filter_map(|(i, range)| {
+            let done = part_downloaded
+                .get(i)
+                .copied()
+                .unwrap_or(0)
+                .min(range.len());
+            let left = range.len().saturating_sub(done);
+            if left == 0 {
+                None
+            } else {
+                Some(crate::types::Task {
+                    offset: range.start + done,
+                    length: left,
+                })
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,6 +215,21 @@ mod tests {
         ]);
         t.seed_from_parts(&[100, 30]);
         assert_eq!(t.snapshot(), vec![100, 30]);
+    }
+
+    #[test]
+    fn remaining_tasks_skips_complete_parts() {
+        let ranges = vec![
+            PartRange { start: 0, end: 100 },
+            PartRange { start: 100, end: 300 },
+            PartRange { start: 300, end: 400 },
+        ];
+        let tasks = remaining_tasks_from_parts(&ranges, &[100, 50, 0]);
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0].offset, 150);
+        assert_eq!(tasks[0].length, 150);
+        assert_eq!(tasks[1].offset, 300);
+        assert_eq!(tasks[1].length, 100);
     }
 
     #[test]

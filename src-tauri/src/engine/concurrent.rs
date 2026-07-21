@@ -20,30 +20,6 @@ impl ConcurrentDownloader {
     }
 
     pub async fn download(&self, cfg: &EngineConfig, limiter: Arc<MultiLimiter>, cancel: Arc<AtomicBool>, on_resume: &crate::engine::OnResumeState) -> PdmResult<()> {
-        // Always recompute tasks from cfg.downloaded to ensure resume_offset
-        // matches actual bytes written. The saved resume_tasks may not include
-        // the in-progress task that was lost on cancel.
-        let (tasks, resume_offset) = if cfg.is_resume && cfg.downloaded > 0 {
-            let remaining = cfg.total_size.saturating_sub(cfg.downloaded);
-            let num_conns = 4.max(cfg.connections);
-            log::info!("[ProxyDM] concurrent id={} resume from {} bytes, {} remaining", cfg.id, cfg.downloaded, remaining);
-            let base = cfg.downloaded;
-            let tasks: Vec<Task> = chunk::compute_chunks(remaining, num_conns, 0)
-                .into_iter()
-                .map(|t| Task { offset: t.offset + base, length: t.length })
-                .collect();
-            (tasks, base)
-        } else if cfg.is_resume {
-            // Fallback: downloaded=0 but is_resume=true (gob lost or corrupted)
-            let remaining = cfg.total_size;
-            let num_conns = 4.max(cfg.connections);
-            log::info!("[ProxyDM] concurrent id={} resume with no progress, recomputing from scratch", cfg.id);
-            (chunk::compute_chunks(remaining, num_conns, 0), 0)
-        } else {
-            (chunk::compute_chunks(cfg.total_size, cfg.connections.max(1), 0), 0)
-        };
-        let bytes_written = Arc::new(AtomicU64::new(resume_offset));
-
         let part_ranges: Vec<PartRange> = if cfg.part_ranges.is_empty() {
             if cfg.total_size > 0 {
                 vec![PartRange { start: 0, end: cfg.total_size }]
@@ -56,6 +32,52 @@ impl ConcurrentDownloader {
                 .map(|&(start, end)| PartRange { start, end })
                 .collect()
         };
+
+        // Resume must use non-contiguous remaining work — concurrent writes are NOT a
+        // file prefix. Prefer gob remaining tasks, then rebuild from fixed Part map.
+        let (tasks, resume_offset) = if cfg.is_resume && !cfg.resume_tasks.is_empty() {
+            log::info!(
+                "[ProxyDM] concurrent id={} resume with {} saved tasks, downloaded={}",
+                cfg.id,
+                cfg.resume_tasks.len(),
+                cfg.downloaded
+            );
+            (cfg.resume_tasks.clone(), cfg.downloaded)
+        } else if cfg.is_resume && !cfg.part_downloaded.is_empty() && !part_ranges.is_empty() {
+            let tasks = crate::engine::part_progress::remaining_tasks_from_parts(
+                &part_ranges,
+                &cfg.part_downloaded,
+            );
+            let offset: u64 = cfg.part_downloaded.iter().sum();
+            log::info!(
+                "[ProxyDM] concurrent id={} resume rebuilt {} tasks from parts, downloaded≈{}",
+                cfg.id,
+                tasks.len(),
+                offset
+            );
+            (tasks, offset.max(cfg.downloaded))
+        } else if cfg.is_resume && cfg.downloaded > 0 {
+            // Last-resort contiguous fallback (wrong for multi-part, but better than nothing)
+            let remaining = cfg.total_size.saturating_sub(cfg.downloaded);
+            let num_conns = 4.max(cfg.connections);
+            log::warn!(
+                "[ProxyDM] concurrent id={} resume CONTIGUOUS FALLBACK from {} ({} remaining)",
+                cfg.id, cfg.downloaded, remaining
+            );
+            let base = cfg.downloaded;
+            let tasks: Vec<Task> = chunk::compute_chunks(remaining, num_conns, 0)
+                .into_iter()
+                .map(|t| Task { offset: t.offset + base, length: t.length })
+                .collect();
+            (tasks, base)
+        } else if cfg.is_resume {
+            log::info!("[ProxyDM] concurrent id={} resume with no progress, recomputing from scratch", cfg.id);
+            (chunk::compute_chunks(cfg.total_size, 4.max(cfg.connections), 0), 0)
+        } else {
+            (chunk::compute_chunks(cfg.total_size, cfg.connections.max(1), 0), 0)
+        };
+        let bytes_written = Arc::new(AtomicU64::new(resume_offset));
+
         let parts_tracker = PartProgressTracker::new(part_ranges);
         if !cfg.part_downloaded.is_empty() {
             parts_tracker.seed_from_parts(&cfg.part_downloaded);
