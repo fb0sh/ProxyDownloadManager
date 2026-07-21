@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { formatBytes } from "../utils/format";
 import { t } from "../i18n";
 import type { DownloadItem } from "../types";
@@ -10,17 +10,54 @@ export interface SpeedInfo {
 
 type SpeedMap = Map<number, SpeedInfo>;
 
-const WINDOW_SIZE = 10; // rolling average over last 10 samples (~5 seconds)
-const MIN_BYTES_DELTA = 512 * 1024; // ignore updates where total delta < 512KB
+const WINDOW_SIZE = 12;
+/** Any positive progress over ~0.3s is enough to estimate speed. */
+const MIN_BYTES_DELTA = 1;
+const MIN_DT_SEC = 0.3;
+const SAMPLE_MIN_INTERVAL_MS = 400;
 
+function computeBps(
+  samples: Array<{ downloaded: number; time: number }>,
+  prevBps: number | undefined,
+): number | null {
+  if (samples.length < 2) return null;
+  const first = samples[0]!;
+  const last = samples[samples.length - 1]!;
+  const dt = (last.time - first.time) / 1000;
+  const dBytes = last.downloaded - first.downloaded;
+  if (dt < MIN_DT_SEC || dBytes < MIN_BYTES_DELTA) {
+    return prevBps !== undefined && prevBps > 0 ? Math.round(prevBps * 0.92) : null;
+  }
+  const rawBps = Math.round(dBytes / dt);
+  if (prevBps !== undefined && prevBps > 0) {
+    return Math.round(prevBps * 0.5 + rawBps * 0.5);
+  }
+  return rawBps;
+}
+
+/**
+ * Rolling download speed for active items.
+ * Samples only when `downloaded` advances (or on a min interval) so parent
+ * re-renders with a new array identity don't poison the window with flat zeros.
+ */
 export function useDownloadSpeed(downloads: DownloadItem[]): SpeedMap {
   const samplesRef = useRef<Map<number, Array<{ downloaded: number; time: number }>>>(new Map());
-  const [speeds, setSpeeds] = useState<SpeedMap>(() => new Map());
-  // Keep previous bps for smoothing when current sample is stale
   const prevBpsRef = useRef<Map<number, number>>(new Map());
+  const [speeds, setSpeeds] = useState<SpeedMap>(() => new Map());
+
+  // Stable signature: only recompute when progress/status of tracked rows change.
+  const signature = useMemo(
+    () =>
+      downloads
+        .map((d) => `${d.id}:${d.status}:${d.downloaded}`)
+        .join("|"),
+    [downloads],
+  );
 
   useEffect(() => {
     const next = new Map<number, SpeedInfo>();
+    const now = Date.now();
+    const liveIds = new Set<number>();
 
     for (const item of downloads) {
       if (item.status !== "downloading") {
@@ -28,56 +65,62 @@ export function useDownloadSpeed(downloads: DownloadItem[]): SpeedMap {
         prevBpsRef.current.delete(item.id);
         continue;
       }
+      liveIds.add(item.id);
 
       if (!samplesRef.current.has(item.id)) {
         samplesRef.current.set(item.id, []);
       }
       const samples = samplesRef.current.get(item.id)!;
-      const now = Date.now();
-
-      // Add current sample
-      samples.push({ downloaded: item.downloaded, time: now });
-      if (samples.length > WINDOW_SIZE) {
-        samples.shift();
+      const last = samples[samples.length - 1];
+      const advanced = !last || item.downloaded !== last.downloaded;
+      const intervalOk = !last || now - last.time >= SAMPLE_MIN_INTERVAL_MS;
+      if (advanced || intervalOk) {
+        samples.push({ downloaded: item.downloaded, time: now });
+        if (samples.length > WINDOW_SIZE) samples.shift();
       }
 
-      if (samples.length >= 2) {
-        const first = samples[0];
-        const last = samples[samples.length - 1];
-        const dt = (last.time - first.time) / 1000;
-        const dBytes = last.downloaded - first.downloaded;
+      const prev = prevBpsRef.current.get(item.id);
+      const bps = computeBps(samples, prev);
+      if (bps !== null && bps > 0) {
+        prevBpsRef.current.set(item.id, bps);
+        next.set(item.id, {
+          display: formatBytes(bps) + t("downloadRow.speed"),
+          bps,
+        });
+      }
+    }
 
-        if (dt > 0.1 && dBytes >= MIN_BYTES_DELTA) {
-          const rawBps = Math.round(dBytes / dt);
-          // EMA smoothing: blend with previous value to reduce jitter
-          const prev = prevBpsRef.current.get(item.id);
-          const bps = prev !== undefined
-            ? Math.round(prev * 0.6 + rawBps * 0.4)
-            : rawBps;
-          prevBpsRef.current.set(item.id, bps);
-          next.set(item.id, {
-            display: formatBytes(bps) + t("downloadRow.speed"),
-            bps,
-          });
-        } else {
-          // Not enough data change — carry forward previous speed if available
-          const prev = prevBpsRef.current.get(item.id);
-          if (prev !== undefined && prev > 0) {
-            // Decay speed slightly so it doesn't freeze
-            const decayed = Math.round(prev * 0.95);
-            if (decayed > 1024) {
-              next.set(item.id, {
-                display: formatBytes(decayed) + t("downloadRow.speed"),
-                bps: decayed,
-              });
-            }
-          }
-        }
+    // Drop samples for ids no longer in the list
+    for (const id of [...samplesRef.current.keys()]) {
+      if (!liveIds.has(id)) {
+        samplesRef.current.delete(id);
+        prevBpsRef.current.delete(id);
       }
     }
 
     setSpeeds(next);
-  }, [downloads]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- signature captures downloads content
+  }, [signature]);
+
+  // Tick every second so time-based ETA/speed can update even if bytes stall.
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const next = new Map<number, SpeedInfo>();
+      for (const [id, samples] of samplesRef.current) {
+        const prev = prevBpsRef.current.get(id);
+        const bps = computeBps(samples, prev);
+        if (bps !== null && bps > 1024) {
+          prevBpsRef.current.set(id, bps);
+          next.set(id, {
+            display: formatBytes(bps) + t("downloadRow.speed"),
+            bps,
+          });
+        }
+      }
+      setSpeeds(next);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   return speeds;
 }

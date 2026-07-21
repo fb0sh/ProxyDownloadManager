@@ -175,9 +175,9 @@ impl DownloadStateFacade {
                         }
                     }
                 }
-                if item.resumable != Some(true) {
-                    self.save_gob_for_non_resumable(&item);
-                }
+                // Always persist gob for resume (engine cancel may have already written
+                // remaining tasks; rebuild from parts as a durable fallback).
+                self.save_resume_from_item(&item);
                 item.status = DownloadStatus::Paused;
                 self.db.update_download(&item)?;
             }
@@ -185,6 +185,61 @@ impl DownloadStateFacade {
         // Active engine is stopped — drop runtime so list_items reads DB parts.
         self.runtime.remove(id);
         Ok(())
+    }
+
+    /// Build DownloadState from fixed parts so resume never falls back to "from zero".
+    fn save_resume_from_item(&self, item: &DownloadItem) {
+        use crate::engine::part_progress::{remaining_tasks_from_parts, PartRange};
+        let ranges: Vec<PartRange> = if item.parts.is_empty() {
+            if item.total_size > 0 {
+                vec![PartRange {
+                    start: 0,
+                    end: item.total_size,
+                }]
+            } else {
+                vec![]
+            }
+        } else {
+            item.parts
+                .iter()
+                .map(|p| PartRange {
+                    start: p.start,
+                    end: p.end,
+                })
+                .collect()
+        };
+        let part_dl: Vec<u64> = if item.parts.is_empty() {
+            vec![item.downloaded]
+        } else {
+            item.parts.iter().map(|p| p.downloaded).collect()
+        };
+        // Prefer existing gob tasks (more precise mid-chunk offsets) if present.
+        let existing = gob::load_state(item.id).ok().flatten();
+        let tasks = if let Some(ref s) = existing {
+            if !s.tasks.is_empty() {
+                s.tasks.clone()
+            } else {
+                remaining_tasks_from_parts(&ranges, &part_dl)
+            }
+        } else {
+            remaining_tasks_from_parts(&ranges, &part_dl)
+        };
+        let downloaded = existing
+            .as_ref()
+            .map(|s| s.downloaded.max(item.downloaded))
+            .unwrap_or(item.downloaded);
+        let saved = DownloadState {
+            url: item.url.clone(),
+            id: item.id,
+            file_name: item.file_name.clone(),
+            save_path: item.save_path.clone(),
+            total_size: item.total_size,
+            downloaded,
+            tasks,
+            proxy_name: item.proxy_name.clone(),
+            workers: item.connections.max(1),
+        };
+        let _ = gob::save_state(item.id, &saved);
     }
 
     /// Delete a download: remove from DB and delete resume state.
@@ -204,25 +259,6 @@ impl DownloadStateFacade {
     /// Load engine resume state for reconstructing engine config on resume.
     pub fn load_resume_state(&self, id: u64) -> Option<DownloadState> {
         gob::load_state(id).ok().flatten()
-    }
-
-    /// Save gob state for non-resumable downloads (used internally by on_paused).
-    fn save_gob_for_non_resumable(&self, item: &DownloadItem) {
-        let remaining = item.total_size.saturating_sub(item.downloaded);
-        if remaining > 0 {
-            let saved = DownloadState {
-                url: item.url.clone(),
-                id: item.id,
-                file_name: item.file_name.clone(),
-                save_path: item.save_path.clone(),
-                total_size: item.total_size,
-                downloaded: item.downloaded,
-                tasks: vec![Task { offset: item.downloaded, length: remaining }],
-                proxy_name: item.proxy_name.clone(),
-                workers: 1,
-            };
-            let _ = gob::save_state(item.id, &saved);
-        }
     }
 
     // ── Flush ──

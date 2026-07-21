@@ -179,61 +179,66 @@ impl DownloadManager {
     pub async fn resume_download(&self, id: u64) -> PdmResult<()> {
         self.log_info(&format!("Resume id={}", id));
 
-        if let Some(saved_state) = self.facade.load_resume_state(id) {
-            let (supports_range, part_ranges, part_downloaded) =
-                if let Ok(Some(mut item)) = self.facade.get_item(id) {
-                    item.status = DownloadStatus::Downloading;
-                    item.last_try = now_str();
-                    let _ = self.facade.update_item(&item);
-                    let ranges = if item.parts.is_empty() {
-                        if item.total_size > 0 {
-                            vec![(0, item.total_size)]
-                        } else {
-                            vec![]
-                        }
-                    } else {
-                        item.parts.iter().map(|p| (p.start, p.end)).collect()
-                    };
-                    let dls = if item.parts.is_empty() {
-                        vec![item.downloaded]
-                    } else {
-                        item.parts.iter().map(|p| p.downloaded).collect()
-                    };
-                    (item.resumable.unwrap_or(true), ranges, dls)
-                } else {
-                    (
-                        true,
-                        if saved_state.total_size > 0 {
-                            vec![(0, saved_state.total_size)]
-                        } else {
-                            vec![]
-                        },
-                        vec![],
-                    )
-                };
+        let item = self.facade.get_item(id)?
+            .ok_or_else(|| PdmError::NotFound(id))?;
 
-            let proxy_url = self.settings.resolve_proxy_url(&saved_state.proxy_name).unwrap_or_default();
-            let s = self.settings.get();
-            let mut cfg = saved_state.to_engine_config(&proxy_url, &s.user_agent, supports_range, s.max_retries);
-            cfg.rate_limit_bps = s.global_rate_limit;
-            cfg.part_ranges = part_ranges;
-            cfg.part_downloaded = part_downloaded;
-            self.worker_pool.add_with_id(cfg, id, self.make_resume_callback()).await?;
-        } else {
-            if let Ok(Some(item)) = self.facade.get_item(id) {
-                let mut updated = item.clone();
-                updated.downloaded = 0;
-                updated.status = DownloadStatus::Downloading;
-                updated.last_try = now_str();
-                let _ = self.facade.update_item(&updated);
+        let mut updated = item.clone();
+        updated.status = DownloadStatus::Downloading;
+        updated.last_try = now_str();
+        // Never zero out progress on resume — keep DB/gob totals.
+        let _ = self.facade.update_item(&updated);
 
-                let settings = self.settings.get();
-                let proxy_url = self.settings.resolve_proxy_url(&item.proxy_name).unwrap_or_default();
-                let mut cfg = item.to_engine_config(&proxy_url, &settings.user_agent, false, settings.max_retries);
-                cfg.rate_limit_bps = settings.global_rate_limit;
-                self.worker_pool.add_with_id(cfg, id, self.make_resume_callback()).await?;
+        let part_ranges: Vec<(u64, u64)> = if item.parts.is_empty() {
+            if item.total_size > 0 {
+                vec![(0, item.total_size)]
+            } else {
+                vec![]
             }
-        }
+        } else {
+            item.parts.iter().map(|p| (p.start, p.end)).collect()
+        };
+        let part_downloaded: Vec<u64> = if item.parts.is_empty() {
+            vec![item.downloaded]
+        } else {
+            item.parts.iter().map(|p| p.downloaded).collect()
+        };
+        let supports_range = item.resumable.unwrap_or(true);
+        let settings = self.settings.get();
+        let proxy_url = self.settings.resolve_proxy_url(&item.proxy_name).unwrap_or_default();
+
+        let mut cfg = if let Some(saved_state) = self.facade.load_resume_state(id) {
+            log::info!(
+                "[ProxyDM] resume id={} gob tasks={} downloaded={}",
+                id,
+                saved_state.tasks.len(),
+                saved_state.downloaded
+            );
+            let mut cfg = saved_state.to_engine_config(
+                &proxy_url,
+                &settings.user_agent,
+                supports_range,
+                settings.max_retries,
+            );
+            // Prefer higher of gob vs DB progress.
+            if item.downloaded > cfg.downloaded {
+                cfg.downloaded = item.downloaded;
+            }
+            cfg
+        } else {
+            log::warn!(
+                "[ProxyDM] resume id={} no gob — rebuilding from DB parts downloaded={}",
+                id,
+                item.downloaded
+            );
+            // is_resume=true so concurrent rebuilds remaining work from parts.
+            item.to_engine_config(&proxy_url, &settings.user_agent, true, settings.max_retries)
+        };
+        cfg.rate_limit_bps = settings.global_rate_limit;
+        cfg.part_ranges = part_ranges;
+        cfg.part_downloaded = part_downloaded;
+        cfg.is_resume = true;
+
+        self.worker_pool.add_with_id(cfg, id, self.make_resume_callback()).await?;
         self.bus.emit(FrontendEvent::DownloadResumed, serde_json::json!({ "id": id }));
         Ok(())
     }
