@@ -107,33 +107,29 @@ fn start_ws_server(
     });
 }
 
-/// Spawn the background DB flush loop (every 5 seconds).
+/// Persist in-memory progress + per-part Progress Map state to SQLite often,
+/// so a crash loses at most ~1s of progress (not 5s+ and not "start over").
 fn spawn_flush_loop(dm: Arc<DownloadManager>) {
     tauri::async_runtime::spawn(async move {
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             let flushed = dm.flush();
             if flushed > 0 {
-                log::info!("[ProxyDM] Flushed {} progress entries to DB", flushed);
+                log::debug!("[ProxyDM] Flushed {} progress entries to DB", flushed);
             }
         }
     });
 }
 
-/// Crash recovery: mark stale "downloading" entries as "paused".
+/// After unexpected exit, rows may still say "downloading". Mark Paused and
+/// rebuild resume metadata from **DB parts** (progress is already in SQLite).
 fn crash_recovery(dm: &DownloadManager) {
-    if let Ok(items) = dm.list_items() {
-        let mut changed = false;
-        for mut item in items.into_iter() {
-            if matches!(item.status, crate::types::DownloadStatus::Downloading) {
-                item.status = crate::types::DownloadStatus::Paused;
-                let _ = dm.update_item(&item);
-                changed = true;
-            }
-        }
-        if changed {
-            log::error!("[ProxyDM] Crash recovery: paused stale downloads");
-        }
+    let n = dm.recover_stale_downloads();
+    if n > 0 {
+        log::info!(
+            "[ProxyDM] Crash recovery: {} interrupted download(s) marked paused (progress kept in DB)",
+            n
+        );
     }
 }
 

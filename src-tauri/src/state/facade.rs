@@ -100,6 +100,7 @@ impl DownloadStateFacade {
     }
 
     /// Update real-time progress (called on every DownloadProgress event).
+    /// Memory first; 1s flush loop writes `downloaded` + `parts` into SQLite.
     pub fn update_progress(
         &self,
         id: u64,
@@ -188,6 +189,7 @@ impl DownloadStateFacade {
     }
 
     /// Build DownloadState from fixed parts so resume never falls back to "from zero".
+    /// Source of truth for resume is **DB parts** (+ optional gob task offsets).
     fn save_resume_from_item(&self, item: &DownloadItem) {
         use crate::engine::part_progress::{remaining_tasks_from_parts, PartRange};
         let ranges: Vec<PartRange> = if item.parts.is_empty() {
@@ -240,6 +242,76 @@ impl DownloadStateFacade {
             workers: item.connections.max(1),
         };
         let _ = gob::save_state(item.id, &saved);
+    }
+
+    /// If only total `downloaded` was flushed (parts still 0), paint a contiguous
+    /// prefix into parts so resume/crash recovery can rebuild remaining work.
+    fn backfill_parts_from_total(item: &mut DownloadItem) {
+        if item.parts.is_empty() {
+            if item.total_size > 0 {
+                item.parts = vec![DownloadPart {
+                    index: 0,
+                    start: 0,
+                    end: item.total_size,
+                    downloaded: item.downloaded.min(item.total_size),
+                    temp_path: String::new(),
+                    status: if item.downloaded >= item.total_size {
+                        PartStatus::Completed
+                    } else if item.downloaded > 0 {
+                        PartStatus::Downloading
+                    } else {
+                        PartStatus::Pending
+                    },
+                    retries: 0,
+                }];
+            }
+            return;
+        }
+        let any = item.parts.iter().any(|p| p.downloaded > 0);
+        if any || item.downloaded == 0 {
+            return;
+        }
+        let mut remaining = item.downloaded;
+        for part in item.parts.iter_mut() {
+            let len = part.end.saturating_sub(part.start);
+            let take = remaining.min(len);
+            part.downloaded = take;
+            remaining = remaining.saturating_sub(take);
+            if take >= len && len > 0 {
+                part.status = PartStatus::Completed;
+            } else if take > 0 {
+                part.status = PartStatus::Downloading;
+            }
+        }
+    }
+
+    /// App start: rows left as Downloading after crash/kill → Paused, with
+    /// resume metadata rebuilt from **database** parts (and gob if present).
+    /// Returns how many items were recovered.
+    pub fn recover_stale_downloads(&self) -> usize {
+        let Ok(items) = self.db.list_downloads() else {
+            return 0;
+        };
+        let mut n = 0usize;
+        for mut item in items {
+            if !matches!(item.status, DownloadStatus::Downloading) {
+                continue;
+            }
+            Self::backfill_parts_from_total(&mut item);
+            item.status = DownloadStatus::Paused;
+            if self.db.update_download(&item).is_ok() {
+                self.save_resume_from_item(&item);
+                n += 1;
+                log::info!(
+                    "[ProxyDM] crash recovery id={} paused downloaded={}/{} parts={}",
+                    item.id,
+                    item.downloaded,
+                    item.total_size,
+                    item.parts.len()
+                );
+            }
+        }
+        n
     }
 
     /// Delete a download: remove from DB and delete resume state.
@@ -405,6 +477,52 @@ mod tests {
 
         facade.on_deleted(9).unwrap();
         assert!(facade.load_resume_state(9).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_recover_stale_downloads_pauses_and_keeps_progress() {
+        let (facade, dir) = test_facade("recover");
+        let mut item = sample_item(42);
+        item.status = DownloadStatus::Downloading;
+        item.downloaded = 400;
+        item.total_size = 1000;
+        item.parts = vec![
+            DownloadPart {
+                index: 0,
+                start: 0,
+                end: 500,
+                downloaded: 200,
+                temp_path: String::new(),
+                status: PartStatus::Downloading,
+                retries: 0,
+            },
+            DownloadPart {
+                index: 1,
+                start: 500,
+                end: 1000,
+                downloaded: 200,
+                temp_path: String::new(),
+                status: PartStatus::Downloading,
+                retries: 0,
+            },
+        ];
+        facade.insert_item(&item).unwrap();
+
+        let n = facade.recover_stale_downloads();
+        assert_eq!(n, 1);
+
+        let got = facade.get_item(42).unwrap().unwrap();
+        assert!(matches!(got.status, DownloadStatus::Paused));
+        assert_eq!(got.downloaded, 400);
+        assert_eq!(got.parts[0].downloaded, 200);
+        assert_eq!(got.parts[1].downloaded, 200);
+
+        let gob = facade.load_resume_state(42).unwrap();
+        assert_eq!(gob.downloaded, 400);
+        assert!(!gob.tasks.is_empty());
+
+        facade.on_deleted(42).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

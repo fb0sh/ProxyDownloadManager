@@ -67,6 +67,11 @@ impl DownloadManager {
         self.facade.flush()
     }
 
+    /// Startup: persist interrupted downloads as Paused using DB part progress.
+    pub fn recover_stale_downloads(&self) -> usize {
+        self.facade.recover_stale_downloads()
+    }
+
     pub fn clear_client_pool(&self) {
         self.worker_pool.clear_clients();
     }
