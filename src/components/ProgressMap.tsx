@@ -69,7 +69,7 @@ export default function ProgressMap({ parts }: ProgressMapProps) {
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
-                fontSize: 9,
+                fontSize: 8,
                 fontWeight: 600,
                 lineHeight: 1,
                 color: pct > 55 ? "#fff" : "var(--fgColor-default, #1f2328)",
@@ -77,7 +77,7 @@ export default function ProgressMap({ parts }: ProgressMapProps) {
                 userSelect: "none",
               }}
             >
-              {pct}
+              {pct}%
             </span>
           </div>
         );

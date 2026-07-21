@@ -1,6 +1,7 @@
 import { Button, Text } from "@primer/react";
 import { Dialog } from "@primer/react/experimental";
 import { useDeleteDownload } from "../../query/downloadQueries";
+import { useAppContext } from "../../contexts/AppContext";
 import { t } from "../../i18n";
 
 interface DeleteDialogProps {
@@ -11,9 +12,12 @@ interface DeleteDialogProps {
 export default function DeleteDialog({ ids, onClose }: DeleteDialogProps) {
   console.debug('[ProxyDM FE] DeleteDialog mount ids=', ids);
   const deleteDownload = useDeleteDownload();
+  const { selectionActions } = useAppContext();
 
   const handleDelete = async (deleteFile: boolean) => {
     await Promise.all(ids.map((id) => deleteDownload.mutateAsync({ id, deleteFile })));
+    // Drop deleted rows only; leave any remaining multi-select intact
+    selectionActions.removeIds(ids);
     onClose();
   };
 

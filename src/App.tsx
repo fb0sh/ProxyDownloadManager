@@ -15,7 +15,7 @@ import type { DownloadItem } from "./types";
 import { AppProvider, useAppContext, type AppActions } from "./contexts/AppContext";
 
 function AppInner() {
-  const { dialog, dialogActions, selectedIds, selectionActions } = useAppContext();
+  const { dialog, dialogActions, selectedIds } = useAppContext();
   const { openNewDownload } = useWindowManager();
   const { settings: loadedSettings } = useSettings();
   const queryClient = useQueryClient();
@@ -35,8 +35,8 @@ function AppInner() {
     : undefined;
 
   const handleDialogClose = () => {
+    // Keep multi-select checks after dialogs/actions (pause, settings, cancel delete, etc.)
     dialogActions.closeDialog();
-    selectionActions.clearSelection();
   };
 
   return (
@@ -67,12 +67,11 @@ function useActions(dialogActs: DialogActionTypes, selectActs: SelectionActions,
     onResumeSelected: async () => {
       const items = downloads.filter((d) => selectedIds.has(d.id) && d.status === "paused");
       await Promise.all(items.map((d) => resumeDownload.mutateAsync(d.id)));
-      selectActs.clearSelection();
+      // Keep selection so user can chain actions (pause → resume → delete, etc.)
     },
     onPauseSelected: () => {
       const items = downloads.filter((d) => selectedIds.has(d.id) && d.status === "downloading");
       for (const d of items) pauseDownload.mutate(d.id);
-      selectActs.clearSelection();
     },
     onDeleteSelected: () => {
       if (selectedIds.size === 0) return;

@@ -6,6 +6,8 @@ export interface SelectionActions {
   select: (ids: Set<number>) => void;
   /** Clear all selections. */
   clearSelection: () => void;
+  /** Remove specific IDs (e.g. after delete) without clearing the rest. */
+  removeIds: (ids: number[]) => void;
   /** Toggle a single ID in/out of selection. */
   toggle: (id: number) => void;
   /** Select all items matching a predicate. */
@@ -17,6 +19,13 @@ export function useSelection(): { selectedIds: Set<number> } & SelectionActions 
 
   const select = useCallback((ids: Set<number>) => setSelectedIds(ids), []);
   const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
+  const removeIds = useCallback((ids: number[]) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      for (const id of ids) next.delete(id);
+      return next;
+    });
+  }, []);
   const toggle = useCallback((id: number) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -32,5 +41,5 @@ export function useSelection(): { selectedIds: Set<number> } & SelectionActions 
     [],
   );
 
-  return { selectedIds, select, clearSelection, toggle, selectWhere };
+  return { selectedIds, select, clearSelection, removeIds, toggle, selectWhere };
 }
