@@ -1,6 +1,7 @@
 pub mod chunk;
 pub mod concurrent;
 pub mod file_io;
+pub mod part_progress;
 pub mod single;
 pub mod task_download;
 
@@ -102,10 +103,11 @@ pub async fn run_download(
                 .write(true)
                 .truncate(true)
                 .open(&pdm_path);
+            // Progress Map: Concurrent → Single becomes one cell; reset progress.
             let _ = event_tx.send(Event {
                 kind: crate::types::EventKind::DownloadProgress,
                 download_id: cfg.id,
-                data: Some("0".to_string()),
+                data: Some(part_progress::encode_progress_data(0, &[0], true)),
             });
             let fallback: Box<dyn DownloadEngine> = Box::new(single::SingleDownloader::new(pool, event_tx.clone()));
             fallback.download(&cfg, limiter, cancel, &on_cancelled).await
@@ -150,6 +152,12 @@ mod tests {
             user_agent: "test-agent".to_string(),
             resume_tasks: vec![],
             downloaded: 0,
+            part_ranges: if total_size > 0 {
+                vec![(0, total_size)]
+            } else {
+                vec![]
+            },
+            part_downloaded: vec![],
         }
     }
 

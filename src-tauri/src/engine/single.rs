@@ -1,5 +1,6 @@
 use crate::network::pool::NetworkPool;
 use crate::network::limiter::MultiLimiter;
+use crate::engine::part_progress::encode_progress_data;
 use crate::types::{PdmError, PdmResult, Event, EventKind, EngineConfig};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -130,7 +131,7 @@ impl SingleDownloader {
                 let _ = self.event_tx.send(Event {
                     kind: EventKind::DownloadProgress,
                     download_id: cfg.id,
-                    data: Some(total.to_string()),
+                    data: Some(encode_progress_data(total, &[total], true)),
                 });
             }
         }
@@ -153,7 +154,7 @@ impl SingleDownloader {
         let _ = self.event_tx.send(Event {
             kind: EventKind::DownloadProgress,
             download_id: cfg.id,
-            data: Some(total.to_string()),
+            data: Some(encode_progress_data(total, &[total], true)),
         });
 
         let _ = self.event_tx.send(Event {

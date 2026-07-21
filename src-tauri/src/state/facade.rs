@@ -27,7 +27,35 @@ impl DownloadStateFacade {
     }
 
     pub fn list_items(&self) -> PdmResult<Vec<DownloadItem>> {
-        self.db.list_downloads()
+        let mut items = self.db.list_downloads()?;
+        // Overlay in-memory progress (total + parts) so Progress Map stays live between flushes.
+        for item in items.iter_mut() {
+            if let Some(dl) = self.runtime.get_downloaded(item.id) {
+                item.downloaded = dl;
+            }
+            if let Some(parts) = self.runtime.get_part_downloaded(item.id) {
+                if !parts.is_empty() {
+                    if item.parts.is_empty() {
+                        item.parts = vec![crate::types::DownloadPart {
+                            index: 0,
+                            start: 0,
+                            end: item.total_size,
+                            downloaded: parts.first().copied().unwrap_or(0),
+                            temp_path: String::new(),
+                            status: crate::types::PartStatus::Downloading,
+                            retries: 0,
+                        }];
+                    } else {
+                        for (i, d) in parts.iter().enumerate() {
+                            if let Some(part) = item.parts.get_mut(i) {
+                                part.downloaded = *d;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(items)
     }
 
     pub fn insert_item(&self, item: &DownloadItem) -> PdmResult<()> {
@@ -52,14 +80,26 @@ impl DownloadStateFacade {
         self.runtime.register(id);
         if let Some(s) = saved {
             if s.downloaded > 0 {
-                self.runtime.update_progress(id, s.downloaded);
+                self.runtime.update_progress(id, s.downloaded, None);
             }
         }
     }
 
     /// Update real-time progress (called on every DownloadProgress event).
-    pub fn update_progress(&self, id: u64, downloaded: u64) {
-        self.runtime.update_progress(id, downloaded);
+    pub fn update_progress(
+        &self,
+        id: u64,
+        downloaded: u64,
+        part_downloaded: Option<Vec<u64>>,
+        reset_to_single: bool,
+    ) {
+        if reset_to_single {
+            let _ = self.db.reset_parts_to_single(id, downloaded);
+            let parts = part_downloaded.clone().unwrap_or_else(|| vec![downloaded]);
+            self.runtime.update_progress(id, downloaded, Some(parts));
+            return;
+        }
+        self.runtime.update_progress(id, downloaded, part_downloaded);
     }
 
     /// Mark download as completed: clean up runtime, update DB status.
@@ -69,6 +109,8 @@ impl DownloadStateFacade {
             item.status = DownloadStatus::Completed;
             item.downloaded = item.total_size;
             for part in item.parts.iter_mut() {
+                let len = part.end.saturating_sub(part.start);
+                part.downloaded = len;
                 if !matches!(part.status, PartStatus::Completed) {
                     part.status = PartStatus::Completed;
                 }
@@ -229,7 +271,7 @@ mod tests {
         item.status = DownloadStatus::Downloading;
         facade.insert_item(&item).unwrap();
         facade.runtime.register(7);
-        facade.runtime.update_progress(7, 500);
+        facade.runtime.update_progress(7, 500, None);
 
         facade.on_completed(7);
 

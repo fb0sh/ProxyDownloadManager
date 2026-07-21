@@ -50,4 +50,15 @@ describe("patchDownloadProgress", () => {
   it("handles empty cache", () => {
     expect(patchDownloadProgress([], 1, 500)).toEqual([]);
   });
+
+  it("updates part downloaded when provided", () => {
+    const item = makeItem(1, 0);
+    item.parts = [
+      { index: 0, start: 0, end: 500, downloaded: 0, temp_path: "", status: "pending", retries: 0 },
+      { index: 1, start: 500, end: 1000, downloaded: 0, temp_path: "", status: "pending", retries: 0 },
+    ];
+    const result = patchDownloadProgress([item], 1, 600, [500, 100]);
+    expect(result?.[0].parts[0]!.downloaded).toBe(500);
+    expect(result?.[0].parts[1]!.downloaded).toBe(100);
+  });
 });

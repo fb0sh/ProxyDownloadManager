@@ -54,6 +54,8 @@ const zh: Translations = {
     network: "网络",
     connections: "连接数",
     proxy: "代理",
+    progressMap: "进度地图",
+    progressMapEmpty: "暂无分片",
     yes: "是",
     no: "否",
     unknown: "未知",

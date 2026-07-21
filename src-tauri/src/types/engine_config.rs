@@ -21,6 +21,10 @@ pub struct EngineConfig {
     pub user_agent: String,
     pub resume_tasks: Vec<Task>,
     pub downloaded: u64,
+    /// Fixed Progress Map ranges `(start, end)` planned once for this download.
+    pub part_ranges: Vec<(u64, u64)>,
+    /// Per-part downloaded bytes (aligned with `part_ranges`) for resume seeding.
+    pub part_downloaded: Vec<u64>,
 }
 
 impl DownloadItem {
@@ -31,6 +35,18 @@ impl DownloadItem {
         is_resume: bool,
         max_retries: u32,
     ) -> EngineConfig {
+        let (part_ranges, part_downloaded) = if self.parts.is_empty() {
+            if self.total_size > 0 {
+                (vec![(0, self.total_size)], vec![self.downloaded])
+            } else {
+                (vec![], vec![])
+            }
+        } else {
+            (
+                self.parts.iter().map(|p| (p.start, p.end)).collect(),
+                self.parts.iter().map(|p| p.downloaded).collect(),
+            )
+        };
         EngineConfig {
             url: self.url.clone(),
             save_path: self.save_path.clone(),
@@ -48,6 +64,8 @@ impl DownloadItem {
             user_agent: user_agent.to_string(),
             resume_tasks: vec![],
             downloaded: self.downloaded,
+            part_ranges,
+            part_downloaded,
         }
     }
 }
@@ -77,6 +95,12 @@ impl DownloadState {
             user_agent: user_agent.to_string(),
             resume_tasks: self.tasks.clone(),
             downloaded: self.downloaded,
+            part_ranges: if self.total_size > 0 {
+                vec![(0, self.total_size)]
+            } else {
+                vec![]
+            },
+            part_downloaded: vec![],
         }
     }
 }

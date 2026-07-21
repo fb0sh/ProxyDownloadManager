@@ -7,6 +7,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { t } from "../i18n";
 import type { DownloadItem } from "../types";
 import { EVENTS } from "../constants/events";
+import { applyPartDownloaded } from "../utils/progressMap";
 import { useWindowManager } from "./useWindowManager";
 
 /** Patch a download-list cache with updated progress for a single download. */
@@ -14,9 +15,18 @@ export function patchDownloadProgress(
   cache: DownloadItem[] | undefined,
   id: number,
   downloaded: number,
+  partDownloaded?: number[],
+  resetToSingle?: boolean,
 ): DownloadItem[] | undefined {
   if (!cache) return cache;
-  return cache.map((d) => (d.id === id ? { ...d, downloaded } : d));
+  return cache.map((d) => {
+    if (d.id !== id) return d;
+    const parts =
+      partDownloaded !== undefined
+        ? applyPartDownloaded(d.parts, partDownloaded, d.total_size, resetToSingle)
+        : d.parts;
+    return { ...d, downloaded, parts };
+  });
 }
 
 interface DownloadEventsOptions {
@@ -79,10 +89,15 @@ export function useDownloadEvents({ queryClient }: DownloadEventsOptions) {
 
     // Progress: optimistic cache update (avoids full refetch for high-frequency events)
     unlisteners.push(
-      listen<{ id: number; downloaded: number }>(EVENTS.DOWNLOAD_PROGRESS, (event) => {
-        const { id, downloaded } = event.payload;
+      listen<{
+        id: number;
+        downloaded: number;
+        parts?: number[];
+        reset_to_single?: boolean;
+      }>(EVENTS.DOWNLOAD_PROGRESS, (event) => {
+        const { id, downloaded, parts, reset_to_single } = event.payload;
         queryClient.setQueryData<DownloadItem[]>(["downloads"], (old) =>
-          patchDownloadProgress(old, id, downloaded)
+          patchDownloadProgress(old, id, downloaded, parts, reset_to_single)
         );
       })
     );

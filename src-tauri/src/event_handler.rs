@@ -1,11 +1,16 @@
-use crate::types::{Event, EventKind, PdmResult};
+use crate::types::{Event, EventKind};
 
 /// Describes what state transition and frontend event an engine event maps to.
 /// Pure transformation — no side effects, no dependencies.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EventAction {
-    /// Update runtime progress (id, downloaded_bytes).
-    UpdateProgress(u64, u64),
+    /// Update runtime progress (id, downloaded_bytes, optional per-part bytes, reset map to single part).
+    UpdateProgress {
+        id: u64,
+        downloaded: u64,
+        part_downloaded: Option<Vec<u64>>,
+        reset_to_single: bool,
+    },
     /// Download started: seed runtime + emit frontend event.
     DownloadStarted(u64),
     /// Download completed: finalize state + emit frontend event.
@@ -14,6 +19,49 @@ pub enum EventAction {
     DownloadErrored(u64, String),
     /// No state change needed (e.g., unknown event kind).
     Noop,
+}
+
+/// Parsed progress payload from engine (plain number or JSON).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProgressPayload {
+    pub downloaded: u64,
+    pub part_downloaded: Option<Vec<u64>>,
+    pub reset_to_single: bool,
+}
+
+/// Parse engine progress `data` string.
+pub fn parse_progress_data(data: &str) -> Option<ProgressPayload> {
+    let trimmed = data.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // Legacy: plain integer
+    if let Ok(downloaded) = trimmed.parse::<u64>() {
+        return Some(ProgressPayload {
+            downloaded,
+            part_downloaded: None,
+            reset_to_single: false,
+        });
+    }
+    // JSON: {"downloaded":N,"parts":[...],"reset_to_single":bool}
+    let v: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+    let downloaded = v.get("downloaded")?.as_u64()?;
+    let part_downloaded = v.get("parts").and_then(|p| {
+        p.as_array().map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_u64())
+                .collect::<Vec<_>>()
+        })
+    });
+    let reset_to_single = v
+        .get("reset_to_single")
+        .and_then(|x| x.as_bool())
+        .unwrap_or(false);
+    Some(ProgressPayload {
+        downloaded,
+        part_downloaded,
+        reset_to_single,
+    })
 }
 
 /// Transform an engine event into a structured action.
@@ -30,13 +78,17 @@ pub fn transform_event(event: &Event) -> EventAction {
         }
         EventKind::DownloadProgress => {
             if let Some(ref data) = event.data {
-                if let Ok(downloaded) = data.parse::<u64>() {
-                    return EventAction::UpdateProgress(id, downloaded);
+                if let Some(p) = parse_progress_data(data) {
+                    return EventAction::UpdateProgress {
+                        id,
+                        downloaded: p.downloaded,
+                        part_downloaded: p.part_downloaded,
+                        reset_to_single: p.reset_to_single,
+                    };
                 }
             }
             EventAction::Noop
         }
-        _ => EventAction::Noop,
     }
 }
 
@@ -73,10 +125,48 @@ mod tests {
     }
 
     #[test]
-    fn test_progress_event() {
+    fn test_progress_event_plain() {
         let action = transform_event(&make_event(EventKind::DownloadProgress, 4,
             Some("1024".to_string())));
-        assert_eq!(action, EventAction::UpdateProgress(4, 1024));
+        assert_eq!(
+            action,
+            EventAction::UpdateProgress {
+                id: 4,
+                downloaded: 1024,
+                part_downloaded: None,
+                reset_to_single: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_progress_event_json() {
+        let data = r#"{"downloaded":500,"parts":[100,200,200],"reset_to_single":false}"#;
+        let action = transform_event(&make_event(EventKind::DownloadProgress, 7, Some(data.to_string())));
+        assert_eq!(
+            action,
+            EventAction::UpdateProgress {
+                id: 7,
+                downloaded: 500,
+                part_downloaded: Some(vec![100, 200, 200]),
+                reset_to_single: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_progress_event_reset_single() {
+        let data = r#"{"downloaded":0,"parts":[0],"reset_to_single":true}"#;
+        let action = transform_event(&make_event(EventKind::DownloadProgress, 8, Some(data.to_string())));
+        assert_eq!(
+            action,
+            EventAction::UpdateProgress {
+                id: 8,
+                downloaded: 0,
+                part_downloaded: Some(vec![0]),
+                reset_to_single: true,
+            }
+        );
     }
 
     #[test]

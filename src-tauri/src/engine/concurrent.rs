@@ -2,6 +2,7 @@ use crate::network::pool::NetworkPool;
 use crate::network::limiter::MultiLimiter;
 use crate::engine::chunk::{self, ChunkQueue};
 use crate::engine::file_io::{create_output_file, finalize_file};
+use crate::engine::part_progress::{encode_progress_data, PartProgressTracker, PartRange};
 use crate::engine::task_download::{download_task, TaskResult};
 use crate::types::{Task, Event, EventKind, EngineConfig, PdmError, PdmResult};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -43,6 +44,26 @@ impl ConcurrentDownloader {
         };
         let bytes_written = Arc::new(AtomicU64::new(resume_offset));
 
+        let part_ranges: Vec<PartRange> = if cfg.part_ranges.is_empty() {
+            if cfg.total_size > 0 {
+                vec![PartRange { start: 0, end: cfg.total_size }]
+            } else {
+                vec![]
+            }
+        } else {
+            cfg.part_ranges
+                .iter()
+                .map(|&(start, end)| PartRange { start, end })
+                .collect()
+        };
+        let parts_tracker = PartProgressTracker::new(part_ranges);
+        if !cfg.part_downloaded.is_empty() {
+            parts_tracker.seed_from_parts(&cfg.part_downloaded);
+        } else if resume_offset > 0 {
+            // Fallback when DB parts were never updated
+            parts_tracker.seed_contiguous_prefix(resume_offset);
+        }
+
         let num_conns = if cfg.connections > 0 {
             cfg.connections.min(32)
         } else {
@@ -74,14 +95,16 @@ impl ConcurrentDownloader {
         let progress_cancel = reporter_stop.clone();
         let progress_tx = self.event_tx.clone();
         let progress_bytes = bytes_written.clone();
+        let progress_parts = parts_tracker.clone();
         let reporter_handle = tokio::spawn(async move {
             loop {
                 if progress_cancel.load(Ordering::Relaxed) { break; }
                 let size = progress_bytes.load(Ordering::Relaxed);
+                let part_snap = progress_parts.snapshot();
                 let _ = progress_tx.send(Event {
                     kind: EventKind::DownloadProgress,
                     download_id,
-                    data: Some(format!("{}", size)),
+                    data: Some(encode_progress_data(size, &part_snap, false)),
                 });
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
@@ -100,6 +123,7 @@ impl ConcurrentDownloader {
             let user_agent = cfg.user_agent.clone();
             let cancel_for_task = cancel.clone();
             let bytes_written = bytes_written.clone();
+            let parts = parts_tracker.clone();
 
             let handle = tokio::spawn(async move {
                 let mut retries_left = max_retries;
@@ -114,6 +138,7 @@ impl ConcurrentDownloader {
 
                     let result = download_task(
                         &url, &client, &*file, &task, &cancel_for_task, &limiter, &user_agent, &bytes_written,
+                        Some(parts.clone()),
                     ).await;
 
                     match result {
@@ -162,6 +187,17 @@ impl ConcurrentDownloader {
 
         reporter_stop.store(true, Ordering::Relaxed);
         let _ = reporter_handle.await;
+
+        // Final progress snapshot so the Progress Map reaches 100% without waiting for poll.
+        {
+            let size = bytes_written.load(Ordering::Relaxed);
+            let part_snap = parts_tracker.snapshot();
+            let _ = self.event_tx.send(Event {
+                kind: EventKind::DownloadProgress,
+                download_id,
+                data: Some(encode_progress_data(size, &part_snap, false)),
+            });
+        }
 
         let _ = file.sync_all();
 

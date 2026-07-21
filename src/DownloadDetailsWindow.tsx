@@ -4,6 +4,7 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { formatBytes } from "./utils/format";
 import { formatTimestamp, statusColor, statusString } from "./utils/download";
 import { useDownloadDetail, useDownloadIdFromUrl } from "./hooks/useDownloadDetail";
+import ProgressMap from "./components/ProgressMap";
 import { t } from "./i18n";
 
 const card: React.CSSProperties = {
@@ -121,6 +122,14 @@ export default function DownloadDetailsWindow() {
           <div style={bd}>
             <div style={r}><span style={l}>{t("properties.connections")}</span><span style={v}>{String(item.connections)}</span></div>
             <div style={r}><span style={l}>{t("properties.proxy")}</span><span style={v}>{item.proxy_name || "—"}</span></div>
+          </div>
+        </div>
+
+        {/* Progress Map — fixed Parts, 8 cols, green bottom-up fill */}
+        <div style={card}>
+          <div style={hdr}>{t("properties.progressMap")}</div>
+          <div style={bd}>
+            <ProgressMap parts={item.parts ?? []} />
           </div>
         </div>
 

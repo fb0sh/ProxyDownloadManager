@@ -52,6 +52,8 @@ const en = {
     network: "Network",
     connections: "Connections",
     proxy: "Proxy",
+    progressMap: "Progress Map",
+    progressMapEmpty: "No parts yet",
     yes: "Yes",
     no: "No",
     unknown: "Unknown",

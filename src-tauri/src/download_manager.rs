@@ -112,10 +112,26 @@ impl DownloadManager {
             EventAction::DownloadErrored(dl_id, msg) => {
                 self.facade.on_error(dl_id, msg);
             }
-            EventAction::UpdateProgress(dl_id, downloaded) => {
-                self.facade.update_progress(dl_id, downloaded);
-                self.bus.emit(FrontendEvent::DownloadProgress,
-                    serde_json::json!({ "id": dl_id, "downloaded": downloaded }));
+            EventAction::UpdateProgress {
+                id: dl_id,
+                downloaded,
+                part_downloaded,
+                reset_to_single,
+            } => {
+                self.facade.update_progress(
+                    dl_id,
+                    downloaded,
+                    part_downloaded.clone(),
+                    reset_to_single,
+                );
+                let mut payload = serde_json::json!({ "id": dl_id, "downloaded": downloaded });
+                if let Some(parts) = part_downloaded {
+                    payload["parts"] = serde_json::json!(parts);
+                }
+                if reset_to_single {
+                    payload["reset_to_single"] = serde_json::json!(true);
+                }
+                self.bus.emit(FrontendEvent::DownloadProgress, payload);
             }
             EventAction::Noop => {}
         }
@@ -164,19 +180,44 @@ impl DownloadManager {
         self.log_info(&format!("Resume id={}", id));
 
         if let Some(saved_state) = self.facade.load_resume_state(id) {
-            let supports_range = if let Ok(Some(mut item)) = self.facade.get_item(id) {
-                item.status = DownloadStatus::Downloading;
-                item.last_try = now_str();
-                let _ = self.facade.update_item(&item);
-                item.resumable.unwrap_or(true)
-            } else {
-                true
-            };
+            let (supports_range, part_ranges, part_downloaded) =
+                if let Ok(Some(mut item)) = self.facade.get_item(id) {
+                    item.status = DownloadStatus::Downloading;
+                    item.last_try = now_str();
+                    let _ = self.facade.update_item(&item);
+                    let ranges = if item.parts.is_empty() {
+                        if item.total_size > 0 {
+                            vec![(0, item.total_size)]
+                        } else {
+                            vec![]
+                        }
+                    } else {
+                        item.parts.iter().map(|p| (p.start, p.end)).collect()
+                    };
+                    let dls = if item.parts.is_empty() {
+                        vec![item.downloaded]
+                    } else {
+                        item.parts.iter().map(|p| p.downloaded).collect()
+                    };
+                    (item.resumable.unwrap_or(true), ranges, dls)
+                } else {
+                    (
+                        true,
+                        if saved_state.total_size > 0 {
+                            vec![(0, saved_state.total_size)]
+                        } else {
+                            vec![]
+                        },
+                        vec![],
+                    )
+                };
 
             let proxy_url = self.settings.resolve_proxy_url(&saved_state.proxy_name).unwrap_or_default();
             let s = self.settings.get();
             let mut cfg = saved_state.to_engine_config(&proxy_url, &s.user_agent, supports_range, s.max_retries);
             cfg.rate_limit_bps = s.global_rate_limit;
+            cfg.part_ranges = part_ranges;
+            cfg.part_downloaded = part_downloaded;
             self.worker_pool.add_with_id(cfg, id, self.make_resume_callback()).await?;
         } else {
             if let Ok(Some(item)) = self.facade.get_item(id) {

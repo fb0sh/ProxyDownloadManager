@@ -5,6 +5,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- 下载详情窗 **进度地图（Progress Map）**：按固定分片一格、每行 8 列，绿色自下而上填充并显示百分比
+- 引擎按写入 offset 归入固定 `DownloadPart`，进度事件携带 per-part 字节；暂停/恢复保留分片进度
+
 ## [0.9.7] - 2026-07-20
 
 ### Added

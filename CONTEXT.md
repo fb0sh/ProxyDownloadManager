@@ -45,3 +45,13 @@ Queued → Downloading → Completed
 
 - Concurrent 降级到 Single 时：truncate .pdm 文件 → 发送 DownloadProgress 0（重置前端进度） → 用 Single 重新下载
 - Single 目前直接写入最终路径（不统一 .pdm 临时文件策略）
+
+### 分片与进度地图
+
+**分片 (Part)**：
+Concurrent 下载时，文件上一段连续字节区间（`start`..`end`）。对应 `DownloadPart`。分片数由切分策略决定，**通常大于连接数**（多片由较少 worker 抢领），不等于「线程数」。对同一 `DownloadItem`，分片边界在开始规划后固定，暂停/恢复只更新各分片进度，不重切、不重排。
+_Avoid_: 线程格、block、sector；不要把「连接数」说成「分片数」
+
+**进度地图 (Progress Map)**：
+下载详情中按分片实时展示完成度的视图：一格对应一个固定分片，绿色自下而上按该分片已完成百分比填充。像磁盘修复图，不是按连接/线程一格。布局：固定每行 8 格，按分片 `index` 从左到右、再从上到下排列；行数随分片数变化。任意引擎形态都显示：Concurrent 为多格；Single / 不支持 Range / 降级为 Single 时为 1 格（整文件进度）；降级时地图随真实下载方式重置。Downloading 时实时更新；Paused/Queued 冻结当前各格进度；Completed 全格 100%；Failed 保留已下载进度（失败高亮为可选表现，非必须）。每格同时显示百分比数字与绿色自下而上填充。仅出现在独立下载详情窗（DownloadDetailsWindow），主窗口属性弹窗不包含。
+_Avoid_: 线程矩阵、worker 格、连接热力图

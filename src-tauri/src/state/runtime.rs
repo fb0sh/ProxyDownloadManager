@@ -10,8 +10,12 @@ pub struct DownloadManagerState {
 #[derive(Clone, Debug)]
 pub struct DownloadRuntime {
     pub downloaded: u64,
+    /// Per-part downloaded bytes for Progress Map (aligned with DownloadItem.parts).
+    pub part_downloaded: Vec<u64>,
     /// Value of `downloaded` at the time of the last DB flush.
     last_flushed: u64,
+    /// Whether part progress needs to be written to DB.
+    parts_dirty: bool,
 }
 
 /// Recover from a poisoned mutex by unwrapping the guard.
@@ -34,16 +38,27 @@ impl DownloadManagerState {
         let mut map = recover_lock(self.inner.lock());
         map.insert(id, DownloadRuntime {
             downloaded: 0,
+            part_downloaded: vec![],
             last_flushed: 0,
+            parts_dirty: false,
         });
     }
 
     /// Update progress in memory (no DB write).
-    pub fn update_progress(&self, id: u64, downloaded: u64) {
+    pub fn update_progress(&self, id: u64, downloaded: u64, part_downloaded: Option<Vec<u64>>) {
         let mut map = recover_lock(self.inner.lock());
         if let Some(rt) = map.get_mut(&id) {
             rt.downloaded = downloaded;
+            if let Some(parts) = part_downloaded {
+                rt.part_downloaded = parts;
+                rt.parts_dirty = true;
+            }
         }
+    }
+
+    pub(crate) fn get_part_downloaded(&self, id: u64) -> Option<Vec<u64>> {
+        let map = recover_lock(self.inner.lock());
+        map.get(&id).map(|rt| rt.part_downloaded.clone())
     }
 
     /// Remove a download from runtime state (called on complete/error/cancel).
@@ -56,23 +71,37 @@ impl DownloadManagerState {
     /// Returns the number of entries successfully flushed.
     /// Failed entries stay dirty and retry on the next flush cycle.
     pub fn flush_to_db(&self, db: &crate::state::db::Db) -> usize {
-        let batch: Vec<(u64, u64)> = {
+        let batch: Vec<(u64, u64, Vec<u64>, bool)> = {
             let map = recover_lock(self.inner.lock());
             map.iter()
-                .filter(|(_, rt)| rt.downloaded != rt.last_flushed)
-                .map(|(&id, rt)| (id, rt.downloaded))
+                .filter(|(_, rt)| rt.downloaded != rt.last_flushed || rt.parts_dirty)
+                .map(|(&id, rt)| {
+                    (
+                        id,
+                        rt.downloaded,
+                        rt.part_downloaded.clone(),
+                        rt.parts_dirty,
+                    )
+                })
                 .collect()
         };
         let mut flushed = 0usize;
         let mut map = recover_lock(self.inner.lock());
-        for (id, downloaded) in &batch {
-            if db.update_download_progress(*id, *downloaded).is_ok() {
+        for (id, downloaded, part_downloaded, parts_dirty) in &batch {
+            let progress_ok = db.update_download_progress(*id, *downloaded).is_ok();
+            let parts_ok = if *parts_dirty && !part_downloaded.is_empty() {
+                db.update_part_downloaded(*id, part_downloaded).is_ok()
+            } else {
+                true
+            };
+            if progress_ok && parts_ok {
                 if let Some(rt) = map.get_mut(id) {
                     rt.last_flushed = *downloaded;
+                    rt.parts_dirty = false;
                 }
                 flushed += 1;
             }
-            // Failed entries keep their last_flushed value, so they stay dirty
+            // Failed entries keep their last_flushed / parts_dirty, so they stay dirty
             // and will be retried on the next flush cycle.
         }
         flushed
@@ -98,7 +127,7 @@ mod tests {
         state.register(1);
         assert_eq!(state.get_downloaded(1), Some(0));
 
-        state.update_progress(1, 500);
+        state.update_progress(1, 500, None);
         assert_eq!(state.get_downloaded(1), Some(500));
     }
 
@@ -106,7 +135,7 @@ mod tests {
     fn test_remove() {
         let state = test_state();
         state.register(1);
-        state.update_progress(1, 100);
+        state.update_progress(1, 100, Some(vec![100]));
         state.remove(1);
         assert_eq!(state.get_downloaded(1), None);
     }
@@ -114,7 +143,7 @@ mod tests {
     #[test]
     fn test_update_nonexistent_is_noop() {
         let state = test_state();
-        state.update_progress(999, 500); // no panic, no error
+        state.update_progress(999, 500, None); // no panic, no error
         assert_eq!(state.get_downloaded(999), None);
     }
 
@@ -146,7 +175,7 @@ mod tests {
         db.insert_download(&item).unwrap();
 
         state.register(1);
-        state.update_progress(1, 500);
+        state.update_progress(1, 500, Some(vec![500]));
 
         // First flush: should flush 1 entry
         let flushed = state.flush_to_db(&db);
@@ -157,7 +186,7 @@ mod tests {
         assert_eq!(flushed, 0);
 
         // Update again and flush
-        state.update_progress(1, 800);
+        state.update_progress(1, 800, Some(vec![800]));
         let flushed = state.flush_to_db(&db);
         assert_eq!(flushed, 1);
 

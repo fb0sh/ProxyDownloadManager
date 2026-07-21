@@ -164,6 +164,77 @@ impl Db {
         Ok(())
     }
 
+    /// Update per-part `downloaded` values for Progress Map (preserves start/end).
+    pub fn update_part_downloaded(&self, id: u64, part_downloaded: &[u64]) -> PdmResult<()> {
+        let mut item = match self.get_by_id(id)? {
+            Some(i) => i,
+            None => return Ok(()),
+        };
+        if item.parts.is_empty() && !part_downloaded.is_empty() {
+            // Single-part fallback when parts were never planned
+            item.parts = vec![crate::types::DownloadPart {
+                index: 0,
+                start: 0,
+                end: item.total_size,
+                downloaded: part_downloaded.first().copied().unwrap_or(0),
+                temp_path: String::new(),
+                status: crate::types::PartStatus::Downloading,
+                retries: 0,
+            }];
+        } else {
+            for (i, d) in part_downloaded.iter().enumerate() {
+                if let Some(part) = item.parts.get_mut(i) {
+                    part.downloaded = *d;
+                    let len = part.end.saturating_sub(part.start);
+                    if *d >= len && len > 0 {
+                        part.status = crate::types::PartStatus::Completed;
+                    } else if *d > 0 {
+                        part.status = crate::types::PartStatus::Downloading;
+                    }
+                }
+            }
+        }
+        let parts_str = serde_json::to_string(&item.parts).map_err(PdmError::from)?;
+        let conn = self.conn.lock().map_err(PdmError::from)?;
+        conn.execute(
+            "UPDATE downloads SET parts=?1 WHERE id=?2",
+            params![parts_str, id],
+        )
+        .map_err(PdmError::from)?;
+        Ok(())
+    }
+
+    /// Replace parts with a single Progress Map cell (Single / degrade).
+    pub fn reset_parts_to_single(&self, id: u64, downloaded: u64) -> PdmResult<()> {
+        let mut item = match self.get_by_id(id)? {
+            Some(i) => i,
+            None => return Ok(()),
+        };
+        item.parts = vec![crate::types::DownloadPart {
+            index: 0,
+            start: 0,
+            end: item.total_size,
+            downloaded,
+            temp_path: String::new(),
+            status: if downloaded >= item.total_size && item.total_size > 0 {
+                crate::types::PartStatus::Completed
+            } else if downloaded > 0 {
+                crate::types::PartStatus::Downloading
+            } else {
+                crate::types::PartStatus::Pending
+            },
+            retries: 0,
+        }];
+        let parts_str = serde_json::to_string(&item.parts).map_err(PdmError::from)?;
+        let conn = self.conn.lock().map_err(PdmError::from)?;
+        conn.execute(
+            "UPDATE downloads SET parts=?1, downloaded=?2 WHERE id=?3",
+            params![parts_str, downloaded, id],
+        )
+        .map_err(PdmError::from)?;
+        Ok(())
+    }
+
     pub fn update_download(&self, item: &DownloadItem) -> PdmResult<()> {
         let conn = self.conn.lock().map_err(PdmError::from)?;
         let parts_str = serde_json::to_string(&item.parts).map_err(PdmError::from)?;

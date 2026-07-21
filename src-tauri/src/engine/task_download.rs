@@ -1,7 +1,9 @@
 use crate::network::limiter::MultiLimiter;
 use crate::types::{Task, PdmError};
 use crate::engine::file_io::write_at;
+use crate::engine::part_progress::PartProgressTracker;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 
 /// Outcome of a single chunk download attempt.
 #[derive(Debug, PartialEq)]
@@ -16,6 +18,21 @@ pub enum TaskResult {
     Fatal(String),
 }
 
+fn note_write(
+    bytes_written: &AtomicU64,
+    parts: Option<&PartProgressTracker>,
+    file_offset: u64,
+    len: u64,
+) {
+    if len == 0 {
+        return;
+    }
+    bytes_written.fetch_add(len, Ordering::Relaxed);
+    if let Some(p) = parts {
+        p.record_write(file_offset, len);
+    }
+}
+
 pub async fn download_task(
     url: &str,
     client: &reqwest::Client,
@@ -25,6 +42,7 @@ pub async fn download_task(
     limiter: &MultiLimiter,
     user_agent: &str,
     bytes_written: &AtomicU64,
+    parts: Option<Arc<PartProgressTracker>>,
 ) -> TaskResult {
     let mut written: u64 = 0;
     let range_end = if task.length == 0 {
@@ -89,8 +107,9 @@ pub async fn download_task(
                 if let Err(e) = write_at(file, &buf, base_offset + written) {
                     return TaskResult::Fatal(format!("write_at error on cancel: {}", e));
                 }
-                written += buf.len() as u64;
-                bytes_written.fetch_add(buf.len() as u64, Ordering::Relaxed);
+                let n = buf.len() as u64;
+                note_write(bytes_written, parts.as_deref(), base_offset + written, n);
+                written += n;
                 buf.clear();
             }
             let remaining = chunk_size.saturating_sub(written);
@@ -135,8 +154,9 @@ pub async fn download_task(
                     if let Err(e) = write_at(file, &buf, base_offset + written) {
                         return TaskResult::Fatal(format!("write_at error: {}", e));
                     }
-                    written += buf.len() as u64;
-                    bytes_written.fetch_add(buf.len() as u64, Ordering::Relaxed);
+                    let n = buf.len() as u64;
+                    note_write(bytes_written, parts.as_deref(), base_offset + written, n);
+                    written += n;
                 }
                 break;
             }
@@ -147,8 +167,9 @@ pub async fn download_task(
                         if let Err(e) = write_at(file, &buf, base_offset + written) {
                             return TaskResult::Fatal(format!("write_at error on cancel: {}", e));
                         }
-                        written += buf.len() as u64;
-                        bytes_written.fetch_add(buf.len() as u64, Ordering::Relaxed);
+                        let n = buf.len() as u64;
+                        note_write(bytes_written, parts.as_deref(), base_offset + written, n);
+                        written += n;
                         buf.clear();
                     }
                     let remaining = chunk_size.saturating_sub(written);
@@ -170,8 +191,9 @@ pub async fn download_task(
             if let Err(e) = write_at(file, &buf, base_offset + written) {
                 return TaskResult::Fatal(format!("write_at error: {}", e));
             }
-            written += buf.len() as u64;
-            bytes_written.fetch_add(buf.len() as u64, Ordering::Relaxed);
+            let n = buf.len() as u64;
+            note_write(bytes_written, parts.as_deref(), base_offset + written, n);
+            written += n;
             buf.clear();
         }
     }

@@ -161,6 +161,8 @@ mod tests {
             user_agent: "test".to_string(),
             resume_tasks: vec![],
             downloaded: 0,
+            part_ranges: vec![(0, 100)],
+            part_downloaded: vec![],
         }
     }
 
