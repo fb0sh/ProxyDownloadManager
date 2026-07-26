@@ -1,5 +1,5 @@
-import type { DownloadPart } from "../types";
-import { partPercentFromPart } from "../utils/progressMap";
+import type { DownloadPart, DownloadStatus } from "../types";
+import { cellPercents } from "../utils/progressMap";
 import { t } from "../i18n";
 
 const COLS = 8;
@@ -7,13 +7,16 @@ const CELL = 36;
 
 interface ProgressMapProps {
   parts: DownloadPart[];
+  /** Status drives the map rules (Completed → all cells 100%). */
+  status: DownloadStatus;
 }
 
 /**
  * Progress Map: one cell per fixed Part, 8 columns LTR then top→bottom.
- * Green fills bottom-up by part %; percent label centered.
+ * Green fills bottom-up by part %; percent label centered. The status rules
+ * live in cellPercents — this component only renders.
  */
-export default function ProgressMap({ parts }: ProgressMapProps) {
+export default function ProgressMap({ parts, status }: ProgressMapProps) {
   if (!parts.length) {
     return (
       <div style={{ fontSize: 12, color: "var(--fgColor-muted, #656d76)" }}>
@@ -21,6 +24,8 @@ export default function ProgressMap({ parts }: ProgressMapProps) {
       </div>
     );
   }
+
+  const percents = cellPercents(parts, status);
 
   return (
     <div
@@ -34,8 +39,8 @@ export default function ProgressMap({ parts }: ProgressMapProps) {
         maxWidth: "100%",
       }}
     >
-      {parts.map((part) => {
-        const pct = partPercentFromPart(part);
+      {parts.map((part, i) => {
+        const pct = percents[i] ?? 0;
         return (
           <div
             key={part.index}

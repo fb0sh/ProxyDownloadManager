@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { formatETA, computeETA } from "../hooks/useDownloadSpeed";
+import { formatETA, computeETA, computeBps } from "../hooks/useDownloadSpeed";
 import type { DownloadItem } from "../types";
 
 function makeItem(overrides: Partial<DownloadItem> = {}): DownloadItem {
@@ -81,5 +81,37 @@ describe("computeETA", () => {
     const item = makeItem({ total_size: 10000, downloaded: 5000 });
     // 5000 remaining at 1000 bytes/sec = 5 seconds
     expect(computeETA(item, 1000)).toBe("5s");
+  });
+});
+
+describe("computeBps (the code behind the speed display)", () => {
+  it("needs at least two samples", () => {
+    expect(computeBps([], undefined)).toBeNull();
+    expect(computeBps([{ downloaded: 0, time: 0 }], undefined)).toBeNull();
+  });
+
+  it("computes bytes/second over the window", () => {
+    const samples = [
+      { downloaded: 0, time: 0 },
+      { downloaded: 1_000_000, time: 1000 },
+    ];
+    expect(computeBps(samples, undefined)).toBe(1_000_000);
+  });
+
+  it("smooths against the previous estimate", () => {
+    const samples = [
+      { downloaded: 0, time: 0 },
+      { downloaded: 1_000_000, time: 1000 },
+    ];
+    expect(computeBps(samples, 500_000)).toBe(750_000);
+  });
+
+  it("decays instead of dashing when the window is flat (the speed-dash bug)", () => {
+    const flat = [
+      { downloaded: 500, time: 0 },
+      { downloaded: 500, time: 1000 },
+    ];
+    expect(computeBps(flat, 100_000)).toBe(92_000);
+    expect(computeBps(flat, undefined)).toBeNull();
   });
 });

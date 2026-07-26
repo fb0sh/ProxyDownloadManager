@@ -1,5 +1,6 @@
 import { Text, Checkbox } from "@primer/react";
 import { t } from "../i18n";
+import { overallPercent } from "../utils/progressMap";
 import { formatBytes, formatTimestamp, statusString } from "../utils/format";
 import type { DownloadItem } from "../types";
 import type { IconMap } from "../hooks/useFileIcons";
@@ -80,7 +81,7 @@ export function buildColumns(ctx: ColumnContext) {
       header: t("downloadTable.status"),
       width: "auto" as const,
       renderCell: (row: DownloadItem) => {
-        const pct = row.total_size > 0 ? Math.round((row.downloaded / row.total_size) * 100) : 0;
+        const pct = overallPercent(row.downloaded, row.total_size, row.status);
         if (row.total_size === 0) {
           return ctxWrap(row, <Text size="small" style={{ color: "var(--fgColor-muted, #656d76)" }}>—</Text>);
         }

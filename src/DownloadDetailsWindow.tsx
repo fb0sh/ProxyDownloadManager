@@ -8,6 +8,7 @@ import { useDownloadDetail, useDownloadIdFromUrl } from "./hooks/useDownloadDeta
 import { useDownloadSpeed } from "./hooks/useDownloadSpeed";
 import { useSettings } from "./query/downloadQueries";
 import ProgressMap from "./components/ProgressMap";
+import { overallPercent } from "./utils/progressMap";
 import { setLanguage, t } from "./i18n";
 
 const card: React.CSSProperties = {
@@ -33,13 +34,6 @@ const v: React.CSSProperties = {
   flex: 1, minWidth: 0, wordBreak: "break-all", color: "var(--fgColor-default, #1f2328)",
 };
 
-/** Overall download percent 0–100. */
-function overallPercent(downloaded: number, totalSize: number, status: string | object): number {
-  if (status === "completed") return 100;
-  if (totalSize <= 0) return 0;
-  return Math.min(100, Math.floor((Math.min(downloaded, totalSize) / totalSize) * 100));
-}
-
 export default function DownloadDetailsWindow() {
   const idParam = new URLSearchParams(window.location.search).get("id");
   const id = useDownloadIdFromUrl();
@@ -59,7 +53,7 @@ export default function DownloadDetailsWindow() {
   const {
     item,
     urlCopied,
-    pendingAction,
+    controls,
     handleCopyUrl,
     handleOpenFile,
     handleOpenFolder,
@@ -86,20 +80,13 @@ export default function DownloadDetailsWindow() {
   if (!item) return <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100vh" }}><Text>Loading...</Text></div>;
 
   const speedInfo = speeds.get(item.id);
+  // Same dash policy as the table: speed value or "—" while downloading.
   const speedLabel =
-    item.status === "downloading" && speedInfo && speedInfo.bps > 0
-      ? `(${speedInfo.display})`
-      : item.status === "downloading"
-        ? "(—)"
-        : null;
+    item.status === "downloading" ? `(${speedInfo?.display ?? "—"})` : null;
 
   const resumable = item.resumable === true ? t("properties.yes") : item.resumable === false ? t("properties.no") : t("properties.unknown");
   const pct = overallPercent(item.downloaded, item.total_size, item.status);
-  const busy = pendingAction !== null;
-  // Keep the clicked control visible+disabled until success (status may lag).
-  const showPause = item.status === "downloading" || pendingAction === "pause";
-  const showResume = item.status === "paused" || item.status === "queued" || pendingAction === "resume";
-  const showOpen = item.status === "completed" || pendingAction === "openFile" || pendingAction === "openFolder";
+  const { busy, showPause, showResume, showOpen } = controls;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh", fontSize: 12, background: "var(--bgColor-default, #fff)" }}>
@@ -226,7 +213,7 @@ export default function DownloadDetailsWindow() {
         <div style={card}>
           <div style={hdr}>{t("properties.progressMap")}</div>
           <div style={bd}>
-            <ProgressMap parts={item.parts ?? []} />
+            <ProgressMap parts={item.parts ?? []} status={item.status} />
           </div>
         </div>
 

@@ -8,8 +8,33 @@ import {
 } from "../query/downloadQueries";
 import { openFile, openFolder } from "../utils/download";
 import { subscribeDownloadEvents } from "../downloadEvents";
+import type { DownloadStatus } from "../types";
 
 export type DetailPendingAction = "pause" | "resume" | "openFile" | "openFolder" | "copyUrl" | null;
+
+export interface DetailControls {
+  busy: boolean;
+  showPause: boolean;
+  showResume: boolean;
+  showOpen: boolean;
+}
+
+/**
+ * The controls decision for the details window: status ∪ pending, in one
+ * pure place. The pending union keeps the clicked control visible+disabled
+ * until the action succeeds (status lags the click — the 5a22aab bug class).
+ */
+export function detailControls(
+  status: DownloadStatus | undefined,
+  pending: DetailPendingAction,
+): DetailControls {
+  return {
+    busy: pending !== null,
+    showPause: status === "downloading" || pending === "pause",
+    showResume: status === "paused" || status === "queued" || pending === "resume",
+    showOpen: status === "completed" || pending === "openFile" || pending === "openFolder",
+  };
+}
 
 export function useDownloadDetail(id: number | undefined) {
   const item = useDownload(id);
@@ -92,6 +117,7 @@ export function useDownloadDetail(id: number | undefined) {
     item,
     urlCopied,
     pendingAction,
+    controls: detailControls(item?.status, pendingAction),
     handleCopyUrl,
     handleOpenFile,
     handleOpenFolder,

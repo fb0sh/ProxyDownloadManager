@@ -16,7 +16,7 @@ const MIN_BYTES_DELTA = 1;
 const MIN_DT_SEC = 0.3;
 const SAMPLE_MIN_INTERVAL_MS = 400;
 
-function computeBps(
+export function computeBps(
   samples: Array<{ downloaded: number; time: number }>,
   prevBps: number | undefined,
 ): number | null {

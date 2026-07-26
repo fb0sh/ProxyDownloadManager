@@ -6,6 +6,7 @@ import { formatBytes } from "../../utils/format";
 import { statusColor, statusString } from "../../utils/download";
 import { sectionCard, sectionHeader } from "../../utils/styles";
 import { t } from "../../i18n";
+import { overallPercent } from "../../utils/progressMap";
 
 interface PropertiesDialogProps {
   id: number;
@@ -54,7 +55,7 @@ export default function PropertiesDialog({ id, onClose }: PropertiesDialogProps)
 
   if (!item) return null;
 
-  const progress = item.total_size > 0 ? (item.downloaded / item.total_size) * 100 : 0;
+  const progress = overallPercent(item.downloaded, item.total_size, item.status);
 
   const resumable = item.resumable === true ? t("properties.yes") : item.resumable === false ? t("properties.no") : t("properties.unknown");
 
@@ -89,10 +90,10 @@ export default function PropertiesDialog({ id, onClose }: PropertiesDialogProps)
           {(item.status === "downloading" || item.status === "paused") && (
             <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8 }}>
               <div style={{ flex: 1 }}>
-                <ProgressBar progress={Math.round(progress)} />
+                <ProgressBar progress={progress} />
               </div>
               <Text size="small" style={{ color: "var(--fgColor-muted, #656d76)", flexShrink: 0 }}>
-                {Math.round(progress)}{t("progress.percent")}
+                {progress}{t("progress.percent")}
               </Text>
             </div>
           )}
@@ -102,7 +103,7 @@ export default function PropertiesDialog({ id, onClose }: PropertiesDialogProps)
           <div style={sectionCard}>
             <div style={sectionHeader}>{t("properties.file")}</div>
             <InfoRow label={t("properties.size")} value={formatBytes(item.total_size)} />
-            <InfoRow label={t("properties.downloaded")} value={`${formatBytes(item.downloaded)} (${progress > 0 ? Math.round(progress) + "%" : "0%"})`} />
+            <InfoRow label={t("properties.downloaded")} value={`${formatBytes(item.downloaded)} (${progress}%)`} />
             <InfoRow label={t("properties.savePath")} value={item.save_path || "—"} />
             <InfoRow label={t("properties.created")} value={item.created_at} last />
           </div>
