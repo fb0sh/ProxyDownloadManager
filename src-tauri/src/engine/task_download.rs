@@ -14,6 +14,9 @@ pub enum TaskResult {
     Partial { remaining: Task },
     /// User cancelled.
     Cancelled,
+    /// Server ignored the Range header — retrying is pointless; concurrent
+    /// download cannot proceed at all.
+    RangeNotSupported,
     /// Unrecoverable error — don't retry this chunk.
     Fatal(String),
 }
@@ -84,9 +87,10 @@ pub async fn download_task(
     let status = resp.status();
     log::info!("[ProxyDM] concurrent_task offset={} HTTP {} (expected 206 or 200)", task.offset, status);
 
-    // For offset > 0: 200 means server ignored Range — fatal
+    // For offset > 0: 200 means the server ignored Range — not retryable.
     if status == reqwest::StatusCode::OK && task.offset > 0 {
-        return TaskResult::Fatal(format!("Server ignored Range header (HTTP 200), offset={}", task.offset));
+        log::warn!("[ProxyDM] server ignored Range header (HTTP 200), offset={}", task.offset);
+        return TaskResult::RangeNotSupported;
     }
     if status != reqwest::StatusCode::OK && status != reqwest::StatusCode::PARTIAL_CONTENT {
         return TaskResult::Fatal(format!("HTTP {}", status));

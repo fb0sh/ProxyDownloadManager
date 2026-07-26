@@ -40,10 +40,12 @@ Queued → Downloading → Completed
 
 | 引擎 | 条件 | 支持暂停 | 降级 |
 |------|------|---------|------|
-| **ConcurrentDownloader** | 支持 Range (206) | ✅ | Concurrent 失败 → SessionReset → Truncate → Single 重新下载 |
+| **ConcurrentDownloader** | 支持 Range (206) | ✅ | 见下：仅部分失败会降级 |
 | **SingleDownloader** | 不支持 Range (200) / 降级 | ❌ | — |
 
-- Concurrent 降级到 Single 时：truncate .pdm 文件 → 发送 DownloadProgress 0（重置前端进度） → 用 Single 重新下载
+- **降级 (degrade)**：Concurrent 无法继续时放弃分片进度、改用 Single 整文件重下。仅在 Range 中途失效（服务器对续传请求回 200）或下载不完整等「继续并发无意义」的失败时发生；**重试耗尽不降级**——保留进度、标记失败，可手动恢复
+- 降级顺序固定：先作废全部进度记录（进度账本）→ truncate .pdm → 发送 DownloadProgress 0（重置进度地图为单格）→ Single 重下。先作废后截断，任何时点崩溃都只会干净地从零重来
+- **取消标志只表示用户暂停**；引擎内部中止（重试耗尽、Range 失效）走独立通道，二者在结果上可区分
 - 两种引擎统一写入 `.pdm` 临时文件，完成后重命名为最终路径
 
 ### 进度账本 (Progress Ledger)

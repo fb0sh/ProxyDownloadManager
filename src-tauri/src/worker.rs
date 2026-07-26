@@ -1,5 +1,5 @@
 use crate::types::{EngineConfig, PdmResult, Event};
-use crate::engine::OnResumeState;
+use crate::engine::EngineHooks;
 use crate::network::pool::NetworkPool;
 use crate::network::limiter::MultiLimiter;
 use crate::engine;
@@ -34,13 +34,13 @@ impl WorkerPool {
         self.next_id.fetch_add(1, Ordering::Relaxed)
     }
 
-    pub async fn add_with_id(&self, cfg: EngineConfig, id: u64, on_resume: OnResumeState) -> PdmResult<u64> {
+    pub async fn add_with_id(&self, cfg: EngineConfig, id: u64, hooks: EngineHooks) -> PdmResult<u64> {
         let permit = self.semaphore.clone().try_acquire_owned().map_err(|_| crate::types::PdmError::Other("Too many concurrent downloads — try again later.".to_string()))?;
-        self.spawn_task(cfg, permit, id, on_resume).await;
+        self.spawn_task(cfg, permit, id, hooks).await;
         Ok(id)
     }
 
-    async fn spawn_task(&self, mut cfg: EngineConfig, permit: tokio::sync::OwnedSemaphorePermit, id: u64, on_resume: OnResumeState) {
+    async fn spawn_task(&self, mut cfg: EngineConfig, permit: tokio::sync::OwnedSemaphorePermit, id: u64, hooks: EngineHooks) {
         cfg.id = id;
         log::info!("[ProxyDM] spawn id={} url={} proxy={} conns={}",
             id, cfg.url, cfg.proxy_url, cfg.connections);
@@ -58,7 +58,7 @@ impl WorkerPool {
             ));
 
             let result = engine::run_download(cfg, pool, event_tx.clone(), limiter, cancel_for_task.clone(),
-                on_resume
+                hooks
             ).await;
 
             match &result {
@@ -166,8 +166,11 @@ mod tests {
         }
     }
 
-    fn on_resume() -> OnResumeState {
-        Box::new(|_, _| {})
+    fn hooks() -> EngineHooks {
+        EngineHooks {
+            save_resume_state: Box::new(|_, _| {}),
+            invalidate_for_restart: Box::new(|_| {}),
+        }
     }
 
     #[test]
@@ -204,7 +207,7 @@ mod tests {
 
         // Add a task — it will fail quickly (unreachable URL) but will be in the active map briefly
         let id = pool.next_id();
-        let _ = pool.add_with_id(test_config(), id, on_resume()).await;
+        let _ = pool.add_with_id(test_config(), id, hooks()).await;
 
         // Wait briefly for task to be inserted into active map
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -223,7 +226,7 @@ mod tests {
         let pool = WorkerPool::new(4, tx, false, 1, 0);
 
         let id = pool.next_id();
-        let _ = pool.add_with_id(test_config(), id, on_resume()).await;
+        let _ = pool.add_with_id(test_config(), id, hooks()).await;
 
         // cancel_and_wait should complete without hanging
         pool.cancel_and_wait(id).await;
@@ -250,8 +253,8 @@ mod tests {
         // Spawn multiple tasks
         let id1 = pool.next_id();
         let id2 = pool.next_id();
-        let _ = pool.add_with_id(test_config(), id1, on_resume()).await;
-        let _ = pool.add_with_id(test_config(), id2, on_resume()).await;
+        let _ = pool.add_with_id(test_config(), id1, hooks()).await;
+        let _ = pool.add_with_id(test_config(), id2, hooks()).await;
 
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 

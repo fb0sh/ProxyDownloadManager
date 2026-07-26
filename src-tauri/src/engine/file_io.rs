@@ -1,7 +1,21 @@
 use std::path::Path;
 
+/// The engine's temp-file convention: data streams into `{save_path}.pdm` and
+/// is renamed into place on completion. This is the single owner of that
+/// knowledge — callers never format the suffix themselves.
+pub fn pdm_path(save_path: &str) -> String {
+    format!("{}.pdm", save_path)
+}
+
+/// Delete a download's files — final and temp — so callers (delete flow)
+/// don't need to know the temp convention.
+pub fn remove_download_files(save_path: &str) {
+    let _ = std::fs::remove_file(pdm_path(save_path));
+    let _ = std::fs::remove_file(save_path);
+}
+
 pub async fn create_output_file(path: &str, total_size: u64) -> Result<std::fs::File, String> {
-    let pdm_path = format!("{}.pdm", path);
+    let pdm_path = pdm_path(path);
     if let Some(parent) = Path::new(&pdm_path).parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -18,7 +32,7 @@ pub async fn create_output_file(path: &str, total_size: u64) -> Result<std::fs::
 }
 
 pub async fn finalize_file(save_path: &str) -> Result<(), String> {
-    let pdm_path = format!("{}.pdm", save_path);
+    let pdm_path = pdm_path(save_path);
     // Windows: antivirus/indexers briefly hold freshly written files, making
     // the rename fail with a sharing violation — retry with a short backoff.
     // The caller must have dropped its file handle before calling this.

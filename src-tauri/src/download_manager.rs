@@ -1,4 +1,4 @@
-use crate::engine::OnResumeState;
+use crate::engine::EngineHooks;
 use crate::event_bus::{EventBus, FrontendEvent};
 use crate::event_handler::{transform_event, EventAction};
 use crate::logger::Logger;
@@ -45,11 +45,17 @@ impl DownloadManager {
         }
     }
 
-    fn make_resume_callback(&self) -> OnResumeState {
-        let ledger = self.ledger.clone();
-        Box::new(move |id, state| {
-            ledger.save_resume_state(id, state);
-        })
+    fn make_hooks(&self) -> EngineHooks {
+        let save_ledger = self.ledger.clone();
+        let invalidate_ledger = self.ledger.clone();
+        EngineHooks {
+            save_resume_state: Box::new(move |id, state| {
+                save_ledger.save_resume_state(id, state);
+            }),
+            invalidate_for_restart: Box::new(move |id| {
+                invalidate_ledger.invalidate_for_restart(id);
+            }),
+        }
     }
 
     pub fn clear_client_pool(&self) {
@@ -206,7 +212,7 @@ impl DownloadManager {
             && plan.item.total_size > 0
             && plan.downloaded >= plan.item.total_size
         {
-            let pdm_path = format!("{}.pdm", plan.item.save_path);
+            let pdm_path = crate::engine::file_io::pdm_path(&plan.item.save_path);
             if std::path::Path::new(&pdm_path).exists() {
                 let _ = std::fs::rename(&pdm_path, &plan.item.save_path);
             }
@@ -232,7 +238,7 @@ impl DownloadManager {
 
         if let Err(e) = self
             .worker_pool
-            .add_with_id(cfg, id, self.make_resume_callback())
+            .add_with_id(cfg, id, self.make_hooks())
             .await
         {
             // No worker was spawned — roll the row back to Paused, or the
@@ -263,14 +269,7 @@ impl DownloadManager {
         self.ledger.on_deleted(id)?;
 
         if let Some(path) = save_path {
-            let p = std::path::Path::new(&path);
-            let pdm_path = std::path::PathBuf::from(format!("{}.pdm", path));
-            if pdm_path.exists() {
-                let _ = std::fs::remove_file(&pdm_path);
-            }
-            if p.exists() {
-                let _ = std::fs::remove_file(p);
-            }
+            crate::engine::file_io::remove_download_files(&path);
         }
         Ok(())
     }
@@ -364,7 +363,7 @@ impl DownloadManager {
             settings.max_retries,
         );
         self.worker_pool
-            .add_with_id(cfg, id, self.make_resume_callback())
+            .add_with_id(cfg, id, self.make_hooks())
             .await?;
 
         Ok(id)

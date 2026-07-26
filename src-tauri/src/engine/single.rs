@@ -57,7 +57,7 @@ impl SingleDownloader {
 
         // Use std::fs::File (no tokio overhead for sequential write)
         // Write to .pdm temp file for crash safety, rename on completion
-        let pdm_path = format!("{}.pdm", cfg.save_path);
+        let pdm_path = crate::engine::file_io::pdm_path(&cfg.save_path);
         use std::io::Write;
         let mut file = std::fs::File::create(&pdm_path)
             .map_err(|e| PdmError::Io(e.to_string()))?;

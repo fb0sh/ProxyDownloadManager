@@ -217,6 +217,11 @@ impl ProgressLedger {
         part_downloaded: Option<Vec<u64>>,
         reset_to_single: bool,
     ) {
+        // After invalidate_for_restart, events queued before the restart are
+        // stale and must not resurrect pre-truncate progress.
+        if !self.runtime.restart_gate(id, reset_to_single) {
+            return;
+        }
         if reset_to_single {
             if self.runtime.mark_single_reset(id) {
                 let _ = self.db.reset_parts_to_single(id, downloaded);
@@ -359,6 +364,19 @@ impl ProgressLedger {
     /// Persist engine resume state (engine cancel callback).
     pub fn save_resume_state(&self, id: u64, state: &DownloadState) {
         let _ = gob::save_state(id, state);
+    }
+
+    /// Engine hook, called right before a degrade truncates the file: reset
+    /// every progress record FIRST, so a crash between the two can never
+    /// leave a copy claiming progress the truncated file no longer has.
+    /// Also arms the restart gate: progress events already queued from before
+    /// the restart get dropped instead of resurrecting stale numbers.
+    pub fn invalidate_for_restart(&self, id: u64) {
+        let _ = self.db.reset_parts_to_single(id, 0);
+        let _ = gob::delete_state(id);
+        self.runtime.mark_single_reset(id);
+        self.runtime.update_progress(id, 0, Some(vec![0]));
+        self.runtime.set_restart_pending(id);
     }
 
     /// Flush all runtime progress to DB. Returns entries flushed.
@@ -784,6 +802,38 @@ mod tests {
 
         ledger.on_deleted(52).unwrap();
         ledger.on_deleted(53).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_invalidate_gates_stale_events_until_reset() {
+        let (ledger, dir) = test_ledger("restart_gate");
+        let mut item = sample_item(70);
+        item.status = DownloadStatus::Downloading;
+        item.parts = two_parts(0, 0);
+        ledger.insert_item(&item).unwrap();
+
+        ledger.on_started(70);
+        ledger.record_progress(70, 600, Some(vec![300, 300]), false);
+        assert_eq!(ledger.runtime.get_downloaded(70), Some(600));
+
+        // Degrade: records invalidated before the truncate.
+        ledger.invalidate_for_restart(70);
+        assert_eq!(ledger.runtime.get_downloaded(70), Some(0));
+
+        // A stale pre-restart event must be dropped, not resurrect 600.
+        ledger.record_progress(70, 600, Some(vec![300, 300]), false);
+        assert_eq!(ledger.runtime.get_downloaded(70), Some(0));
+
+        // The restart's own reset event clears the gate…
+        ledger.record_progress(70, 0, Some(vec![0]), true);
+        assert_eq!(ledger.runtime.get_downloaded(70), Some(0));
+
+        // …and the Single engine's real progress flows again.
+        ledger.record_progress(70, 100, Some(vec![100]), true);
+        assert_eq!(ledger.runtime.get_downloaded(70), Some(100));
+
+        ledger.on_deleted(70).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

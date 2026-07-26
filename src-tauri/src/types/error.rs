@@ -23,6 +23,12 @@ pub enum PdmError {
     Io(String),
     /// WebSocket / network error.
     Network(String),
+    /// All retries burned on a task — progress is saved; the download is
+    /// resumable, so the engine must NOT degrade (that would truncate it).
+    RetriesExhausted(String),
+    /// The server stopped honoring Range requests mid-download — concurrent
+    /// can never finish; the engine degrades to a sequential restart.
+    RangeLost,
     /// Generic fallback with message.
     Other(String),
 }
@@ -39,6 +45,8 @@ impl fmt::Display for PdmError {
             Self::Config(msg) => write!(f, "Config error: {}", msg),
             Self::Io(msg) => write!(f, "I/O error: {}", msg),
             Self::Network(msg) => write!(f, "Network error: {}", msg),
+            Self::RetriesExhausted(msg) => write!(f, "Retries exhausted: {}", msg),
+            Self::RangeLost => write!(f, "Server stopped honoring Range requests"),
             Self::Other(msg) => write!(f, "{}", msg),
         }
     }

@@ -18,6 +18,18 @@ use async_trait::async_trait;
 /// to persist remaining tasks for resume. Avoids direct gob access.
 pub type OnResumeState = Box<dyn Fn(u64, &DownloadState) + Send + Sync>;
 
+/// The engine's callbacks into the progress ledger. The engine owns files and
+/// bytes; the ledger owns progress records — these hooks are the only channel
+/// between them that must happen synchronously (events cover the rest).
+pub struct EngineHooks {
+    /// Persist a resume snapshot (pause / abort).
+    pub save_resume_state: OnResumeState,
+    /// Reset every progress record before a truncate-and-restart, so a crash
+    /// between the two can never leave records claiming progress the
+    /// truncated file no longer has.
+    pub invalidate_for_restart: Box<dyn Fn(u64) + Send + Sync>,
+}
+
 /// Trait for download engine implementations.
 /// Both ConcurrentDownloader and SingleDownloader implement this,
 /// allowing the dispatch logic to be polymorphic.
@@ -77,7 +89,7 @@ pub async fn run_download(
     event_tx: mpsc::UnboundedSender<Event>,
     limiter: Arc<MultiLimiter>,
     cancel: Arc<AtomicBool>,
-    on_cancelled: OnResumeState,
+    hooks: EngineHooks,
 ) -> PdmResult<()> {
     let engine_kind = if cfg.supports_range { "concurrent" } else { "single" };
     log::info!("[ProxyDM] run_download id={} engine={} url={} size={} range={}",
@@ -90,20 +102,24 @@ pub async fn run_download(
     });
 
     let engine = create_engine(&cfg, pool.clone(), &event_tx);
-    let result = engine.download(&cfg, limiter.clone(), cancel.clone(), &on_cancelled).await;
+    let result = engine
+        .download(&cfg, limiter.clone(), cancel.clone(), &hooks.save_resume_state)
+        .await;
 
-    // On concurrent failure (not cancelled), degrade to single
+    // Degrade policy: a pause keeps everything, and retry exhaustion keeps
+    // saved progress for a later resume — truncating either would only lose
+    // data. Everything else (range loss, incomplete streams, setup errors)
+    // restarts sequentially.
     let result = match result {
         Ok(()) => result,
-        Err(ref e) if matches!(e, PdmError::Cancelled) => result,
+        Err(ref e) if matches!(e, PdmError::Cancelled | PdmError::RetriesExhausted(_)) => result,
         Err(e) => {
             log::error!("[ProxyDM] Concurrent id={} failed, degrading to Single: {}", cfg.id, e);
-            // The reset_to_single event below makes the ledger reset the DB
-            // parts and delete the gob. A crash between this truncate and that
-            // event being processed leaves stale progress records pointing at
-            // a truncated file — closing that window needs the fallback to be
-            // orchestrated where state lives (see architecture candidate 2).
-            let pdm_path = format!("{}.pdm", cfg.save_path);
+            // Records first, then the file: after invalidation a crash at any
+            // point simply restarts the download from zero — no record can
+            // claim progress the truncated file doesn't have.
+            (hooks.invalidate_for_restart)(cfg.id);
+            let pdm_path = file_io::pdm_path(&cfg.save_path);
             let _ = std::fs::OpenOptions::new()
                 .write(true)
                 .truncate(true)
@@ -115,7 +131,9 @@ pub async fn run_download(
                 data: Some(part_progress::encode_progress_data(0, &[0], true)),
             });
             let fallback: Box<dyn DownloadEngine> = Box::new(single::SingleDownloader::new(pool, event_tx.clone()));
-            fallback.download(&cfg, limiter, cancel, &on_cancelled).await
+            fallback
+                .download(&cfg, limiter, cancel, &hooks.save_resume_state)
+                .await
         }
     };
 
@@ -163,6 +181,13 @@ mod tests {
                 vec![]
             },
             part_downloaded: vec![],
+        }
+    }
+
+    fn test_hooks() -> EngineHooks {
+        EngineHooks {
+            save_resume_state: Box::new(|_, _| {}),
+            invalidate_for_restart: Box::new(|_| {}),
         }
     }
 
@@ -292,9 +317,8 @@ mod tests {
         let cfg = test_config("https://example.com/file.zip", false, 1000);
         let limiter = Arc::new(MultiLimiter::new(0, 0));
         let cancel = Arc::new(AtomicBool::new(false));
-        let on_cancelled: OnResumeState = Box::new(|_, _| {});
 
-        let _ = run_download(cfg, pool, tx, limiter, cancel, on_cancelled).await;
+        let _ = run_download(cfg, pool, tx, limiter, cancel, test_hooks()).await;
 
         let event = rx.try_recv();
         assert!(event.is_ok(), "Expected at least one event (DownloadStarted)");
@@ -313,9 +337,8 @@ mod tests {
         let cfg = test_config(&url, false, file_data.len() as u64);
         let limiter = Arc::new(MultiLimiter::new(0, 0));
         let cancel = Arc::new(AtomicBool::new(false));
-        let on_cancelled: OnResumeState = Box::new(|_, _| {});
 
-        let result = run_download(cfg, pool.clone(), tx, limiter, cancel, on_cancelled).await;
+        let result = run_download(cfg, pool.clone(), tx, limiter, cancel, test_hooks()).await;
 
         // Single engine should succeed
         assert!(result.is_ok(), "Single engine download failed: {:?}", result.err());
@@ -339,9 +362,8 @@ mod tests {
         let cfg = test_config(&url, true, file_data.len() as u64);
         let limiter = Arc::new(MultiLimiter::new(0, 0));
         let cancel = Arc::new(AtomicBool::new(false));
-        let on_cancelled: OnResumeState = Box::new(|_, _| {});
 
-        let result = run_download(cfg, pool.clone(), tx, limiter, cancel, on_cancelled).await;
+        let result = run_download(cfg, pool.clone(), tx, limiter, cancel, test_hooks()).await;
 
         assert!(result.is_ok(), "Concurrent engine download failed: {:?}", result.err());
 
@@ -365,9 +387,8 @@ mod tests {
         let cfg = test_config(&url, false, file_data.len() as u64);
         let limiter = Arc::new(MultiLimiter::new(0, 0));
         let cancel = Arc::new(AtomicBool::new(false));
-        let on_cancelled: OnResumeState = Box::new(|_, _| {});
 
-        let _ = run_download(cfg, pool.clone(), tx, limiter, cancel, on_cancelled).await;
+        let _ = run_download(cfg, pool.clone(), tx, limiter, cancel, test_hooks()).await;
 
         // Collect all events — should include DownloadStarted, progress, and DownloadCompleted
         let mut events = Vec::new();
@@ -404,9 +425,12 @@ mod tests {
         let resume_called = Arc::new(AtomicBool::new(false));
         let resume_called_clone = resume_called.clone();
 
-        let on_cancelled: OnResumeState = Box::new(move |_id, _state| {
-            resume_called_clone.store(true, Ordering::Relaxed);
-        });
+        let hooks = EngineHooks {
+            save_resume_state: Box::new(move |_id, _state| {
+                resume_called_clone.store(true, Ordering::Relaxed);
+            }),
+            invalidate_for_restart: Box::new(|_| {}),
+        };
 
         // Cancel after a short delay
         let cancel_handle = tokio::spawn(async move {
@@ -414,14 +438,14 @@ mod tests {
             cancel_clone.store(true, Ordering::Relaxed);
         });
 
-        let result = run_download(cfg, pool.clone(), tx, limiter, cancel, on_cancelled).await;
+        let result = run_download(cfg, pool.clone(), tx, limiter, cancel, hooks).await;
         cancel_handle.await.unwrap();
 
-        // Should fail with Cancelled, and on_cancelled callback should have been called
+        // Should fail with Cancelled, and the save_resume_state hook should have fired
         assert!(result.is_err(), "Expected error after cancel");
         assert!(
             resume_called.load(Ordering::Relaxed),
-            "on_cancelled callback was not called"
+            "save_resume_state hook was not called"
         );
 
         // Clean up
@@ -433,4 +457,175 @@ mod tests {
         let _ = std::fs::remove_file(&pdm_path);
     }
 
+    fn test_config_at(name: &str, url: &str, supports_range: bool, total_size: u64) -> EngineConfig {
+        let mut cfg = test_config(url, supports_range, total_size);
+        cfg.save_path = std::env::temp_dir()
+            .join(format!("pdm_engine_{}_{}.bin", name, std::process::id()))
+            .to_str()
+            .unwrap()
+            .to_string();
+        cfg
+    }
+
+    /// Hooks that record which callbacks fired.
+    fn recording_hooks() -> (EngineHooks, Arc<AtomicBool>, Arc<AtomicBool>) {
+        let saved = Arc::new(AtomicBool::new(false));
+        let invalidated = Arc::new(AtomicBool::new(false));
+        let saved_c = saved.clone();
+        let invalidated_c = invalidated.clone();
+        let hooks = EngineHooks {
+            save_resume_state: Box::new(move |_, _| {
+                saved_c.store(true, Ordering::Relaxed);
+            }),
+            invalidate_for_restart: Box::new(move |id| {
+                invalidated_c.store(true, Ordering::Relaxed);
+                let _ = id;
+            }),
+        };
+        (hooks, saved, invalidated)
+    }
+
+    #[tokio::test]
+    async fn test_retry_exhaustion_saves_progress_and_does_not_degrade() {
+        // Server that accepts and immediately drops every connection: all
+        // tasks fail fatally, retries (0) exhaust at once.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                match listener.accept().await {
+                    Ok((stream, _)) => drop(stream),
+                    Err(_) => return,
+                }
+            }
+        });
+        let url = format!("http://127.0.0.1:{}/x.bin", addr.port());
+
+        let mut cfg = test_config_at("exhaust", &url, true, 8192);
+        cfg.max_retries = 0;
+        cfg.connections = 1;
+        let save_path = cfg.save_path.clone();
+
+        let pool = Arc::new(NetworkPool::new(false));
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (hooks, saved, invalidated) = recording_hooks();
+
+        let result = run_download(
+            cfg,
+            pool,
+            tx,
+            Arc::new(MultiLimiter::new(0, 0)),
+            Arc::new(AtomicBool::new(false)),
+            hooks,
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(PdmError::RetriesExhausted(_))),
+            "expected RetriesExhausted, got {:?}",
+            result
+        );
+        assert!(
+            saved.load(Ordering::Relaxed),
+            "abort must save a resume snapshot"
+        );
+        assert!(
+            !invalidated.load(Ordering::Relaxed),
+            "retry exhaustion must NOT degrade/invalidate — progress stays resumable"
+        );
+
+        let _ = std::fs::remove_file(&save_path);
+        let _ = std::fs::remove_file(file_io::pdm_path(&save_path));
+    }
+
+    /// Server that honors Range only from offset 0; any offset>0 request gets
+    /// HTTP 200 + the full file (a server that stopped honoring ranges).
+    async fn spawn_range_lossy_server(file_data: Vec<u8>) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = match listener.accept().await {
+                    Ok(conn) => conn,
+                    Err(_) => return,
+                };
+                let mut buf = vec![0u8; 4096];
+                let mut total = Vec::new();
+                loop {
+                    let n = stream.read(&mut buf).await.unwrap_or(0);
+                    if n == 0 { break; }
+                    total.extend_from_slice(&buf[..n]);
+                    if total.windows(4).any(|w| w == b"\r\n\r\n") { break; }
+                }
+                let req = String::from_utf8_lossy(&total);
+                let range = req.lines().find(|l| l.starts_with("Range:")).map(|l| {
+                    let spec = l.split("bytes=").nth(1).unwrap_or("0-");
+                    let start = spec.split('-').next().and_then(|s| s.trim().parse::<u64>().ok()).unwrap_or(0);
+                    let end = spec.split('-').nth(1).and_then(|s| s.trim().parse::<u64>().ok())
+                        .unwrap_or(file_data.len() as u64 - 1);
+                    (start, end)
+                });
+                match range {
+                    Some((0, end)) => {
+                        let body = &file_data[0..=(end as usize).min(file_data.len() - 1)];
+                        let head = format!(
+                            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-{}/{}\r\nContent-Length: {}\r\n\r\n",
+                            end, file_data.len(), body.len()
+                        );
+                        let _ = stream.write_all(head.as_bytes()).await;
+                        let _ = stream.write_all(body).await;
+                    }
+                    _ => {
+                        // offset>0 or no Range: pretend ranges don't exist
+                        let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", file_data.len());
+                        let _ = stream.write_all(head.as_bytes()).await;
+                        let _ = stream.write_all(&file_data).await;
+                    }
+                }
+            }
+        });
+
+        format!("http://127.0.0.1:{}", addr.port())
+    }
+
+    #[tokio::test]
+    async fn test_range_lost_degrades_to_single_with_invalidation_first() {
+        // 8MB → two 4MB tasks; the offset-4MB task gets HTTP 200 → RangeLost.
+        let file_data: Vec<u8> = (0..8 * 1024 * 1024u32).map(|i| (i % 251) as u8).collect();
+        let server_url = spawn_range_lossy_server(file_data.clone()).await;
+        let url = format!("{}/test-rangelost.bin", server_url);
+
+        let cfg = test_config_at("rangelost", &url, true, file_data.len() as u64);
+        let save_path = cfg.save_path.clone();
+
+        let pool = Arc::new(NetworkPool::new(false));
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (hooks, _saved, invalidated) = recording_hooks();
+
+        let result = run_download(
+            cfg,
+            pool,
+            tx,
+            Arc::new(MultiLimiter::new(0, 0)),
+            Arc::new(AtomicBool::new(false)),
+            hooks,
+        )
+        .await;
+
+        assert!(result.is_ok(), "degrade to single should complete: {:?}", result.err());
+        assert!(
+            invalidated.load(Ordering::Relaxed),
+            "degrade must invalidate progress records before truncating"
+        );
+        let written = std::fs::read(&save_path).expect("final file missing");
+        assert_eq!(written.len(), file_data.len());
+        assert_eq!(written, file_data, "degraded download must produce intact content");
+        assert!(
+            !std::path::Path::new(&file_io::pdm_path(&save_path)).exists(),
+            ".pdm must be renamed away on completion"
+        );
+
+        let _ = std::fs::remove_file(&save_path);
+    }
 }

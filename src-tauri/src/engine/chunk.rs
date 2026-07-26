@@ -104,7 +104,7 @@ pub fn compute_connection_count(file_size: u64, requested: u32, max_connections:
 /// Check if there's enough disk space for the download.
 pub fn check_disk_space(path: &str, file_size: u64) -> PdmResult<()> {
     if file_size > 0 {
-        let pdm_path = format!("{}.pdm", path);
+        let pdm_path = crate::engine::file_io::pdm_path(path);
         if let Some(parent) = std::path::Path::new(&pdm_path).parent() {
             if let Ok(available) = fs2::available_space(parent) {
                 let needed = file_size + (2u64 * 1024 * 1024);

@@ -80,6 +80,27 @@ impl ConcurrentDownloader {
         let mut handles = Vec::new();
         let download_id = cfg.id;
 
+        // `cancel` means exactly one thing: user pause. Internal aborts (retry
+        // exhaustion, range loss) use `stop` + `abort_reason` instead, so the
+        // outcome ladder below can tell the three apart. Workers only watch
+        // `stop`; a small forwarder mirrors the external pause flag into it.
+        let stop = Arc::new(AtomicBool::new(false));
+        let abort_reason: Arc<std::sync::Mutex<Option<PdmError>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let forwarder_handle = {
+            let cancel = cancel.clone();
+            let stop = stop.clone();
+            tokio::spawn(async move {
+                while !stop.load(Ordering::Relaxed) {
+                    if cancel.load(Ordering::Relaxed) {
+                        stop.store(true, Ordering::Relaxed);
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+            })
+        };
+
         // Spawn periodic progress reporter
         let reporter_stop = Arc::new(AtomicBool::new(false));
         let progress_cancel = reporter_stop.clone();
@@ -105,20 +126,36 @@ impl ConcurrentDownloader {
             let queue = queue.clone();
             let file = file.clone();
             let client = client.clone();
-            let cancel = cancel.clone();
+            let stop = stop.clone();
+            let abort_reason = abort_reason.clone();
             let limiter = limiter.clone();
-            let event_tx = self.event_tx.clone();
             let url = cfg.url.clone();
             let max_retries = cfg.max_retries;
             let user_agent = cfg.user_agent.clone();
-            let cancel_for_task = cancel.clone();
+            let stop_for_task = stop.clone();
             let bytes_written = bytes_written.clone();
             let parts = parts_tracker.clone();
+
+            // On any abort the popped task goes back into the queue first, so
+            // the drain-based resume snapshot always covers remaining work.
+            let abort = move |queue: &ChunkQueue,
+                              task: crate::types::Task,
+                              reason: PdmError,
+                              stop: &AtomicBool,
+                              abort_reason: &std::sync::Mutex<Option<PdmError>>| {
+                queue.push(task);
+                if let Ok(mut guard) = abort_reason.lock() {
+                    if guard.is_none() {
+                        *guard = Some(reason);
+                    }
+                }
+                stop.store(true, Ordering::Relaxed);
+            };
 
             let handle = tokio::spawn(async move {
                 let mut retries_left = max_retries;
                 loop {
-                    if cancel.load(Ordering::Relaxed) {
+                    if stop.load(Ordering::Relaxed) {
                         return;
                     }
                     let task = match queue.pop() {
@@ -127,7 +164,7 @@ impl ConcurrentDownloader {
                     };
 
                     let result = download_task(
-                        &url, &client, &*file, &task, &cancel_for_task, &limiter, &user_agent, &bytes_written,
+                        &url, &client, &*file, &task, &stop_for_task, &limiter, &user_agent, &bytes_written,
                         Some(parts.clone()),
                     ).await;
 
@@ -143,6 +180,10 @@ impl ConcurrentDownloader {
                         TaskResult::Cancelled => {
                             return;
                         }
+                        TaskResult::RangeNotSupported => {
+                            abort(&queue, task, PdmError::RangeLost, &stop, &abort_reason);
+                            return;
+                        }
                         TaskResult::Fatal(msg) => {
                             let attempt = max_retries.saturating_sub(retries_left) + 1;
                             let backoff_secs = 2u64.pow(attempt.min(5) as u32).min(30);
@@ -152,15 +193,13 @@ impl ConcurrentDownloader {
                                 queue.push(task);
                             } else {
                                 log::error!("retries exhausted for offset={}, stopping", task.offset);
-                                // Set cancel flag so other workers stop and the
-                                // concurrent downloader enters the cancel path
-                                // (saves resume state instead of degrading to single)
-                                cancel.store(true, Ordering::Relaxed);
-                                let _ = event_tx.send(crate::types::Event {
-                                    kind: crate::types::EventKind::DownloadErrored,
-                                    download_id,
-                                    data: Some(format!("Retries exhausted: {}", msg)),
-                                });
+                                abort(
+                                    &queue,
+                                    task,
+                                    PdmError::RetriesExhausted(msg),
+                                    &stop,
+                                    &abort_reason,
+                                );
                                 return;
                             }
                         }
@@ -175,6 +214,8 @@ impl ConcurrentDownloader {
         }
         log::info!("[ProxyDM] concurrent id={} all workers done", cfg.id);
 
+        stop.store(true, Ordering::Relaxed);
+        let _ = forwarder_handle.await;
         reporter_stop.store(true, Ordering::Relaxed);
         let _ = reporter_handle.await;
 
@@ -191,8 +232,7 @@ impl ConcurrentDownloader {
 
         let _ = file.sync_all();
 
-        if cancel.load(Ordering::Relaxed) {
-            let remaining_tasks = queue.drain();
+        let mut save_snapshot = || {
             let saved = crate::types::DownloadState {
                 url: cfg.url.clone(),
                 id: cfg.id,
@@ -200,12 +240,22 @@ impl ConcurrentDownloader {
                 save_path: cfg.save_path.clone(),
                 total_size: cfg.total_size,
                 downloaded: bytes_written.load(Ordering::Relaxed),
-                tasks: remaining_tasks,
+                tasks: queue.drain(),
                 proxy_name: cfg.proxy_name.clone(),
                 workers: num_workers,
             };
             on_resume(cfg.id, &saved);
+        };
+
+        // Outcome ladder: user pause wins over any internal abort.
+        if cancel.load(Ordering::Relaxed) {
+            save_snapshot();
             return Err(PdmError::Cancelled);
+        }
+        let aborted = abort_reason.lock().ok().and_then(|mut g| g.take());
+        if let Some(err) = aborted {
+            save_snapshot();
+            return Err(err);
         }
 
         if !queue.is_empty() || bytes_written.load(Ordering::Relaxed) < cfg.total_size {

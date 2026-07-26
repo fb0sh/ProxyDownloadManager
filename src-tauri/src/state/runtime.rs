@@ -19,6 +19,10 @@ pub struct DownloadRuntime {
     /// Whether the DB parts row was already restructured to a single cell
     /// (Concurrent → Single degrade happens at most once per engine run).
     single_reset: bool,
+    /// Set when progress records were invalidated for a truncate-and-restart:
+    /// progress events already queued before the restart are stale and must
+    /// be dropped until the restart's own reset event arrives.
+    restart_pending: bool,
 }
 
 /// Recover from a poisoned mutex by unwrapping the guard.
@@ -45,7 +49,35 @@ impl DownloadManagerState {
             last_flushed: 0,
             parts_dirty: false,
             single_reset: false,
+            restart_pending: false,
         });
+    }
+
+    /// Mark that this download's records were invalidated for a restart.
+    pub fn set_restart_pending(&self, id: u64) {
+        let mut map = recover_lock(self.inner.lock());
+        if let Some(rt) = map.get_mut(&id) {
+            rt.restart_pending = true;
+        }
+    }
+
+    /// Gate for progress events after an invalidation: stale events queued
+    /// before the restart are dropped (returns false); the restart's own
+    /// reset event clears the gate and passes. FIFO event order makes this
+    /// exact — anything non-reset after the gate was set is pre-restart.
+    pub fn restart_gate(&self, id: u64, is_reset_event: bool) -> bool {
+        let mut map = recover_lock(self.inner.lock());
+        match map.get_mut(&id) {
+            Some(rt) if rt.restart_pending => {
+                if is_reset_event {
+                    rt.restart_pending = false;
+                    true
+                } else {
+                    false
+                }
+            }
+            _ => true,
+        }
     }
 
     /// Mark that this download's DB parts were reset to a single cell.
