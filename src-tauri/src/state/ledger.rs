@@ -191,12 +191,29 @@ impl ProgressLedger {
 
     // ── Lifecycle transitions ──
 
+    /// Admission outcome: no slot was free — the row waits as Queued and
+    /// flips back to Downloading when the engine actually starts.
+    pub fn mark_queued(&self, id: u64) {
+        if let Ok(Some(mut item)) = self.db.get_by_id(id) {
+            if matches!(item.status, DownloadStatus::Downloading) {
+                item.status = DownloadStatus::Queued;
+                let _ = self.db.update_download(&item);
+            }
+        }
+    }
+
     /// Initialize runtime for a started download, seeded from the reconciled
     /// basis so the Progress Map doesn't flash 0 after pause→resume before the
-    /// first engine event.
+    /// first engine event. A Queued row becomes Downloading here — the engine
+    /// actually starting IS the Queued → Downloading transition.
     pub fn on_started(&self, id: u64) {
         self.runtime.register(id);
-        if let Ok(Some(item)) = self.db.get_by_id(id) {
+        if let Ok(Some(mut item)) = self.db.get_by_id(id) {
+            if matches!(item.status, DownloadStatus::Queued) {
+                item.status = DownloadStatus::Downloading;
+                item.last_try = now_str();
+                let _ = self.db.update_download(&item);
+            }
             let saved = gob::load_state(id).ok().flatten();
             let basis = reconcile(&item, saved.as_ref());
             if basis.downloaded > 0 {
@@ -280,7 +297,9 @@ impl ProgressLedger {
         self.flush();
         self.runtime.remove(id);
         if let Ok(Some(mut item)) = self.db.get_by_id(id) {
-            if matches!(item.status, DownloadStatus::Downloading) {
+            // Queued: never started, nothing to reconcile — pausing just
+            // takes it out of the waiting line.
+            if matches!(item.status, DownloadStatus::Downloading | DownloadStatus::Queued) {
                 let saved = gob::load_state(id).ok().flatten();
                 let basis = reconcile(&item, saved.as_ref());
                 apply_basis(&mut item, &basis);
@@ -802,6 +821,44 @@ mod tests {
 
         ledger.on_deleted(52).unwrap();
         ledger.on_deleted(53).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_queued_admission_lifecycle() {
+        let (ledger, dir) = test_ledger("queued");
+        let mut item = sample_item(80);
+        item.status = DownloadStatus::Downloading; // as inserted by execute_download
+        ledger.insert_item(&item).unwrap();
+
+        // Pool had no slot → Queued.
+        ledger.mark_queued(80);
+        let got = ledger.get_item(80).unwrap().unwrap();
+        assert!(matches!(got.status, DownloadStatus::Queued));
+
+        // Engine actually starts later → Downloading (the real transition).
+        ledger.on_started(80);
+        let got = ledger.get_item(80).unwrap().unwrap();
+        assert!(matches!(got.status, DownloadStatus::Downloading));
+        assert!(!got.last_try.is_empty());
+
+        ledger.on_deleted(80).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_pause_of_queued_download() {
+        let (ledger, dir) = test_ledger("queued_pause");
+        let mut item = sample_item(81);
+        item.status = DownloadStatus::Queued;
+        ledger.insert_item(&item).unwrap();
+
+        // Pausing a queued download takes it out of the waiting line.
+        ledger.on_paused(81).unwrap();
+        let got = ledger.get_item(81).unwrap().unwrap();
+        assert!(matches!(got.status, DownloadStatus::Paused));
+
+        ledger.on_deleted(81).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

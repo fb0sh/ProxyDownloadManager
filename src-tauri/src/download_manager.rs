@@ -5,7 +5,7 @@ use crate::logger::Logger;
 use crate::services::settings_service::SettingsService;
 use crate::state::ledger::ProgressLedger;
 use crate::types::*;
-use crate::worker::WorkerPool;
+use crate::worker::{Admission, WorkerPool};
 use std::sync::{Arc, Mutex};
 
 pub struct DownloadManager {
@@ -236,15 +236,18 @@ impl DownloadManager {
             settings.max_retries,
         );
 
-        if let Err(e) = self
-            .worker_pool
-            .add_with_id(cfg, id, self.make_hooks())
-            .await
-        {
-            // No worker was spawned — roll the row back to Paused, or the
-            // begin_resume status guard would reject every retry.
-            let _ = self.ledger.on_paused(id);
-            return Err(e);
+        match self.worker_pool.add_with_id(cfg, id, self.make_hooks()).await {
+            Ok(Admission::Started) => {}
+            Ok(Admission::Queued) => {
+                // All slots busy: the row waits as Queued and starts on its own.
+                self.ledger.mark_queued(id);
+            }
+            Err(e) => {
+                // No worker was spawned — roll the row back to Paused, or the
+                // begin_resume status guard would reject every retry.
+                let _ = self.ledger.on_paused(id);
+                return Err(e);
+            }
         }
         self.bus
             .emit(FrontendEvent::DownloadResumed, serde_json::json!({ "id": id }));
@@ -362,9 +365,13 @@ impl DownloadManager {
             settings.global_rate_limit,
             settings.max_retries,
         );
-        self.worker_pool
+        if let Admission::Queued = self
+            .worker_pool
             .add_with_id(cfg, id, self.make_hooks())
-            .await?;
+            .await?
+        {
+            self.ledger.mark_queued(id);
+        }
 
         Ok(id)
     }

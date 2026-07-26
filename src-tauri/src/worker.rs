@@ -3,16 +3,45 @@ use crate::engine::EngineHooks;
 use crate::network::pool::NetworkPool;
 use crate::network::limiter::MultiLimiter;
 use crate::engine;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex, Semaphore};
+
+/// Outcome of submitting a download to the pool.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Admission {
+    /// A slot was free — the engine is running.
+    Started,
+    /// All slots busy — parked FIFO; starts automatically when a slot frees.
+    Queued,
+}
+
+struct PendingDownload {
+    cfg: EngineConfig,
+    id: u64,
+    hooks: EngineHooks,
+}
+
+type ActiveMap = Arc<Mutex<HashMap<u64, (Arc<AtomicBool>, tokio::task::JoinHandle<()>)>>>;
+
+/// Everything a running task needs to clean up after itself and hand its
+/// permit to the next queued download.
+#[derive(Clone)]
+struct SpawnCtx {
+    pool: Arc<NetworkPool>,
+    event_tx: mpsc::UnboundedSender<Event>,
+    active: ActiveMap,
+    pending: Arc<Mutex<VecDeque<PendingDownload>>>,
+    global_rate_limit: u64,
+}
 
 pub struct WorkerPool {
     semaphore: Arc<Semaphore>,
     pool: Arc<NetworkPool>,
     event_tx: mpsc::UnboundedSender<Event>,
-    active: Arc<Mutex<HashMap<u64, (Arc<AtomicBool>, tokio::task::JoinHandle<()>)>>>,
+    active: ActiveMap,
+    pending: Arc<Mutex<VecDeque<PendingDownload>>>,
     next_id: AtomicU64,
     global_rate_limit: u64,
 }
@@ -25,6 +54,7 @@ impl WorkerPool {
             pool: Arc::new(NetworkPool::new(danger_accept_invalid_certs)),
             event_tx,
             active: Arc::new(Mutex::new(HashMap::new())),
+            pending: Arc::new(Mutex::new(VecDeque::new())),
             next_id: AtomicU64::new(next_id_start),
             global_rate_limit,
         }
@@ -34,39 +64,83 @@ impl WorkerPool {
         self.next_id.fetch_add(1, Ordering::Relaxed)
     }
 
-    pub async fn add_with_id(&self, cfg: EngineConfig, id: u64, hooks: EngineHooks) -> PdmResult<u64> {
-        let permit = self.semaphore.clone().try_acquire_owned().map_err(|_| crate::types::PdmError::Other("Too many concurrent downloads — try again later.".to_string()))?;
-        self.spawn_task(cfg, permit, id, hooks).await;
-        Ok(id)
+    fn ctx(&self) -> SpawnCtx {
+        SpawnCtx {
+            pool: self.pool.clone(),
+            event_tx: self.event_tx.clone(),
+            active: self.active.clone(),
+            pending: self.pending.clone(),
+            global_rate_limit: self.global_rate_limit,
+        }
     }
 
-    async fn spawn_task(&self, mut cfg: EngineConfig, permit: tokio::sync::OwnedSemaphorePermit, id: u64, hooks: EngineHooks) {
+    /// Submit a download: runs now if a slot is free, otherwise parks it
+    /// (Queued 状态机 admission). Idempotent for an id that is already parked.
+    pub async fn add_with_id(&self, cfg: EngineConfig, id: u64, hooks: EngineHooks) -> PdmResult<Admission> {
+        {
+            let pending = self.pending.lock().await;
+            if pending.iter().any(|p| p.id == id) {
+                return Ok(Admission::Queued);
+            }
+        }
+        if self.active.lock().await.contains_key(&id) {
+            return Err(crate::types::PdmError::Other(format!(
+                "Download {} is already running",
+                id
+            )));
+        }
+        match self.semaphore.clone().try_acquire_owned() {
+            Ok(permit) => {
+                let (cancel, handle) = Self::launch(self.ctx(), cfg, permit, id, hooks);
+                self.active.lock().await.insert(id, (cancel, handle));
+                Ok(Admission::Started)
+            }
+            Err(_) => {
+                log::info!("[ProxyDM] id={} queued (all slots busy)", id);
+                self.pending.lock().await.push_back(PendingDownload { cfg, id, hooks });
+                Ok(Admission::Queued)
+            }
+        }
+    }
+
+    /// Spawn the engine task for one download. At task end the permit is
+    /// handed directly to the next queued download (FIFO, no release/acquire
+    /// race) or dropped when the queue is empty.
+    fn launch(
+        ctx: SpawnCtx,
+        mut cfg: EngineConfig,
+        permit: tokio::sync::OwnedSemaphorePermit,
+        id: u64,
+        hooks: EngineHooks,
+    ) -> (Arc<AtomicBool>, tokio::task::JoinHandle<()>) {
         cfg.id = id;
         log::info!("[ProxyDM] spawn id={} url={} proxy={} conns={}",
             id, cfg.url, cfg.proxy_url, cfg.connections);
         let cancel = Arc::new(AtomicBool::new(false));
         let cancel_for_task = cancel.clone();
-        let event_tx = self.event_tx.clone();
-        let pool = self.pool.clone();
-        let active_map = self.active.clone();
-        let global_rate_limit = self.global_rate_limit;
 
         let handle = tokio::spawn(async move {
             let limiter = Arc::new(MultiLimiter::new(
-                global_rate_limit,
+                ctx.global_rate_limit,
                 cfg.rate_limit_bps,
             ));
 
-            let result = engine::run_download(cfg, pool, event_tx.clone(), limiter, cancel_for_task.clone(),
-                hooks
-            ).await;
+            let result = engine::run_download(
+                cfg,
+                ctx.pool.clone(),
+                ctx.event_tx.clone(),
+                limiter,
+                cancel_for_task.clone(),
+                hooks,
+            )
+            .await;
 
             match &result {
                 Ok(_) => log::info!("[ProxyDM] id={} completed OK", id),
                 Err(e) => {
                     log::error!("[ProxyDM] id={} ERROR: {}", id, e);
                     if !matches!(e, crate::types::PdmError::Cancelled) {
-                        let _ = event_tx.send(Event {
+                        let _ = ctx.event_tx.send(Event {
                             kind: crate::types::EventKind::DownloadErrored,
                             download_id: id,
                             data: Some(e.to_string()),
@@ -78,7 +152,7 @@ impl WorkerPool {
             // Cleanup: only remove if entry still belongs to this worker
             // (prevents a paused→resumed worker from removing the new worker's entry)
             {
-                let mut active = active_map.lock().await;
+                let mut active = ctx.active.lock().await;
                 if let Some((entry_cancel, _)) = active.get(&id) {
                     if Arc::ptr_eq(entry_cancel, &cancel_for_task) {
                         active.remove(&id);
@@ -86,18 +160,30 @@ impl WorkerPool {
                 }
                 log::info!("[ProxyDM] id={} cleaned up, {} active remaining", id, active.len());
             }
-            drop(permit);
+
+            // FIFO handoff to the next queued download.
+            let next = ctx.pending.lock().await.pop_front();
+            match next {
+                Some(p) => {
+                    log::info!("[ProxyDM] slot handoff → queued id={}", p.id);
+                    let ctx_next = ctx.clone();
+                    let (cancel_next, handle_next) =
+                        Self::launch(ctx_next.clone(), p.cfg, permit, p.id, p.hooks);
+                    ctx_next.active.lock().await.insert(p.id, (cancel_next, handle_next));
+                }
+                None => drop(permit),
+            }
         });
-        {
-            let mut active = self.active.lock().await;
-            active.insert(id, (cancel, handle));
-        }
+        (cancel, handle)
     }
 
     /// Cancel a download by setting its cancel flag and removing it from the active map.
+    /// A download still waiting in the queue is simply forgotten.
     /// Returns the JoinHandle so the caller can optionally await task completion.
-    /// The semaphore permit is released when the task finishes (via `drop(permit)` in spawn_task).
     pub async fn cancel(&self, id: u64) -> Option<tokio::task::JoinHandle<()>> {
+        if self.remove_pending(id).await {
+            return None;
+        }
         let mut active = self.active.lock().await;
         if let Some((cancel, handle)) = active.remove(&id) {
             log::info!("[ProxyDM] cancel id={} (flag set)", id);
@@ -113,6 +199,9 @@ impl WorkerPool {
     /// Use this when you need the worker to be completely done before proceeding
     /// (e.g. pause_download needs to flush progress before updating DB status).
     pub async fn cancel_and_wait(&self, id: u64) {
+        if self.remove_pending(id).await {
+            return;
+        }
         let handle = {
             let mut active = self.active.lock().await;
             if let Some((cancel, handle)) = active.remove(&id) {
@@ -127,6 +216,17 @@ impl WorkerPool {
         if let Some(handle) = handle {
             let _ = handle.await;
             log::info!("[ProxyDM] cancel_and_wait id={} worker fully stopped", id);
+        }
+    }
+
+    async fn remove_pending(&self, id: u64) -> bool {
+        let mut pending = self.pending.lock().await;
+        if let Some(pos) = pending.iter().position(|p| p.id == id) {
+            pending.remove(pos);
+            log::info!("[ProxyDM] id={} removed from queue", id);
+            true
+        } else {
+            false
         }
     }
 
@@ -171,6 +271,27 @@ mod tests {
             save_resume_state: Box::new(|_, _| {}),
             invalidate_for_restart: Box::new(|_| {}),
         }
+    }
+
+    /// Server that accepts, stalls ~400ms, then closes without responding —
+    /// keeps one slot busy long enough to observe queueing.
+    async fn spawn_slow_server() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                match listener.accept().await {
+                    Ok((stream, _)) => {
+                        tokio::spawn(async move {
+                            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                            drop(stream);
+                        });
+                    }
+                    Err(_) => return,
+                }
+            }
+        });
+        format!("http://127.0.0.1:{}/slow.bin", addr.port())
     }
 
     #[test]
@@ -266,5 +387,63 @@ mod tests {
         // Wait for cleanup
         pool.cancel_and_wait(id1).await;
         pool.cancel_and_wait(id2).await;
+    }
+
+    #[tokio::test]
+    async fn test_over_limit_queues_and_hands_off() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let pool = WorkerPool::new(1, tx, false, 1, 0);
+        let slow_url = spawn_slow_server().await;
+
+        let mut cfg1 = test_config();
+        cfg1.url = slow_url;
+        let id1 = pool.next_id();
+        let a1 = pool.add_with_id(cfg1, id1, hooks()).await.unwrap();
+        assert_eq!(a1, Admission::Started);
+
+        // Slot is busy → second download parks.
+        let id2 = pool.next_id();
+        let a2 = pool.add_with_id(test_config(), id2, hooks()).await.unwrap();
+        assert_eq!(a2, Admission::Queued);
+        assert_eq!(pool.pending.lock().await.len(), 1);
+
+        // Re-submitting a parked id is idempotent.
+        let a2b = pool.add_with_id(test_config(), id2, hooks()).await.unwrap();
+        assert_eq!(a2b, Admission::Queued);
+        assert_eq!(pool.pending.lock().await.len(), 1);
+
+        // When the slow download dies, the permit is handed to id2, which
+        // fails fast (unreachable URL) — everything drains.
+        for _ in 0..100 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            if pool.pending.lock().await.is_empty() && pool.active.lock().await.is_empty() {
+                break;
+            }
+        }
+        assert!(pool.pending.lock().await.is_empty(), "queue never drained");
+        assert!(pool.active.lock().await.is_empty(), "active never drained");
+    }
+
+    #[tokio::test]
+    async fn test_cancel_removes_queued_download() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let pool = WorkerPool::new(1, tx, false, 1, 0);
+        let slow_url = spawn_slow_server().await;
+
+        let mut cfg1 = test_config();
+        cfg1.url = slow_url;
+        let id1 = pool.next_id();
+        let _ = pool.add_with_id(cfg1, id1, hooks()).await.unwrap();
+
+        let id2 = pool.next_id();
+        let a2 = pool.add_with_id(test_config(), id2, hooks()).await.unwrap();
+        assert_eq!(a2, Admission::Queued);
+
+        // Cancelling a queued download just forgets it.
+        let handle = pool.cancel(id2).await;
+        assert!(handle.is_none());
+        assert!(pool.pending.lock().await.is_empty());
+
+        pool.cancel_and_wait(id1).await;
     }
 }

@@ -19,6 +19,8 @@ Queued → Downloading → Completed
                       → Failed(String)
 ```
 
+- **Queued**：并发额度（worker 槽位）满时的等待状态。新建/恢复的下载在满额时入先进先出队列；槽位空出自动开始（引擎真正启动即 Queued → Downloading）。暂停一个 Queued 下载 = 把它移出等待队列并置为 Paused
+
 ### 异常情况
 
 - **文件在磁盘但 DB 记录丢失**：直接覆盖文件，不特殊处理
