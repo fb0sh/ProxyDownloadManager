@@ -1,17 +1,15 @@
-use crate::types::*;
-use crate::state::db::Db;
-use crate::state::facade::DownloadStateFacade;
-use crate::worker::WorkerPool;
 use crate::engine::OnResumeState;
 use crate::event_bus::{EventBus, FrontendEvent};
 use crate::event_handler::{transform_event, EventAction};
 use crate::logger::Logger;
-use crate::state::runtime::DownloadManagerState;
 use crate::services::settings_service::SettingsService;
+use crate::state::ledger::ProgressLedger;
+use crate::types::*;
+use crate::worker::WorkerPool;
 use std::sync::{Arc, Mutex};
 
 pub struct DownloadManager {
-    pub(crate) facade: Arc<DownloadStateFacade>,
+    ledger: Arc<ProgressLedger>,
     pub(crate) worker_pool: WorkerPool,
     logger: Mutex<Logger>,
     pub(crate) settings: Arc<SettingsService>,
@@ -20,15 +18,14 @@ pub struct DownloadManager {
 
 impl DownloadManager {
     pub fn new(
-        db: Db,
+        ledger: Arc<ProgressLedger>,
         worker_pool: WorkerPool,
         logger: Logger,
-        runtime: DownloadManagerState,
         settings: Arc<SettingsService>,
         bus: Arc<EventBus>,
     ) -> Self {
         Self {
-            facade: Arc::new(DownloadStateFacade::new(db, runtime)),
+            ledger,
             worker_pool,
             logger: Mutex::new(logger),
             settings,
@@ -49,27 +46,10 @@ impl DownloadManager {
     }
 
     fn make_resume_callback(&self) -> OnResumeState {
-        let facade = self.facade.clone();
-        Box::new(move |id, state| { facade.save_resume_state(id, state); })
-    }
-
-    // ── Delegate methods (encapsulate facade/worker_pool access) ──
-
-    pub fn list_items(&self) -> PdmResult<Vec<DownloadItem>> {
-        self.facade.list_items()
-    }
-
-    pub fn update_item(&self, item: &DownloadItem) -> PdmResult<()> {
-        self.facade.update_item(item)
-    }
-
-    pub fn flush(&self) -> usize {
-        self.facade.flush()
-    }
-
-    /// Startup: persist interrupted downloads as Paused using DB part progress.
-    pub fn recover_stale_downloads(&self) -> usize {
-        self.facade.recover_stale_downloads()
+        let ledger = self.ledger.clone();
+        Box::new(move |id, state| {
+            ledger.save_resume_state(id, state);
+        })
     }
 
     pub fn clear_client_pool(&self) {
@@ -81,7 +61,9 @@ impl DownloadManager {
     pub fn handle_event(&self, event: Event) {
         let id = event.download_id;
 
-        let url_info = self.facade.get_item(id)
+        let url_info = self
+            .ledger
+            .get_item(id)
             .ok()
             .flatten()
             .map(|item| format!(" url={}", item.url))
@@ -94,28 +76,36 @@ impl DownloadManager {
         if matches!(event.kind, EventKind::DownloadErrored) {
             let msg = event.data.clone().unwrap_or_default();
             let url = url_info.trim_start_matches(" url=").to_string();
-            self.bus.emit(FrontendEvent::DownloadError, serde_json::json!({ "id": id, "url": url, "message": msg }));
+            self.bus.emit(
+                FrontendEvent::DownloadError,
+                serde_json::json!({ "id": id, "url": url, "message": msg }),
+            );
         }
 
         let action = transform_event(&event);
 
         match action {
             EventAction::DownloadStarted(dl_id) => {
-                self.facade.on_started(dl_id);
-                self.bus.emit(FrontendEvent::DownloadStarted, serde_json::json!(dl_id));
+                self.ledger.on_started(dl_id);
+                self.bus
+                    .emit(FrontendEvent::DownloadStarted, serde_json::json!(dl_id));
             }
             EventAction::DownloadCompleted(dl_id) => {
-                let file_name = self.facade.get_item(dl_id)
+                let file_name = self
+                    .ledger
+                    .get_item(dl_id)
                     .ok()
                     .flatten()
                     .map(|item| item.file_name)
                     .unwrap_or_default();
-                self.facade.on_completed(dl_id);
-                self.bus.emit(FrontendEvent::DownloadCompleted,
-                    serde_json::json!({ "id": dl_id, "file_name": file_name }));
+                self.ledger.on_completed(dl_id);
+                self.bus.emit(
+                    FrontendEvent::DownloadCompleted,
+                    serde_json::json!({ "id": dl_id, "file_name": file_name }),
+                );
             }
             EventAction::DownloadErrored(dl_id, msg) => {
-                self.facade.on_error(dl_id, msg);
+                self.ledger.on_error(dl_id, msg);
             }
             EventAction::UpdateProgress {
                 id: dl_id,
@@ -123,7 +113,7 @@ impl DownloadManager {
                 part_downloaded,
                 reset_to_single,
             } => {
-                self.facade.update_progress(
+                self.ledger.record_progress(
                     dl_id,
                     downloaded,
                     part_downloaded.clone(),
@@ -153,98 +143,105 @@ impl DownloadManager {
     ) -> PdmResult<u64> {
         self.log_info(&format!("Download start url={} proxy={}", url, proxy_name));
         self.execute_download(DownloadSpec {
-            url, file_name: filename, save_path, proxy_name, connections,
-        }).await
+            url,
+            file_name: filename,
+            save_path,
+            proxy_name,
+            connections,
+        })
+        .await
     }
 
     /// Redownload an existing download with a new ID.
     pub async fn redownload_download(&self, id: u64) -> PdmResult<u64> {
-        let existing = self.facade.get_item(id)?
+        let existing = self
+            .ledger
+            .get_item(id)?
             .ok_or_else(|| format!("Download {} not found", id))?;
         self.log_info(&format!("Redownload start id={} url={}", id, existing.url));
+        // save_path on the item is the full file path; the pipeline expects a
+        // directory (passing the file path nested a second copy inside it).
+        let save_dir = std::path::Path::new(&existing.save_path)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
         self.execute_download(DownloadSpec {
             url: existing.url,
             file_name: existing.file_name,
-            save_path: existing.save_path,
+            save_path: save_dir,
             proxy_name: existing.proxy_name,
             connections: existing.connections,
-        }).await
+        })
+        .await
     }
 
     /// Pause a download: cancel workers → persist state → emit event.
     pub async fn pause_download(&self, id: u64) -> PdmResult<()> {
         self.log_info(&format!("Pause id={}", id));
         self.worker_pool.cancel_and_wait(id).await;
-        self.facade.on_paused(id)?;
-        self.bus.emit(FrontendEvent::DownloadPaused, serde_json::json!({ "id": id }));
+        self.ledger.on_paused(id)?;
+        self.bus
+            .emit(FrontendEvent::DownloadPaused, serde_json::json!({ "id": id }));
         Ok(())
     }
 
-    /// Resume a paused download.
+    /// Resume a paused download: the ledger reconciles progress and returns a
+    /// complete plan; nothing is patched afterwards.
     pub async fn resume_download(&self, id: u64) -> PdmResult<()> {
         self.log_info(&format!("Resume id={}", id));
 
-        let item = self.facade.get_item(id)?
-            .ok_or_else(|| PdmError::NotFound(id))?;
+        let plan = self.ledger.begin_resume(id)?;
+        log::info!(
+            "[ProxyDM] resume id={} tasks={} downloaded={}/{}",
+            id,
+            plan.tasks.len(),
+            plan.downloaded,
+            plan.item.total_size
+        );
 
-        let mut updated = item.clone();
-        updated.status = DownloadStatus::Downloading;
-        updated.last_try = now_str();
-        // Never zero out progress on resume — keep DB/gob totals.
-        let _ = self.facade.update_item(&updated);
-
-        let part_ranges: Vec<(u64, u64)> = if item.parts.is_empty() {
-            if item.total_size > 0 {
-                vec![(0, item.total_size)]
-            } else {
-                vec![]
+        // Fully downloaded but never finalized (pause landed right after the
+        // last task): finish it here instead of letting the engine error on an
+        // empty task list and degrade into a full re-download.
+        if plan.tasks.is_empty()
+            && plan.item.total_size > 0
+            && plan.downloaded >= plan.item.total_size
+        {
+            let pdm_path = format!("{}.pdm", plan.item.save_path);
+            if std::path::Path::new(&pdm_path).exists() {
+                let _ = std::fs::rename(&pdm_path, &plan.item.save_path);
             }
-        } else {
-            item.parts.iter().map(|p| (p.start, p.end)).collect()
-        };
-        let part_downloaded: Vec<u64> = if item.parts.is_empty() {
-            vec![item.downloaded]
-        } else {
-            item.parts.iter().map(|p| p.downloaded).collect()
-        };
-        let supports_range = item.resumable.unwrap_or(true);
+            self.ledger.on_completed(id);
+            self.bus.emit(
+                FrontendEvent::DownloadCompleted,
+                serde_json::json!({ "id": id, "file_name": plan.item.file_name }),
+            );
+            return Ok(());
+        }
+
         let settings = self.settings.get();
-        let proxy_url = self.settings.resolve_proxy_url(&item.proxy_name).unwrap_or_default();
+        let proxy_url = self
+            .settings
+            .resolve_proxy_url(&plan.item.proxy_name)
+            .unwrap_or_default();
+        let cfg = plan.into_engine_config(
+            &proxy_url,
+            &settings.user_agent,
+            settings.global_rate_limit,
+            settings.max_retries,
+        );
 
-        let mut cfg = if let Some(saved_state) = self.facade.load_resume_state(id) {
-            log::info!(
-                "[ProxyDM] resume id={} gob tasks={} downloaded={}",
-                id,
-                saved_state.tasks.len(),
-                saved_state.downloaded
-            );
-            let mut cfg = saved_state.to_engine_config(
-                &proxy_url,
-                &settings.user_agent,
-                supports_range,
-                settings.max_retries,
-            );
-            // Prefer higher of gob vs DB progress.
-            if item.downloaded > cfg.downloaded {
-                cfg.downloaded = item.downloaded;
-            }
-            cfg
-        } else {
-            log::warn!(
-                "[ProxyDM] resume id={} no gob — rebuilding from DB parts downloaded={}",
-                id,
-                item.downloaded
-            );
-            // is_resume=true so concurrent rebuilds remaining work from parts.
-            item.to_engine_config(&proxy_url, &settings.user_agent, true, settings.max_retries)
-        };
-        cfg.rate_limit_bps = settings.global_rate_limit;
-        cfg.part_ranges = part_ranges;
-        cfg.part_downloaded = part_downloaded;
-        cfg.is_resume = true;
-
-        self.worker_pool.add_with_id(cfg, id, self.make_resume_callback()).await?;
-        self.bus.emit(FrontendEvent::DownloadResumed, serde_json::json!({ "id": id }));
+        if let Err(e) = self
+            .worker_pool
+            .add_with_id(cfg, id, self.make_resume_callback())
+            .await
+        {
+            // No worker was spawned — roll the row back to Paused, or the
+            // begin_resume status guard would reject every retry.
+            let _ = self.ledger.on_paused(id);
+            return Err(e);
+        }
+        self.bus
+            .emit(FrontendEvent::DownloadResumed, serde_json::json!({ "id": id }));
         Ok(())
     }
 
@@ -253,15 +250,17 @@ impl DownloadManager {
         self.log_info(&format!("Delete id={} delete_file={}", id, delete_file));
 
         let save_path = if delete_file {
-            self.facade.list_items().ok()
-                .and_then(|items| items.into_iter().find(|i| i.id == id))
+            self.ledger
+                .get_item(id)
+                .ok()
+                .flatten()
                 .map(|item| item.save_path)
         } else {
             None
         };
 
         self.worker_pool.cancel_and_wait(id).await;
-        self.facade.on_deleted(id)?;
+        self.ledger.on_deleted(id)?;
 
         if let Some(path) = save_path {
             let p = std::path::Path::new(&path);
@@ -279,7 +278,10 @@ impl DownloadManager {
     /// Cancel a download without deleting records.
     pub async fn cancel_download(&self, id: u64) {
         self.worker_pool.cancel(id).await;
-        self.bus.emit(FrontendEvent::DownloadCancelled, serde_json::json!({ "id": id }));
+        self.bus.emit(
+            FrontendEvent::DownloadCancelled,
+            serde_json::json!({ "id": id }),
+        );
     }
 
     // ── Shared pipeline: probe → plan chunks → disk check → DB insert → spawn worker. ──
@@ -292,21 +294,34 @@ impl DownloadManager {
         let user_agents = self.settings.build_user_agents();
 
         let outcome = crate::probe::probe_with_fallback(
-            &spec.url, &headers, proxy_opt, &pool, &user_agents, &spec.file_name,
-        ).await;
+            &spec.url,
+            &headers,
+            proxy_opt,
+            &pool,
+            &user_agents,
+            &spec.file_name,
+        )
+        .await;
 
         let file_name = outcome.file_name;
         let file_size = outcome.file_size;
         let supports_range = outcome.supports_range;
 
         if file_size > 0 {
-            self.log_info(&format!("Probe ok url={} size={} range={} name={}", spec.url, file_size, supports_range, file_name));
+            self.log_info(&format!(
+                "Probe ok url={} size={} range={} name={}",
+                spec.url, file_size, supports_range, file_name
+            ));
         } else {
-            self.log_warn(&format!("Probe failed, forcing blind download url={}", spec.url));
+            self.log_warn(&format!(
+                "Probe failed, forcing blind download url={}",
+                spec.url
+            ));
         }
 
         let max_conns = settings.max_connections.max(1).min(32);
-        let connections = crate::engine::chunk::compute_connection_count(file_size, spec.connections, max_conns);
+        let connections =
+            crate::engine::chunk::compute_connection_count(file_size, spec.connections, max_conns);
 
         let save_dir = if spec.save_path.is_empty() {
             settings.download_dir
@@ -318,7 +333,12 @@ impl DownloadManager {
         crate::engine::chunk::check_disk_space(&full_path, file_size)?;
 
         let id = self.worker_pool.next_id();
-        let plan = crate::engine::chunk::plan_chunks(file_size, connections, supports_range, settings.max_connections);
+        let plan = crate::engine::chunk::plan_chunks(
+            file_size,
+            connections,
+            supports_range,
+            settings.max_connections,
+        );
 
         let item = DownloadItem {
             id,
@@ -335,29 +355,35 @@ impl DownloadManager {
             created_at: now_str(),
             last_try: String::new(),
         };
-        self.facade.insert_item(&item)?;
+        self.ledger.insert_item(&item)?;
 
-        let mut cfg = item.to_engine_config(&proxy_url_str.unwrap_or_default(), &settings.user_agent, false, settings.max_retries);
-        cfg.rate_limit_bps = settings.global_rate_limit;
-        self.worker_pool.add_with_id(cfg, id, self.make_resume_callback()).await?;
+        let cfg = item.to_engine_config(
+            &proxy_url_str.unwrap_or_default(),
+            &settings.user_agent,
+            settings.global_rate_limit,
+            settings.max_retries,
+        );
+        self.worker_pool
+            .add_with_id(cfg, id, self.make_resume_callback())
+            .await?;
 
         Ok(id)
     }
 }
 
-pub fn now_str() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let dur = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    format!("{}", dur.as_secs())
-}
-
 pub fn unique_filename(dir: &str, filename: &str) -> String {
-    let dir = dir.trim_end_matches('/');
-    let candidate = format!("{}/{}", dir, filename);
-    if !std::path::Path::new(&candidate).exists() {
-        return candidate;
+    // Trim trailing separators, but keep them for bare roots ("/" or "C:\"),
+    // where trimming would yield "" or a drive-relative "C:".
+    let trimmed = dir.trim_end_matches(['/', '\\']);
+    let dir = if trimmed.is_empty() || trimmed.ends_with(':') {
+        dir
+    } else {
+        trimmed
+    };
+    let dir = std::path::Path::new(dir);
+    let candidate = dir.join(filename);
+    if !candidate.exists() {
+        return candidate.to_string_lossy().to_string();
     }
     let (stem, ext) = match filename.rfind('.') {
         Some(dot) => (&filename[..dot], &filename[dot..]),
@@ -365,9 +391,9 @@ pub fn unique_filename(dir: &str, filename: &str) -> String {
     };
     let mut n = 1;
     loop {
-        let candidate = format!("{}/{}.{}{}", dir, stem, n, ext);
-        if !std::path::Path::new(&candidate).exists() {
-            return candidate;
+        let candidate = dir.join(format!("{}.{}{}", stem, n, ext));
+        if !candidate.exists() {
+            return candidate.to_string_lossy().to_string();
         }
         n += 1;
     }

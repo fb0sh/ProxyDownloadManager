@@ -73,7 +73,12 @@ pub async fn download_task(
     };
 
     if cancel.load(Ordering::Relaxed) {
-        return TaskResult::Cancelled;
+        // Nothing written yet — hand the whole task back so the queue drain
+        // at cancel time still covers it. Returning Cancelled here would drop
+        // the popped task from the resume snapshot entirely.
+        return TaskResult::Partial {
+            remaining: task.clone(),
+        };
     }
 
     let status = resp.status();

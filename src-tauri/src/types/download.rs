@@ -150,6 +150,15 @@ pub struct Task {
     pub length: u64,
 }
 
+/// Unix-seconds timestamp string used for `created_at` / `last_try`.
+pub fn now_str() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let dur = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    format!("{}", dur.as_secs())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingDownloadRequest {
     pub url: String,

@@ -98,6 +98,11 @@ pub async fn run_download(
         Err(ref e) if matches!(e, PdmError::Cancelled) => result,
         Err(e) => {
             log::error!("[ProxyDM] Concurrent id={} failed, degrading to Single: {}", cfg.id, e);
+            // The reset_to_single event below makes the ledger reset the DB
+            // parts and delete the gob. A crash between this truncate and that
+            // event being processed leaves stale progress records pointing at
+            // a truncated file — closing that window needs the fallback to be
+            // orchestrated where state lives (see architecture candidate 2).
             let pdm_path = format!("{}.pdm", cfg.save_path);
             let _ = std::fs::OpenOptions::new()
                 .write(true)

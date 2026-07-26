@@ -153,29 +153,47 @@ impl Db {
         }
     }
 
-    /// Lightweight: only update the `downloaded` field (used for progress flushes).
-    pub fn update_download_progress(&self, id: u64, downloaded: u64) -> PdmResult<()> {
+    /// Flush progress: `downloaded` and `parts` land in one statement under one
+    /// lock, so the two columns can never describe different histories (the old
+    /// two-statement flush is what crash recovery had to paper over).
+    pub fn flush_progress(
+        &self,
+        id: u64,
+        downloaded: u64,
+        part_downloaded: Option<&[u64]>,
+    ) -> PdmResult<()> {
+        use rusqlite::OptionalExtension;
+        // Progress only ever applies to a live download: the status predicate
+        // keeps a late flush (batch snapshotted just before completion/pause)
+        // from overwriting a finalized row with stale numbers.
         let conn = self.conn.lock().map_err(PdmError::from)?;
-        conn.execute(
-            "UPDATE downloads SET downloaded=?1 WHERE id=?2",
-            params![downloaded, id],
-        )
-        .map_err(PdmError::from)?;
-        Ok(())
-    }
-
-    /// Update per-part `downloaded` values for Progress Map (preserves start/end).
-    pub fn update_part_downloaded(&self, id: u64, part_downloaded: &[u64]) -> PdmResult<()> {
-        let mut item = match self.get_by_id(id)? {
-            Some(i) => i,
-            None => return Ok(()),
+        let Some(part_downloaded) = part_downloaded else {
+            conn.execute(
+                "UPDATE downloads SET downloaded=?1 WHERE id=?2 AND status='downloading'",
+                params![downloaded, id],
+            )
+            .map_err(PdmError::from)?;
+            return Ok(());
         };
-        if item.parts.is_empty() && !part_downloaded.is_empty() {
+        let row: Option<(String, u64)> = conn
+            .query_row(
+                "SELECT parts, total_size FROM downloads WHERE id=?1",
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(PdmError::from)?;
+        let Some((parts_str, total_size)) = row else {
+            return Ok(());
+        };
+        let mut parts: Vec<crate::types::DownloadPart> =
+            serde_json::from_str(&parts_str).unwrap_or_default();
+        if parts.is_empty() && !part_downloaded.is_empty() {
             // Single-part fallback when parts were never planned
-            item.parts = vec![crate::types::DownloadPart {
+            parts = vec![crate::types::DownloadPart {
                 index: 0,
                 start: 0,
-                end: item.total_size,
+                end: total_size,
                 downloaded: part_downloaded.first().copied().unwrap_or(0),
                 temp_path: String::new(),
                 status: crate::types::PartStatus::Downloading,
@@ -183,7 +201,7 @@ impl Db {
             }];
         } else {
             for (i, d) in part_downloaded.iter().enumerate() {
-                if let Some(part) = item.parts.get_mut(i) {
+                if let Some(part) = parts.get_mut(i) {
                     part.downloaded = *d;
                     let len = part.end.saturating_sub(part.start);
                     if *d >= len && len > 0 {
@@ -194,11 +212,10 @@ impl Db {
                 }
             }
         }
-        let parts_str = serde_json::to_string(&item.parts).map_err(PdmError::from)?;
-        let conn = self.conn.lock().map_err(PdmError::from)?;
+        let parts_str = serde_json::to_string(&parts).map_err(PdmError::from)?;
         conn.execute(
-            "UPDATE downloads SET parts=?1 WHERE id=?2",
-            params![parts_str, id],
+            "UPDATE downloads SET downloaded=?1, parts=?2 WHERE id=?3 AND status='downloading'",
+            params![downloaded, parts_str, id],
         )
         .map_err(PdmError::from)?;
         Ok(())
@@ -228,7 +245,7 @@ impl Db {
         let parts_str = serde_json::to_string(&item.parts).map_err(PdmError::from)?;
         let conn = self.conn.lock().map_err(PdmError::from)?;
         conn.execute(
-            "UPDATE downloads SET parts=?1, downloaded=?2 WHERE id=?3",
+            "UPDATE downloads SET parts=?1, downloaded=?2 WHERE id=?3 AND status='downloading'",
             params![parts_str, downloaded, id],
         )
         .map_err(PdmError::from)?;

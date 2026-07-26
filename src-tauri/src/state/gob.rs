@@ -16,6 +16,15 @@ fn home_dir() -> String {
     })
 }
 
+/// Point the shared home at a per-process temp dir so tests never touch the
+/// user's real ~/.ProxyDM state (they delete gob files by id). First caller
+/// wins the OnceLock; production sets it from settings in lib.rs instead.
+#[cfg(test)]
+pub fn init_test_home() {
+    let dir = std::env::temp_dir().join(format!("pdm_test_home_{}", std::process::id()));
+    let _ = HOME_DIR.set(dir.to_string_lossy().to_string());
+}
+
 pub fn state_dir() -> PathBuf {
     PathBuf::from(home_dir()).join("state")
 }
@@ -101,6 +110,7 @@ mod tests {
 
     #[test]
     fn test_save_and_load_state() {
+        init_test_home();
         let state = sample_state(1);
         save_state(1, &state).unwrap();
         let loaded = load_state(1).unwrap().unwrap();
@@ -112,17 +122,20 @@ mod tests {
 
     #[test]
     fn test_load_nonexistent() {
+        init_test_home();
         let r = load_state(9999).unwrap();
         assert!(r.is_none());
     }
 
     #[test]
     fn test_delete_nonexistent() {
+        init_test_home();
         delete_state(9999).unwrap();
     }
 
     #[test]
     fn test_pending_request_roundtrip() {
+        init_test_home();
         let req = crate::types::PendingDownloadRequest {
             url: "https://example.com/file.zip".to_string(),
             filename: "file.zip".to_string(),

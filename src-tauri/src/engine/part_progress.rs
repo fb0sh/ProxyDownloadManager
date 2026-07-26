@@ -37,20 +37,6 @@ impl PartProgressTracker {
         }
     }
 
-    /// Seed progress assuming a contiguous completed prefix `[0, prefix)` (fallback).
-    pub fn seed_contiguous_prefix(self: &Arc<Self>, prefix: u64) {
-        for (i, range) in self.ranges.iter().enumerate() {
-            let done = if prefix <= range.start {
-                0
-            } else if prefix >= range.end {
-                range.len()
-            } else {
-                prefix - range.start
-            };
-            self.downloaded[i].store(done, Ordering::Relaxed);
-        }
-    }
-
     /// Attribute `len` bytes written at absolute file `offset` into overlapping parts.
     pub fn record_write(&self, offset: u64, len: u64) {
         if len == 0 {
@@ -155,6 +141,31 @@ pub fn remaining_tasks_from_parts(
         .collect()
 }
 
+/// Derive per-part downloaded bytes from remaining tasks: everything a task
+/// doesn't cover is done. Inverse of [`remaining_tasks_from_parts`], used to
+/// reconcile gob task lists with fixed part ranges.
+pub fn parts_downloaded_from_tasks(
+    ranges: &[PartRange],
+    tasks: &[crate::types::Task],
+) -> Vec<u64> {
+    ranges
+        .iter()
+        .map(|range| {
+            let len = range.len();
+            let remaining: u64 = tasks
+                .iter()
+                .map(|t| {
+                    let t_end = t.offset.saturating_add(t.length);
+                    let s = t.offset.max(range.start);
+                    let e = t_end.min(range.end);
+                    e.saturating_sub(s)
+                })
+                .sum();
+            len.saturating_sub(remaining.min(len))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,14 +208,22 @@ mod tests {
     }
 
     #[test]
-    fn seed_contiguous_prefix() {
-        let t = PartProgressTracker::new(vec![
-            PartRange { start: 0, end: 100 },
-            PartRange { start: 100, end: 200 },
-            PartRange { start: 200, end: 300 },
-        ]);
-        t.seed_contiguous_prefix(150);
-        assert_eq!(t.snapshot(), vec![100, 50, 0]);
+    fn parts_from_tasks_inverse_of_remaining() {
+        let ranges = vec![
+            PartRange { start: 0, end: 500 },
+            PartRange { start: 500, end: 1000 },
+        ];
+        // 50 bytes remain mid-part-0, 300 remain at the tail of part 1
+        let tasks = vec![
+            crate::types::Task { offset: 450, length: 50 },
+            crate::types::Task { offset: 700, length: 300 },
+        ];
+        assert_eq!(parts_downloaded_from_tasks(&ranges, &tasks), vec![450, 200]);
+        // no tasks → everything done
+        assert_eq!(parts_downloaded_from_tasks(&ranges, &[]), vec![500, 500]);
+        // tasks covering everything → nothing done
+        let full = remaining_tasks_from_parts(&ranges, &[0, 0]);
+        assert_eq!(parts_downloaded_from_tasks(&ranges, &full), vec![0, 0]);
     }
 
     #[test]

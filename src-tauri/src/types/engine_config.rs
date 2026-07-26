@@ -1,4 +1,4 @@
-use crate::types::{DownloadItem, DownloadState, Task};
+use crate::types::{DownloadItem, Task};
 use std::collections::HashMap;
 
 /// Engine-facing download configuration.
@@ -27,12 +27,25 @@ pub struct EngineConfig {
     pub part_downloaded: Vec<u64>,
 }
 
+/// Everything the engine needs to continue a download, produced by the
+/// progress ledger's `begin_resume`: fixed part ranges, per-part progress,
+/// precise remaining tasks and the reconciled total — mutually consistent by
+/// construction. The only path to a resume `EngineConfig`.
+pub struct ResumePlan {
+    pub item: DownloadItem,
+    pub downloaded: u64,
+    pub part_ranges: Vec<(u64, u64)>,
+    pub part_downloaded: Vec<u64>,
+    pub tasks: Vec<Task>,
+}
+
 impl DownloadItem {
+    /// Complete config for a fresh download — no field needs caller patching.
     pub fn to_engine_config(
         &self,
         proxy_url: &str,
         user_agent: &str,
-        is_resume: bool,
+        rate_limit_bps: u64,
         max_retries: u32,
     ) -> EngineConfig {
         let (part_ranges, part_downloaded) = if self.parts.is_empty() {
@@ -52,13 +65,13 @@ impl DownloadItem {
             save_path: self.save_path.clone(),
             id: self.id,
             file_name: self.file_name.clone(),
-            is_resume,
+            is_resume: false,
             headers: HashMap::new(),
             proxy_url: proxy_url.to_string(),
             proxy_name: self.proxy_name.clone(),
             total_size: self.total_size,
             supports_range: self.resumable.unwrap_or(true),
-            rate_limit_bps: 0,
+            rate_limit_bps,
             connections: self.connections,
             max_retries,
             user_agent: user_agent.to_string(),
@@ -70,37 +83,34 @@ impl DownloadItem {
     }
 }
 
-impl DownloadState {
-    pub fn to_engine_config(
-        &self,
+impl ResumePlan {
+    /// Complete config for a resumed download — no field needs caller patching.
+    pub fn into_engine_config(
+        self,
         proxy_url: &str,
         user_agent: &str,
-        supports_range: bool,
+        rate_limit_bps: u64,
         max_retries: u32,
     ) -> EngineConfig {
         EngineConfig {
-            url: self.url.clone(),
-            save_path: self.save_path.clone(),
-            id: self.id,
-            file_name: self.file_name.clone(),
+            url: self.item.url,
+            save_path: self.item.save_path,
+            id: self.item.id,
+            file_name: self.item.file_name,
             is_resume: true,
             headers: HashMap::new(),
             proxy_url: proxy_url.to_string(),
-            proxy_name: self.proxy_name.clone(),
-            total_size: self.total_size,
-            supports_range,
-            rate_limit_bps: 0,
-            connections: self.workers,
+            proxy_name: self.item.proxy_name,
+            total_size: self.item.total_size,
+            supports_range: self.item.resumable.unwrap_or(true),
+            rate_limit_bps,
+            connections: self.item.connections,
             max_retries,
             user_agent: user_agent.to_string(),
-            resume_tasks: self.tasks.clone(),
+            resume_tasks: self.tasks,
             downloaded: self.downloaded,
-            part_ranges: if self.total_size > 0 {
-                vec![(0, self.total_size)]
-            } else {
-                vec![]
-            },
-            part_downloaded: vec![],
+            part_ranges: self.part_ranges,
+            part_downloaded: self.part_downloaded,
         }
     }
 }

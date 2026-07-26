@@ -4,7 +4,7 @@ use crate::engine::chunk::{self, ChunkQueue};
 use crate::engine::file_io::{create_output_file, finalize_file};
 use crate::engine::part_progress::{encode_progress_data, PartProgressTracker, PartRange};
 use crate::engine::task_download::{download_task, TaskResult};
-use crate::types::{Task, Event, EventKind, EngineConfig, PdmError, PdmResult};
+use crate::types::{Event, EventKind, EngineConfig, PdmError, PdmResult};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -33,46 +33,17 @@ impl ConcurrentDownloader {
                 .collect()
         };
 
-        // Resume must use non-contiguous remaining work — concurrent writes are NOT a
-        // file prefix. Prefer gob remaining tasks, then rebuild from fixed Part map.
-        let (tasks, resume_offset) = if cfg.is_resume && !cfg.resume_tasks.is_empty() {
+        // The resume plan (ledger `begin_resume`) is authoritative: tasks,
+        // per-part progress and the total arrive mutually consistent, so the
+        // engine no longer re-derives or reconciles them.
+        let (tasks, resume_offset) = if cfg.is_resume {
             log::info!(
-                "[ProxyDM] concurrent id={} resume with {} saved tasks, downloaded={}",
+                "[ProxyDM] concurrent id={} resume with {} tasks, downloaded={}",
                 cfg.id,
                 cfg.resume_tasks.len(),
                 cfg.downloaded
             );
             (cfg.resume_tasks.clone(), cfg.downloaded)
-        } else if cfg.is_resume && !cfg.part_downloaded.is_empty() && !part_ranges.is_empty() {
-            let tasks = crate::engine::part_progress::remaining_tasks_from_parts(
-                &part_ranges,
-                &cfg.part_downloaded,
-            );
-            let offset: u64 = cfg.part_downloaded.iter().sum();
-            log::info!(
-                "[ProxyDM] concurrent id={} resume rebuilt {} tasks from parts, downloaded≈{}",
-                cfg.id,
-                tasks.len(),
-                offset
-            );
-            (tasks, offset.max(cfg.downloaded))
-        } else if cfg.is_resume && cfg.downloaded > 0 {
-            // Last-resort contiguous fallback (wrong for multi-part, but better than nothing)
-            let remaining = cfg.total_size.saturating_sub(cfg.downloaded);
-            let num_conns = 4.max(cfg.connections);
-            log::warn!(
-                "[ProxyDM] concurrent id={} resume CONTIGUOUS FALLBACK from {} ({} remaining)",
-                cfg.id, cfg.downloaded, remaining
-            );
-            let base = cfg.downloaded;
-            let tasks: Vec<Task> = chunk::compute_chunks(remaining, num_conns, 0)
-                .into_iter()
-                .map(|t| Task { offset: t.offset + base, length: t.length })
-                .collect();
-            (tasks, base)
-        } else if cfg.is_resume {
-            log::info!("[ProxyDM] concurrent id={} resume with no progress, recomputing from scratch", cfg.id);
-            (chunk::compute_chunks(cfg.total_size, 4.max(cfg.connections), 0), 0)
         } else {
             (chunk::compute_chunks(cfg.total_size, cfg.connections.max(1), 0), 0)
         };
@@ -81,9 +52,6 @@ impl ConcurrentDownloader {
         let parts_tracker = PartProgressTracker::new(part_ranges);
         if !cfg.part_downloaded.is_empty() {
             parts_tracker.seed_from_parts(&cfg.part_downloaded);
-        } else if resume_offset > 0 {
-            // Fallback when DB parts were never updated
-            parts_tracker.seed_contiguous_prefix(resume_offset);
         }
 
         let num_conns = if cfg.connections > 0 {
@@ -245,6 +213,9 @@ impl ConcurrentDownloader {
             return Err(PdmError::Other(format!("Download incomplete: {}/{} bytes", downloaded, cfg.total_size)));
         }
 
+        // Release our handle before the rename — Windows refuses to rename a
+        // file that still has an open handle with default share flags.
+        drop(file);
         finalize_file(&cfg.save_path).await?;
 
         let _ = self.event_tx.send(Event {

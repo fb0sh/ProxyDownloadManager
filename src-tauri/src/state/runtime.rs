@@ -16,6 +16,9 @@ pub struct DownloadRuntime {
     last_flushed: u64,
     /// Whether part progress needs to be written to DB.
     parts_dirty: bool,
+    /// Whether the DB parts row was already restructured to a single cell
+    /// (Concurrent → Single degrade happens at most once per engine run).
+    single_reset: bool,
 }
 
 /// Recover from a poisoned mutex by unwrapping the guard.
@@ -41,7 +44,25 @@ impl DownloadManagerState {
             part_downloaded: vec![],
             last_flushed: 0,
             parts_dirty: false,
+            single_reset: false,
         });
+    }
+
+    /// Mark that this download's DB parts were reset to a single cell.
+    /// Returns true only the first time per registration, so the caller does
+    /// the DB restructure once instead of on every progress event.
+    /// Unregistered ids return false: those are stale events queued from
+    /// before a pause/complete removed the entry, and must stay inert.
+    pub fn mark_single_reset(&self, id: u64) -> bool {
+        let mut map = recover_lock(self.inner.lock());
+        match map.get_mut(&id) {
+            Some(rt) => {
+                let first = !rt.single_reset;
+                rt.single_reset = true;
+                first
+            }
+            None => false,
+        }
     }
 
     /// Update progress in memory (no DB write).
@@ -88,13 +109,12 @@ impl DownloadManagerState {
         let mut flushed = 0usize;
         let mut map = recover_lock(self.inner.lock());
         for (id, downloaded, part_downloaded, parts_dirty) in &batch {
-            let progress_ok = db.update_download_progress(*id, *downloaded).is_ok();
-            let parts_ok = if *parts_dirty && !part_downloaded.is_empty() {
-                db.update_part_downloaded(*id, part_downloaded).is_ok()
+            let parts = if *parts_dirty && !part_downloaded.is_empty() {
+                Some(part_downloaded.as_slice())
             } else {
-                true
+                None
             };
-            if progress_ok && parts_ok {
+            if db.flush_progress(*id, *downloaded, parts).is_ok() {
                 if let Some(rt) = map.get_mut(id) {
                     rt.last_flushed = *downloaded;
                     rt.parts_dirty = false;
@@ -156,7 +176,7 @@ mod tests {
         let db_path = dir.join("test.db");
         let db = crate::state::db::Db::from_path(&db_path).unwrap();
 
-        // Insert a download item so update_download_progress succeeds
+        // Insert a download item so flush_progress succeeds
         let item = crate::types::DownloadItem {
             id: 1,
             url: "https://example.com/file.zip".to_string(),

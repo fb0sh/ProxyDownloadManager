@@ -6,6 +6,6 @@ pub mod event;
 
 pub use config::*;
 pub use download::*;
-pub use engine_config::EngineConfig;
+pub use engine_config::{EngineConfig, ResumePlan};
 pub use error::*;
 pub use event::*;

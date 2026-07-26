@@ -109,11 +109,11 @@ fn start_ws_server(
 
 /// Persist in-memory progress + per-part Progress Map state to SQLite often,
 /// so a crash loses at most ~1s of progress (not 5s+ and not "start over").
-fn spawn_flush_loop(dm: Arc<DownloadManager>) {
+fn spawn_flush_loop(ledger: Arc<crate::state::ledger::ProgressLedger>) {
     tauri::async_runtime::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            let flushed = dm.flush();
+            let flushed = ledger.flush();
             if flushed > 0 {
                 log::debug!("[ProxyDM] Flushed {} progress entries to DB", flushed);
             }
@@ -122,9 +122,9 @@ fn spawn_flush_loop(dm: Arc<DownloadManager>) {
 }
 
 /// After unexpected exit, rows may still say "downloading". Mark Paused and
-/// rebuild resume metadata from **DB parts** (progress is already in SQLite).
-fn crash_recovery(dm: &DownloadManager) {
-    let n = dm.recover_stale_downloads();
+/// rebuild resume metadata through the ledger's reconcile rule.
+fn crash_recovery(ledger: &crate::state::ledger::ProgressLedger) {
+    let n = ledger.recover_stale_downloads();
     if n > 0 {
         log::info!(
             "[ProxyDM] Crash recovery: {} interrupted download(s) marked paused (progress kept in DB)",
@@ -142,10 +142,6 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_autostart::init(
-            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            None,
-        ))
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if args.iter().any(|arg| arg == SILENT_START_ARG) {
                 return;
@@ -194,6 +190,7 @@ pub fn run() {
 
             let danger_accept_invalid_certs = settings.danger_accept_invalid_certs;
             let next_id_start = db.max_id().unwrap_or(0) + 1;
+            let ledger = Arc::new(crate::state::ledger::ProgressLedger::new(db));
             let worker_pool = crate::worker::WorkerPool::new(8, event_tx.clone(), danger_accept_invalid_certs, next_id_start, settings.global_rate_limit);
             let logger = crate::logger::Logger::new().expect("Failed to initialize logger");
 
@@ -201,16 +198,16 @@ pub fn run() {
             let bus = Arc::new(crate::event_bus::EventBus::new(app.handle().clone()));
 
             let dm = Arc::new(DownloadManager::new(
-                db,
+                ledger.clone(),
                 worker_pool,
                 logger,
-                crate::state::runtime::DownloadManagerState::new(),
                 settings_svc.clone(),
                 bus.clone(),
             ));
 
             let state = Arc::new(AppState {
                 dm: dm.clone(),
+                ledger: ledger.clone(),
                 app_handle: app.handle().clone(),
                 bus: bus.clone(),
                 settings: settings_svc.clone(),
@@ -223,6 +220,18 @@ pub fn run() {
             hide_from_dock();
 
             setup_window(app, silent_start);
+
+            // Reconcile autostart with settings (recreates the OS entry if it
+            // was removed externally or written unquoted by an older version).
+            if settings.launch_at_startup {
+                if let Err(e) = crate::platform::sync_autostart(
+                    app.handle(),
+                    settings.launch_at_startup,
+                    settings.silent_startup,
+                ) {
+                    log::warn!("[ProxyDM] autostart sync failed: {}", e);
+                }
+            }
 
             // Register global shortcut from settings
             let shortcut_key = settings.global_shortcut.clone();
@@ -237,8 +246,8 @@ pub fn run() {
             spawn_event_handler(dm.clone(), event_rx);
             spawn_ws_forwarder(bus, request_rx);
             start_ws_server(event_tx, request_tx);
-            spawn_flush_loop(dm.clone());
-            crash_recovery(&dm);
+            spawn_flush_loop(ledger.clone());
+            crash_recovery(&ledger);
 
             Ok(())
         })

@@ -4,12 +4,13 @@ use crate::event_bus::EventBus;
 use crate::icons::{IconCache, IconData};
 use crate::services::settings_service::SettingsService;
 use crate::services::network_service::NetworkService;
-use std::process::Command as StdCommand;
+use crate::state::ledger::ProgressLedger;
 use std::sync::Arc;
 use tauri::State;
 
 pub struct AppState {
     pub dm: Arc<DownloadManager>,
+    pub ledger: Arc<ProgressLedger>,
     pub app_handle: tauri::AppHandle,
     pub bus: Arc<EventBus>,
     pub settings: Arc<SettingsService>,
@@ -20,7 +21,7 @@ pub struct AppState {
 
 #[tauri::command]
 pub fn list_downloads(state: State<'_, Arc<AppState>>) -> Result<Vec<DownloadItem>, PdmError> {
-    state.dm.list_items()
+    state.ledger.list_items()
 }
 
 #[tauri::command]
@@ -133,37 +134,22 @@ pub fn get_file_icon(
 }
 
 #[tauri::command]
-pub fn open_file(path: String) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    let status = StdCommand::new("open").arg(&path).status();
-    #[cfg(target_os = "windows")]
-    let status = StdCommand::new("cmd").args(["/c", "start", "", &path]).status();
-    #[cfg(target_os = "linux")]
-    let status = StdCommand::new("xdg-open").arg(&path).status();
-
-    match status {
-        Ok(s) if s.success() => Ok(()),
-        Ok(s) => Err(format!("exit code: {}", s)),
-        Err(e) => Err(e.to_string()),
-    }
+pub fn open_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    // ShellExecute-based: no console window flash, no fake exit-code errors
+    // (explorer.exe returns 1 even on success).
+    app.opener()
+        .open_path(&path, None::<&str>)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn open_extensions_folder(app: tauri::AppHandle) -> Result<(), String> {
     let ext_dir = crate::platform::resolve_extensions_dir(&app)?;
-
-    #[cfg(target_os = "macos")]
-    let status = StdCommand::new("open").arg(&ext_dir).status();
-    #[cfg(target_os = "windows")]
-    let status = StdCommand::new("explorer").arg(&ext_dir).status();
-    #[cfg(target_os = "linux")]
-    let status = StdCommand::new("xdg-open").arg(&ext_dir).status();
-
-    match status {
-        Ok(s) if s.success() => Ok(()),
-        Ok(s) => Err(format!("exit code: {}", s)),
-        Err(e) => Err(e.to_string()),
-    }
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_path(&ext_dir, None::<&str>)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

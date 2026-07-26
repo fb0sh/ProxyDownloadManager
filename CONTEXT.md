@@ -44,7 +44,14 @@ Queued → Downloading → Completed
 | **SingleDownloader** | 不支持 Range (200) / 降级 | ❌ | — |
 
 - Concurrent 降级到 Single 时：truncate .pdm 文件 → 发送 DownloadProgress 0（重置前端进度） → 用 Single 重新下载
-- Single 目前直接写入最终路径（不统一 .pdm 临时文件策略）
+- 两种引擎统一写入 `.pdm` 临时文件，完成后重命名为最终路径
+
+### 进度账本 (Progress Ledger)
+
+下载进度的唯一所有者与仲裁者。进度在系统里存在多份记录（内存实时值、数据库行、恢复文件），任何读写与「哪份记录算数」的对账都经过账本；对账规则只有一条，只存在于账本内。恢复计划（remaining tasks、各分片已完成字节、总量）由账本一次性给出，彼此必然一致。
+
+- **对账 (reconcile)**：在多份进度记录间选出「已验证进度最多」的一份，其余数值全部由它推导；纯字节总数在多分片下载中不可信（并发写入不是文件前缀），绝不据此虚构分片进度
+- _Avoid_: facade、状态门面、progress store
 
 ### 分片与进度地图
 
