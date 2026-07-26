@@ -4,7 +4,7 @@ import {
   applyPartDownloaded,
 } from "../utils/progressMap";
 import type { DownloadPart } from "../types";
-import { patchDownloadProgress } from "../hooks/useDownloadEvents";
+import { patchDownloadProgress } from "../downloadEvents";
 import type { DownloadItem } from "../types";
 
 function part(index: number, start: number, end: number, downloaded = 0): DownloadPart {

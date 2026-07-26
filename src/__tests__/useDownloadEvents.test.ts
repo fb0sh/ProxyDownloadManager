@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { patchDownloadProgress } from "../hooks/useDownloadEvents";
+import { patchDownloadProgress } from "../downloadEvents";
 import type { DownloadItem } from "../types";
 
 function makeItem(id: number, downloaded: number): DownloadItem {

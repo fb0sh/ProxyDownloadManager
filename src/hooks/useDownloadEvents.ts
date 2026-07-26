@@ -1,32 +1,10 @@
 import { useEffect } from "react";
 import type { QueryClient } from "@tanstack/react-query";
-import { listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { t } from "../i18n";
-import type { DownloadItem } from "../types";
-import { EVENTS } from "../constants/events";
-import { applyPartDownloaded } from "../utils/progressMap";
+import { subscribeDownloadEvents } from "../downloadEvents";
 import { useWindowManager } from "./useWindowManager";
-
-/** Patch a download-list cache with updated progress for a single download. */
-export function patchDownloadProgress(
-  cache: DownloadItem[] | undefined,
-  id: number,
-  downloaded: number,
-  partDownloaded?: number[],
-  resetToSingle?: boolean,
-): DownloadItem[] | undefined {
-  if (!cache) return cache;
-  return cache.map((d) => {
-    if (d.id !== id) return d;
-    const parts =
-      partDownloaded !== undefined
-        ? applyPartDownloaded(d.parts, partDownloaded, d.total_size, resetToSingle)
-        : d.parts;
-    return { ...d, downloaded, parts };
-  });
-}
 
 interface DownloadEventsOptions {
   queryClient: QueryClient;
@@ -55,82 +33,31 @@ async function sendDownloadNotification(id: number, title: string, body?: string
   }
 }
 
+/** Main-window consumer of the download-events seam: the cache-write policy
+ * lives in the subscription; this hook only adds the domain reactions. */
 export function useDownloadEvents({ queryClient }: DownloadEventsOptions) {
   const { openNewDownload, openDetails } = useWindowManager();
 
-  // Single subscription for all Tauri events — one setup/teardown cycle
   useEffect(() => {
-    const unlisteners: Promise<() => void>[] = [];
-
-    // Browser download URL from extension
-    unlisteners.push(
-      listen<string>(EVENTS.BROWSER_DOWNLOAD_URL, (event) => {
-        openNewDownload(event.payload);
-      })
-    );
-
-    // Structural changes: full refetch
-    for (const eventName of [EVENTS.DOWNLOAD_PAUSED, EVENTS.DOWNLOAD_RESUMED, EVENTS.DOWNLOAD_CANCELLED]) {
-      unlisteners.push(
-        listen(eventName, () => {
-          queryClient.invalidateQueries({ queryKey: ["downloads"] });
-        })
-      );
-    }
-
-    // Download created: refetch + focus main window
-    unlisteners.push(
-      listen(EVENTS.DOWNLOAD_CREATED, async () => {
-        queryClient.invalidateQueries({ queryKey: ["downloads"] });
+    return subscribeDownloadEvents(queryClient, {
+      onBrowserDownloadUrl: (url) => openNewDownload(url),
+      onCreated: async () => {
         try {
           const mainWin = await WebviewWindow.getByLabel("main");
           if (mainWin) { await mainWin.show(); await mainWin.setFocus(); }
         } catch { /* main window may not exist */ }
-      })
-    );
-
-    // Progress: optimistic cache update (avoids full refetch for high-frequency events)
-    unlisteners.push(
-      listen<{
-        id: number;
-        downloaded: number;
-        parts?: number[];
-        reset_to_single?: boolean;
-      }>(EVENTS.DOWNLOAD_PROGRESS, (event) => {
-        const { id, downloaded, parts, reset_to_single } = event.payload;
-        queryClient.setQueryData<DownloadItem[]>(["downloads"], (old) =>
-          patchDownloadProgress(old, id, downloaded, parts, reset_to_single)
-        );
-      })
-    );
-
-    // Started notification
-    unlisteners.push(
-      listen<number>(EVENTS.DOWNLOAD_STARTED, (event) => {
-        sendDownloadNotification(event.payload, t("notification.started"));
-      })
-    );
-
-    // Completed: notification + open details
-    unlisteners.push(
-      listen<{ id: number; file_name: string }>(EVENTS.DOWNLOAD_COMPLETED, async (event) => {
-        const { id, file_name } = event.payload;
+      },
+      onStarted: (id) => {
+        sendDownloadNotification(id, t("notification.started"));
+      },
+      onCompleted: async ({ id, file_name }) => {
         await sendDownloadNotification(id, t("notification.completed"), file_name);
         openDetails(id);
-      })
-    );
-
-    // Error notification
-    unlisteners.push(
-      listen<{ id: number; url: string; message: string }>(EVENTS.DOWNLOAD_ERROR, (event) => {
-        const { id, message } = event.payload;
+      },
+      onError: ({ id, message }) => {
         sendDownloadNotification(id, t("downloadError.failed"), message.slice(0, 100));
-      })
-    );
-
-    return () => {
-      unlisteners.forEach((u) => u.then((f) => f()));
-    };
+      },
+    });
   }, [queryClient, openNewDownload, openDetails]);
 
   // Window focus refresh

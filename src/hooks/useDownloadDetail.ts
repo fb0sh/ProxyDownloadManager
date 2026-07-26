@@ -1,16 +1,13 @@
 import { useEffect, useState } from "react";
 import { flushSync } from "react-dom";
 import { useQueryClient } from "@tanstack/react-query";
-import { listen } from "@tauri-apps/api/event";
 import {
   useDownload,
   usePauseDownload,
   useResumeDownload,
 } from "../query/downloadQueries";
 import { openFile, openFolder } from "../utils/download";
-import { patchDownloadProgress } from "./useDownloadEvents";
-import { EVENTS } from "../constants/events";
-import type { DownloadItem } from "../types";
+import { subscribeDownloadEvents } from "../downloadEvents";
 
 export type DetailPendingAction = "pause" | "resume" | "openFile" | "openFolder" | "copyUrl" | null;
 
@@ -23,45 +20,11 @@ export function useDownloadDetail(id: number | undefined) {
   /** Which action is in-flight; null = interactive. */
   const [pendingAction, setPendingAction] = useState<DetailPendingAction>(null);
 
+  // Details window is a separate webview (own JS realm, own QueryClient) —
+  // it consumes the same seam with the default cache policy, no handlers.
   useEffect(() => {
     if (id === undefined) return;
-    let cancelled = false;
-    const unlisteners: Promise<() => void>[] = [];
-
-    unlisteners.push(
-      listen<{
-        id: number;
-        downloaded: number;
-        parts?: number[];
-        reset_to_single?: boolean;
-      }>(EVENTS.DOWNLOAD_PROGRESS, (event) => {
-        if (cancelled) return;
-        const { id: eventId, downloaded, parts, reset_to_single } = event.payload;
-        if (eventId !== id) return;
-        queryClient.setQueryData<DownloadItem[]>(["downloads"], (old) =>
-          patchDownloadProgress(old, eventId, downloaded, parts, reset_to_single)
-        );
-      })
-    );
-
-    for (const name of [
-      EVENTS.DOWNLOAD_PAUSED,
-      EVENTS.DOWNLOAD_RESUMED,
-      EVENTS.DOWNLOAD_COMPLETED,
-      EVENTS.DOWNLOAD_ERROR,
-    ]) {
-      unlisteners.push(
-        listen(name, () => {
-          if (cancelled) return;
-          queryClient.invalidateQueries({ queryKey: ["downloads"] });
-        })
-      );
-    }
-
-    return () => {
-      cancelled = true;
-      unlisteners.forEach((u) => u.then((f) => f()));
-    };
+    return subscribeDownloadEvents(queryClient);
   }, [id, queryClient]);
 
   /**
