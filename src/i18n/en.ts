@@ -148,6 +148,10 @@ const en = {
   downloadError: {
     failed: "Download failed",
   },
+  notification: {
+    started: "Download Started",
+    completed: "Download Complete",
+  },
   extension: {
     openFolder: "Open Extensions Folder",
     copy: "Copy",

@@ -12,15 +12,25 @@ pub fn build_tray<R: Runtime>(app: &AppHandle<R>, _shortcut: &str) -> Result<(),
     let quit = MenuItem::with_id(app, "quit", "Quit", true, Some("CmdOrCtrl+Q"))?;
     let menu = Menu::with_items(app, &[&show, &quit])?;
 
-    // Dedicated tray icon (monochrome download arrow, 32x32)
-    let tray_icon = tauri::image::Image::new(
-        include_bytes!("../icons/tray-icon.rgba"),
-        32,
-        32,
+    // macOS: monochrome template icon (menu bar adapts it to light/dark).
+    // Elsewhere the template icon renders as a black-on-dark-taskbar arrow —
+    // effectively invisible on Windows — so use the colored app icon instead.
+    #[cfg(target_os = "macos")]
+    let builder = TrayIconBuilder::new()
+        .icon(tauri::image::Image::new(
+            include_bytes!("../icons/tray-icon.rgba"),
+            32,
+            32,
+        ))
+        .icon_as_template(true);
+    #[cfg(not(target_os = "macos"))]
+    let builder = TrayIconBuilder::new().icon(
+        app.default_window_icon()
+            .cloned()
+            .ok_or("no default window icon")?,
     );
-    TrayIconBuilder::new()
-        .icon(tray_icon)
-        .icon_as_template(true)
+
+    builder
         .tooltip("ProxyDM")
         .menu(&menu)
         .on_menu_event(|app, event| {

@@ -7,6 +7,15 @@ import DownloadDetailsWindow from "./DownloadDetailsWindow";
 
 import "@primer/primitives/dist/css/functional/themes/light.css";
 import { BaseStyles, ThemeProvider } from "@primer/react";
+import { tauriClient } from "./tauriClient";
+import { setLanguage } from "./i18n";
+
+// Eager language init for every webview: events (WS downloads on autostart)
+// can arrive before the per-window settings effects have run.
+tauriClient
+  .getSettings()
+  .then((s) => setLanguage(s.language || "en"))
+  .catch(() => {});
 
 const queryClient = new QueryClient({
   defaultOptions: {

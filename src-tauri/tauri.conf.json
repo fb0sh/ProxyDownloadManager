@@ -45,6 +45,9 @@
       "../browsers-extension/edge": "extensions/edge"
     },
     "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper"
+      },
       "wix": null,
       "nsis": null
     }

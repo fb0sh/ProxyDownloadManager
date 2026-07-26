@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { Text, Label, Button } from "@primer/react";
 import { CopyIcon } from "@primer/octicons-react";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -5,8 +6,9 @@ import { formatBytes } from "./utils/format";
 import { formatTimestamp, statusColor, statusString } from "./utils/download";
 import { useDownloadDetail, useDownloadIdFromUrl } from "./hooks/useDownloadDetail";
 import { useDownloadSpeed } from "./hooks/useDownloadSpeed";
+import { useSettings } from "./query/downloadQueries";
 import ProgressMap from "./components/ProgressMap";
-import { t } from "./i18n";
+import { setLanguage, t } from "./i18n";
 
 const card: React.CSSProperties = {
   border: "1px solid var(--borderColor-muted, #d8dee4)", borderRadius: 6,
@@ -41,6 +43,19 @@ function overallPercent(downloaded: number, totalSize: number, status: string | 
 export default function DownloadDetailsWindow() {
   const idParam = new URLSearchParams(window.location.search).get("id");
   const id = useDownloadIdFromUrl();
+  const { settings: loadedSettings } = useSettings();
+  const [, bumpLang] = useState(0);
+
+  // Each webview is a fresh JS realm — without this the details window
+  // always renders in English regardless of the language setting.
+  // setLanguage only mutates module state, so force one re-render after it:
+  // a static (completed/paused) item never re-renders otherwise.
+  useEffect(() => {
+    if (loadedSettings) {
+      setLanguage(loadedSettings.language || "en");
+      bumpLang((n) => n + 1);
+    }
+  }, [loadedSettings]);
   const {
     item,
     urlCopied,

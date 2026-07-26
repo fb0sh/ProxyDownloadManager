@@ -1,5 +1,43 @@
 /// Unified filename extraction from URLs and Content-Disposition headers.
 
+/// Make a server-supplied filename safe on every platform (Windows is the
+/// strictest): replaces path separators, reserved characters and control
+/// chars, strips trailing dots/spaces, escapes reserved device names
+/// (CON, NUL, COM1…), and clamps the length while keeping the extension.
+pub fn sanitize(name: &str) -> String {
+    const INVALID: &[char] = &['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
+    let mut s: String = name
+        .chars()
+        .map(|c| if c.is_control() || INVALID.contains(&c) { '_' } else { c })
+        .collect();
+    s = s.trim().trim_end_matches(['.', ' ']).to_string();
+
+    let stem_upper = s.split('.').next().unwrap_or("").trim().to_ascii_uppercase();
+    let reserved = matches!(
+        stem_upper.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL"
+            | "COM1" | "COM2" | "COM3" | "COM4" | "COM5" | "COM6" | "COM7" | "COM8" | "COM9"
+            | "LPT1" | "LPT2" | "LPT3" | "LPT4" | "LPT5" | "LPT6" | "LPT7" | "LPT8" | "LPT9"
+    );
+    if reserved {
+        s = format!("_{}", s);
+    }
+    if s.is_empty() {
+        return "download".to_string();
+    }
+
+    const MAX_LEN: usize = 150;
+    if s.chars().count() > MAX_LEN {
+        let (stem, ext) = match s.rfind('.') {
+            Some(dot) if s.len() - dot <= 10 => (s[..dot].to_string(), s[dot..].to_string()),
+            _ => (s.clone(), String::new()),
+        };
+        let keep = MAX_LEN.saturating_sub(ext.chars().count());
+        s = format!("{}{}", stem.chars().take(keep).collect::<String>(), ext);
+    }
+    s
+}
+
 /// Extract filename from a Content-Disposition header value.
 pub fn from_content_disposition(header: &str) -> Option<String> {
     header
@@ -148,5 +186,42 @@ mod tests {
             last_name_from_str("https://example.com/dl?file=report.pdf").unwrap(),
             "report.pdf"
         );
+    }
+
+    #[test]
+    fn test_sanitize_windows_invalid_chars() {
+        assert_eq!(sanitize("a:b?c*.zip"), "a_b_c_.zip");
+        assert_eq!(sanitize("re\"po<rt>.pdf"), "re_po_rt_.pdf");
+        assert_eq!(sanitize("path/to\\file.txt"), "path_to_file.txt");
+    }
+
+    #[test]
+    fn test_sanitize_trailing_dots_and_spaces() {
+        assert_eq!(sanitize("report.pdf. "), "report.pdf");
+        assert_eq!(sanitize("  name.txt..."), "name.txt");
+    }
+
+    #[test]
+    fn test_sanitize_reserved_device_names() {
+        assert_eq!(sanitize("CON"), "_CON");
+        assert_eq!(sanitize("nul.txt"), "_nul.txt");
+        assert_eq!(sanitize("COM1.log"), "_COM1.log");
+        assert_eq!(sanitize("console.txt"), "console.txt"); // not reserved
+    }
+
+    #[test]
+    fn test_sanitize_empty_and_length() {
+        assert_eq!(sanitize(""), "download");
+        assert_eq!(sanitize("???"), "___");
+        let long = format!("{}.zip", "x".repeat(300));
+        let out = sanitize(&long);
+        assert!(out.chars().count() <= 150);
+        assert!(out.ends_with(".zip"));
+    }
+
+    #[test]
+    fn test_sanitize_keeps_normal_names() {
+        assert_eq!(sanitize("报告 2026.pdf"), "报告 2026.pdf");
+        assert_eq!(sanitize("app-1.2.3.dmg"), "app-1.2.3.dmg");
     }
 }

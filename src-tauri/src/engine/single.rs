@@ -145,8 +145,8 @@ impl SingleDownloader {
         drop(file);
 
         // Rename .pdm to final filename (matches concurrent engine convention)
-        tokio::fs::rename(&pdm_path, &cfg.save_path).await
-            .map_err(|e| PdmError::Io(e.to_string()))?;
+        crate::engine::file_io::finalize_file(&cfg.save_path).await
+            .map_err(PdmError::Io)?;
 
         log::info!("[ProxyDM] single id={} done total={} bytes", cfg.id, total);
 

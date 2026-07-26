@@ -1,6 +1,5 @@
 import { useEffect } from "react";
 import type { QueryClient } from "@tanstack/react-query";
-import type { PluginListener } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -46,6 +45,9 @@ async function sendDownloadNotification(id: number, title: string, body?: string
   } catch {
     // Tauri notification API unavailable — fall back to web Notification
     try {
+      if (window.Notification.permission === "default") {
+        await window.Notification.requestPermission();
+      }
       if (window.Notification.permission === "granted") {
         new window.Notification(title, { body: body ?? `Download #${id}` });
       }
@@ -105,7 +107,7 @@ export function useDownloadEvents({ queryClient }: DownloadEventsOptions) {
     // Started notification
     unlisteners.push(
       listen<number>(EVENTS.DOWNLOAD_STARTED, (event) => {
-        sendDownloadNotification(event.payload, "Download Started");
+        sendDownloadNotification(event.payload, t("notification.started"));
       })
     );
 
@@ -113,7 +115,7 @@ export function useDownloadEvents({ queryClient }: DownloadEventsOptions) {
     unlisteners.push(
       listen<{ id: number; file_name: string }>(EVENTS.DOWNLOAD_COMPLETED, async (event) => {
         const { id, file_name } = event.payload;
-        await sendDownloadNotification(id, "Download Complete", file_name);
+        await sendDownloadNotification(id, t("notification.completed"), file_name);
         openDetails(id);
       })
     );
@@ -130,30 +132,6 @@ export function useDownloadEvents({ queryClient }: DownloadEventsOptions) {
       unlisteners.forEach((u) => u.then((f) => f()));
     };
   }, [queryClient, openNewDownload, openDetails]);
-
-  // Notification click handler
-  useEffect(() => {
-    let unreg: PluginListener | null = null;
-    let cancelled = false;
-    (async () => {
-      const mod = await import("@tauri-apps/plugin-notification");
-      unreg = await mod.onAction(async (notification) => {
-        if (cancelled) return;
-        const extra = (notification as any)?.extra;
-        const id = extra?.downloadId;
-        const ntype = extra?.type;
-        if (ntype === "started") {
-          try {
-            const mainWin = await WebviewWindow.getByLabel("main");
-            if (mainWin) { await mainWin.show(); await mainWin.setFocus(); }
-          } catch { /* main window may not exist */ }
-        } else if (id) {
-          openDetails(Number(id));
-        }
-      });
-    })();
-    return () => { cancelled = true; if (unreg) unreg.unregister(); };
-  }, [openDetails]);
 
   // Window focus refresh
   useEffect(() => {

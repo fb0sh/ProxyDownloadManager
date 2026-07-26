@@ -19,9 +19,23 @@ pub async fn create_output_file(path: &str, total_size: u64) -> Result<std::fs::
 
 pub async fn finalize_file(save_path: &str) -> Result<(), String> {
     let pdm_path = format!("{}.pdm", save_path);
-    tokio::fs::rename(&pdm_path, save_path)
-        .await
-        .map_err(|e| format!("Failed to rename file: {}", e))
+    // Windows: antivirus/indexers briefly hold freshly written files, making
+    // the rename fail with a sharing violation — retry with a short backoff.
+    // The caller must have dropped its file handle before calling this.
+    let attempts = if cfg!(windows) { 10 } else { 1 };
+    let mut last_err = String::new();
+    for i in 0..attempts {
+        match tokio::fs::rename(&pdm_path, save_path).await {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                last_err = e.to_string();
+                if i + 1 < attempts {
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+            }
+        }
+    }
+    Err(format!("Failed to rename file: {}", last_err))
 }
 
 /// Cross-platform write_at: write to a specific offset without seeking.

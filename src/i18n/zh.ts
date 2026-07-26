@@ -150,6 +150,10 @@ const zh: Translations = {
   downloadError: {
     failed: "下载失败",
   },
+  notification: {
+    started: "开始下载",
+    completed: "下载完成",
+  },
   extension: {
     openFolder: "打开扩展目录",
     copy: "复制",

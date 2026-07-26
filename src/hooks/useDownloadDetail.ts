@@ -90,7 +90,13 @@ export function useDownloadDetail(id: number | undefined) {
 
   const handleCopyUrl = () =>
     runAction("copyUrl", async () => {
-      await navigator.clipboard.writeText(item?.url ?? "");
+      try {
+        // Plugin first — WebView2 permission-gates navigator.clipboard.
+        const { writeText } = await import("@tauri-apps/plugin-clipboard-manager");
+        await writeText(item?.url ?? "");
+      } catch {
+        await navigator.clipboard.writeText(item?.url ?? "");
+      }
       setUrlCopied(true);
       setTimeout(() => setUrlCopied(false), 2000);
     });

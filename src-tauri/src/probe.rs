@@ -132,7 +132,7 @@ pub async fn probe_with_fallback(
         Ok(r) => {
             let name = if filename_override.is_empty() { r.file_name } else { filename_override.to_string() };
             ProbeOutcome {
-                file_name: name,
+                file_name: crate::filename::sanitize(&name),
                 file_size: r.file_size,
                 supports_range: r.supports_range,
             }
@@ -144,7 +144,7 @@ pub async fn probe_with_fallback(
                 filename_override.to_string()
             };
             ProbeOutcome {
-                file_name: name,
+                file_name: crate::filename::sanitize(&name),
                 file_size: 0,
                 supports_range: false,
             }
@@ -331,9 +331,12 @@ mod tests {
 
         let outcome = probe_with_fallback(&url, &headers, None, &pool, &uas, "").await;
 
-        // No CD header → extract_filename falls back to from_url(url)
-        let expected = crate::filename::extract_filename(&url, None)
-            .unwrap_or_else(|| "download".to_string());
+        // No CD header → extract_filename falls back to from_url(url),
+        // then sanitized (the mock URL's host:port contains a ':').
+        let expected = crate::filename::sanitize(
+            &crate::filename::extract_filename(&url, None)
+                .unwrap_or_else(|| "download".to_string()),
+        );
         assert_eq!(outcome.file_name, expected);
         assert_eq!(outcome.file_size, 512);
     }

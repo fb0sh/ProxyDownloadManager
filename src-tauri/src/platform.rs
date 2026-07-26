@@ -38,8 +38,11 @@ pub fn sync_autostart(
         builder.set_app_path(&exe_path);
     }
 
+    // Quote the exe path: auto-launch writes `{path} {args}` verbatim into the
+    // HKCU Run value, and an unquoted path with spaces (Program Files, user
+    // names) fails or is hijackable.
     #[cfg(target_os = "windows")]
-    builder.set_app_path(&current_exe.display().to_string());
+    builder.set_app_path(&format!("\"{}\"", current_exe.display()));
 
     let autostart = builder.build().map_err(|e| e.to_string())?;
     if launch_at_startup {
