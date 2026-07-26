@@ -51,7 +51,7 @@ function InfoRow({ label, value, last }: { label: string; value: string; last?: 
 }
 
 export default function PropertiesDialog({ id, onClose }: PropertiesDialogProps) {
-  const { item, urlCopied, handleCopyUrl } = useDownloadDetail(id);
+  const { item, urlCopied, handleCopyUrl } = useDownloadDetail(id, { subscribe: false });
 
   if (!item) return null;
 

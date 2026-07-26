@@ -25,6 +25,16 @@ pub struct DownloadRuntime {
     restart_pending: bool,
 }
 
+/// Result of applying one progress event.
+pub struct ApplyOutcome {
+    /// False when the event was dropped (unregistered id or stale
+    /// pre-restart event).
+    pub applied: bool,
+    /// True exactly once per engine run: the first reset-to-single event,
+    /// which is when the DB parts row must be restructured.
+    pub first_single_reset: bool,
+}
+
 /// Recover from a poisoned mutex by unwrapping the guard.
 /// This is safe because our lock regions don't do I/O that could fail —
 /// a panic inside a lock is a bug, and we'd rather propagate the panic
@@ -53,48 +63,53 @@ impl DownloadManagerState {
         });
     }
 
-    /// Mark that this download's records were invalidated for a restart.
-    pub fn set_restart_pending(&self, id: u64) {
+    /// Invalidate for a truncate-and-restart, atomically: zero the entry and
+    /// arm the restart gate under ONE lock. Must run BEFORE the caller's DB
+    /// reset — the flush loop checks the gate under the same lock it writes
+    /// under, so no flush can land stale numbers after the DB reset.
+    pub fn arm_restart(&self, id: u64) {
         let mut map = recover_lock(self.inner.lock());
         if let Some(rt) = map.get_mut(&id) {
+            rt.downloaded = 0;
+            rt.part_downloaded = vec![0];
+            rt.parts_dirty = true;
+            rt.single_reset = true;
             rt.restart_pending = true;
         }
     }
 
-    /// Gate for progress events after an invalidation: stale events queued
-    /// before the restart are dropped (returns false); the restart's own
-    /// reset event clears the gate and passes. FIFO event order makes this
-    /// exact — anything non-reset after the gate was set is pre-restart.
-    pub fn restart_gate(&self, id: u64, is_reset_event: bool) -> bool {
+    /// Apply one progress event atomically: the restart-gate check,
+    /// single-reset bookkeeping and the value write happen under one lock, so
+    /// an event can never land stale values after an invalidation armed the
+    /// gate. Unregistered ids are inert (stale events after pause/complete).
+    pub fn apply_progress(
+        &self,
+        id: u64,
+        downloaded: u64,
+        part_downloaded: Option<Vec<u64>>,
+        is_reset_event: bool,
+    ) -> ApplyOutcome {
         let mut map = recover_lock(self.inner.lock());
-        match map.get_mut(&id) {
-            Some(rt) if rt.restart_pending => {
-                if is_reset_event {
-                    rt.restart_pending = false;
-                    true
-                } else {
-                    false
-                }
+        let Some(rt) = map.get_mut(&id) else {
+            return ApplyOutcome { applied: false, first_single_reset: false };
+        };
+        if rt.restart_pending {
+            if !is_reset_event {
+                // Stale pre-restart event — drop it.
+                return ApplyOutcome { applied: false, first_single_reset: false };
             }
-            _ => true,
+            rt.restart_pending = false;
         }
-    }
-
-    /// Mark that this download's DB parts were reset to a single cell.
-    /// Returns true only the first time per registration, so the caller does
-    /// the DB restructure once instead of on every progress event.
-    /// Unregistered ids return false: those are stale events queued from
-    /// before a pause/complete removed the entry, and must stay inert.
-    pub fn mark_single_reset(&self, id: u64) -> bool {
-        let mut map = recover_lock(self.inner.lock());
-        match map.get_mut(&id) {
-            Some(rt) => {
-                let first = !rt.single_reset;
-                rt.single_reset = true;
-                first
-            }
-            None => false,
+        let first_single_reset = is_reset_event && !rt.single_reset;
+        if is_reset_event {
+            rt.single_reset = true;
         }
+        rt.downloaded = downloaded;
+        if let Some(parts) = part_downloaded {
+            rt.part_downloaded = parts;
+            rt.parts_dirty = true;
+        }
+        ApplyOutcome { applied: true, first_single_reset }
     }
 
     /// Update progress in memory (no DB write).
@@ -121,36 +136,36 @@ impl DownloadManagerState {
     }
 
     /// Flush all dirty entries to the database.
+    /// Each entry's check and DB write happen while holding the map lock, so
+    /// a flush can never write numbers that predate an `arm_restart` (which
+    /// mutates the entry under the same lock BEFORE its own DB reset).
     /// Returns the number of entries successfully flushed.
     /// Failed entries stay dirty and retry on the next flush cycle.
     pub fn flush_to_db(&self, db: &crate::state::db::Db) -> usize {
-        let batch: Vec<(u64, u64, Vec<u64>, bool)> = {
+        let ids: Vec<u64> = {
             let map = recover_lock(self.inner.lock());
-            map.iter()
-                .filter(|(_, rt)| rt.downloaded != rt.last_flushed || rt.parts_dirty)
-                .map(|(&id, rt)| {
-                    (
-                        id,
-                        rt.downloaded,
-                        rt.part_downloaded.clone(),
-                        rt.parts_dirty,
-                    )
-                })
-                .collect()
+            map.keys().copied().collect()
         };
         let mut flushed = 0usize;
-        let mut map = recover_lock(self.inner.lock());
-        for (id, downloaded, part_downloaded, parts_dirty) in &batch {
-            let parts = if *parts_dirty && !part_downloaded.is_empty() {
-                Some(part_downloaded.as_slice())
+        for id in ids {
+            let mut map = recover_lock(self.inner.lock());
+            let Some(rt) = map.get_mut(&id) else { continue };
+            if rt.restart_pending {
+                // Mid-invalidation: the reset event will re-dirty the entry.
+                continue;
+            }
+            if rt.downloaded == rt.last_flushed && !rt.parts_dirty {
+                continue;
+            }
+            let downloaded = rt.downloaded;
+            let parts = if rt.parts_dirty && !rt.part_downloaded.is_empty() {
+                Some(rt.part_downloaded.clone())
             } else {
                 None
             };
-            if db.flush_progress(*id, *downloaded, parts).is_ok() {
-                if let Some(rt) = map.get_mut(id) {
-                    rt.last_flushed = *downloaded;
-                    rt.parts_dirty = false;
-                }
+            if db.flush_progress(id, downloaded, parts.as_deref()).is_ok() {
+                rt.last_flushed = downloaded;
+                rt.parts_dirty = false;
                 flushed += 1;
             }
             // Failed entries keep their last_flushed / parts_dirty, so they stay dirty
@@ -197,6 +212,53 @@ mod tests {
         let state = test_state();
         state.update_progress(999, 500, None); // no panic, no error
         assert_eq!(state.get_downloaded(999), None);
+    }
+
+    #[test]
+    fn test_flush_skips_armed_restart() {
+        let state = test_state();
+        let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("pdm_flush_arm_test_{}", ts));
+        std::fs::create_dir_all(&dir).ok();
+        let db = crate::state::db::Db::from_path(&dir.join("test.db")).unwrap();
+        let item = crate::types::DownloadItem {
+            id: 1,
+            url: "https://example.com/file.zip".to_string(),
+            file_name: "file.zip".to_string(),
+            save_path: "/tmp/file.zip".to_string(),
+            total_size: 1000,
+            downloaded: 0,
+            status: crate::types::DownloadStatus::Downloading,
+            parts: vec![],
+            proxy_name: String::new(),
+            connections: 1,
+            resumable: None,
+            created_at: String::new(),
+            last_try: String::new(),
+        };
+        db.insert_download(&item).unwrap();
+
+        state.register(1);
+        state.update_progress(1, 500, Some(vec![500]));
+        state.arm_restart(1);
+
+        // Armed: the flush must not write pre-restart numbers over the reset.
+        assert_eq!(state.flush_to_db(&db), 0);
+        assert_eq!(db.get_by_id(1).unwrap().unwrap().downloaded, 0);
+
+        // Stale pre-restart event is dropped…
+        let stale = state.apply_progress(1, 600, Some(vec![600]), false);
+        assert!(!stale.applied);
+        // …the restart's own reset event clears the gate…
+        let reset = state.apply_progress(1, 0, Some(vec![0]), true);
+        assert!(reset.applied);
+        assert!(!reset.first_single_reset, "arm_restart already did the DB reset");
+        // …and normal progress flushes again.
+        state.apply_progress(1, 100, Some(vec![100]), true);
+        assert_eq!(state.flush_to_db(&db), 1);
+        assert_eq!(db.get_by_id(1).unwrap().unwrap().downloaded, 100);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

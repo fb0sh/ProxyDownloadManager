@@ -77,17 +77,6 @@ impl DownloadManager {
 
         self.log_info(&format!("Event: {:?} id={}{}", event.kind, id, url_info));
 
-        // Emit error to frontend before applying state change (so frontend
-        // always sees the error regardless of state transition outcome).
-        if matches!(event.kind, EventKind::DownloadErrored) {
-            let msg = event.data.clone().unwrap_or_default();
-            let url = url_info.trim_start_matches(" url=").to_string();
-            self.bus.emit(
-                FrontendEvent::DownloadError,
-                serde_json::json!({ "id": id, "url": url, "message": msg }),
-            );
-        }
-
         let action = transform_event(&event);
 
         match action {
@@ -111,7 +100,14 @@ impl DownloadManager {
                 );
             }
             EventAction::DownloadErrored(dl_id, msg) => {
-                self.ledger.on_error(dl_id, msg);
+                // State first, then the event: the frontend invalidates its
+                // cache on DownloadError, and the refetch must see Failed.
+                self.ledger.on_error(dl_id, msg.clone());
+                let url = url_info.trim_start_matches(" url=").to_string();
+                self.bus.emit(
+                    FrontendEvent::DownloadError,
+                    serde_json::json!({ "id": dl_id, "url": url, "message": msg }),
+                );
             }
             EventAction::UpdateProgress {
                 id: dl_id,

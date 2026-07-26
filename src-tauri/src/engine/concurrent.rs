@@ -62,7 +62,9 @@ impl ConcurrentDownloader {
         };
 
         if tasks.is_empty() {
-            return Err(PdmError::Other(format!("No tasks to download for id={}", cfg.id)));
+            // Incomplete → the degrade whitelist lets Single try instead
+            // (e.g. range-capable server with unknown size plans no chunks).
+            return Err(PdmError::Incomplete(format!("no tasks planned for id={}", cfg.id)));
         }
 
         let num_workers = num_conns.min(tasks.len() as u32).max(1);
@@ -185,13 +187,7 @@ impl ConcurrentDownloader {
                             return;
                         }
                         TaskResult::Fatal(msg) => {
-                            let attempt = max_retries.saturating_sub(retries_left) + 1;
-                            let backoff_secs = 2u64.pow(attempt.min(5) as u32).min(30);
-                            tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
-                            if retries_left > 0 {
-                                retries_left -= 1;
-                                queue.push(task);
-                            } else {
+                            if retries_left == 0 {
                                 log::error!("retries exhausted for offset={}, stopping", task.offset);
                                 abort(
                                     &queue,
@@ -201,6 +197,22 @@ impl ConcurrentDownloader {
                                     &abort_reason,
                                 );
                                 return;
+                            }
+                            retries_left -= 1;
+                            // Task back in the queue BEFORE the backoff, so a
+                            // pause during the sleep still snapshots it; the
+                            // sleep itself wakes early on stop instead of
+                            // holding cancel_and_wait for up to 30s.
+                            queue.push(task);
+                            let attempt = max_retries - retries_left;
+                            let backoff_secs = 2u64.pow(attempt.min(5)).min(30);
+                            let deadline = std::time::Instant::now()
+                                + std::time::Duration::from_secs(backoff_secs);
+                            while std::time::Instant::now() < deadline {
+                                if stop.load(Ordering::Relaxed) {
+                                    return;
+                                }
+                                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                             }
                         }
                     }
@@ -260,7 +272,7 @@ impl ConcurrentDownloader {
 
         if !queue.is_empty() || bytes_written.load(Ordering::Relaxed) < cfg.total_size {
             let downloaded = bytes_written.load(Ordering::Relaxed);
-            return Err(PdmError::Other(format!("Download incomplete: {}/{} bytes", downloaded, cfg.total_size)));
+            return Err(PdmError::Incomplete(format!("{}/{} bytes", downloaded, cfg.total_size)));
         }
 
         // Release our handle before the rename — Windows refuses to rename a

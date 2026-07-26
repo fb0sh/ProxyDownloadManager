@@ -106,13 +106,15 @@ pub async fn run_download(
         .download(&cfg, limiter.clone(), cancel.clone(), &hooks.save_resume_state)
         .await;
 
-    // Degrade policy: a pause keeps everything, and retry exhaustion keeps
-    // saved progress for a later resume — truncating either would only lose
-    // data. Everything else (range loss, incomplete streams, setup errors)
-    // restarts sequentially.
+    // Degrade policy — a whitelist, not a catch-all: only failures that mean
+    // "ranged transfer itself is broken" (RangeLost, Incomplete) are worth
+    // truncating saved progress for a sequential restart. Pause keeps
+    // everything; retry exhaustion and setup errors (file create, client
+    // build, network) fail resumable — degrading them would destroy progress
+    // a plain retry could keep.
     let result = match result {
         Ok(()) => result,
-        Err(ref e) if matches!(e, PdmError::Cancelled | PdmError::RetriesExhausted(_)) => result,
+        Err(ref e) if !matches!(e, PdmError::RangeLost | PdmError::Incomplete(_)) => result,
         Err(e) => {
             log::error!("[ProxyDM] Concurrent id={} failed, degrading to Single: {}", cfg.id, e);
             // Records first, then the file: after invalidation a crash at any
@@ -334,7 +336,7 @@ mod tests {
 
         let pool = Arc::new(NetworkPool::new(false));
         let (tx, _rx) = mpsc::unbounded_channel();
-        let cfg = test_config(&url, false, file_data.len() as u64);
+        let cfg = test_config_at("single", &url, false, file_data.len() as u64);
         let limiter = Arc::new(MultiLimiter::new(0, 0));
         let cancel = Arc::new(AtomicBool::new(false));
 
@@ -345,7 +347,7 @@ mod tests {
 
         // Clean up temp file
         let save_path = std::env::temp_dir()
-            .join(format!("pdm_engine_test_{}.bin", std::process::id()));
+            .join(format!("pdm_engine_single_{}.bin", std::process::id()));
         let _ = std::fs::remove_file(&save_path);
     }
 
@@ -359,7 +361,7 @@ mod tests {
 
         let pool = Arc::new(NetworkPool::new(false));
         let (tx, _rx) = mpsc::unbounded_channel();
-        let cfg = test_config(&url, true, file_data.len() as u64);
+        let cfg = test_config_at("conc", &url, true, file_data.len() as u64);
         let limiter = Arc::new(MultiLimiter::new(0, 0));
         let cancel = Arc::new(AtomicBool::new(false));
 
@@ -369,10 +371,10 @@ mod tests {
 
         // Clean up
         let save_path = std::env::temp_dir()
-            .join(format!("pdm_engine_test_{}.bin", std::process::id()));
+            .join(format!("pdm_engine_conc_{}.bin", std::process::id()));
         let _ = std::fs::remove_file(&save_path);
         let pdm_path = std::env::temp_dir()
-            .join(format!("pdm_engine_test_{}.bin.pdm", std::process::id()));
+            .join(format!("pdm_engine_conc_{}.bin.pdm", std::process::id()));
         let _ = std::fs::remove_file(&pdm_path);
     }
 
@@ -384,7 +386,7 @@ mod tests {
 
         let pool = Arc::new(NetworkPool::new(false));
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let cfg = test_config(&url, false, file_data.len() as u64);
+        let cfg = test_config_at("progress", &url, false, file_data.len() as u64);
         let limiter = Arc::new(MultiLimiter::new(0, 0));
         let cancel = Arc::new(AtomicBool::new(false));
 
@@ -406,7 +408,7 @@ mod tests {
 
         // Clean up
         let save_path = std::env::temp_dir()
-            .join(format!("pdm_engine_test_{}.bin", std::process::id()));
+            .join(format!("pdm_engine_progress_{}.bin", std::process::id()));
         let _ = std::fs::remove_file(&save_path);
     }
 
@@ -418,7 +420,7 @@ mod tests {
 
         let pool = Arc::new(NetworkPool::new(false));
         let (tx, _rx) = mpsc::unbounded_channel();
-        let cfg = test_config(&url, true, file_data.len() as u64);
+        let cfg = test_config_at("cancel", &url, true, file_data.len() as u64);
         let limiter = Arc::new(MultiLimiter::new(0, 0));
         let cancel = Arc::new(AtomicBool::new(false));
         let cancel_clone = cancel.clone();
@@ -450,10 +452,10 @@ mod tests {
 
         // Clean up
         let save_path = std::env::temp_dir()
-            .join(format!("pdm_engine_test_{}.bin", std::process::id()));
+            .join(format!("pdm_engine_cancel_{}.bin", std::process::id()));
         let _ = std::fs::remove_file(&save_path);
         let pdm_path = std::env::temp_dir()
-            .join(format!("pdm_engine_test_{}.bin.pdm", std::process::id()));
+            .join(format!("pdm_engine_cancel_{}.bin.pdm", std::process::id()));
         let _ = std::fs::remove_file(&pdm_path);
     }
 

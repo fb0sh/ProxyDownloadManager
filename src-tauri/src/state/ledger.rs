@@ -234,24 +234,23 @@ impl ProgressLedger {
         part_downloaded: Option<Vec<u64>>,
         reset_to_single: bool,
     ) {
-        // After invalidate_for_restart, events queued before the restart are
-        // stale and must not resurrect pre-truncate progress.
-        if !self.runtime.restart_gate(id, reset_to_single) {
-            return;
+        let parts = if reset_to_single {
+            Some(part_downloaded.unwrap_or_else(|| vec![downloaded]))
+        } else {
+            part_downloaded
+        };
+        // Atomic in runtime: gate check (drops stale pre-restart events),
+        // single-reset bookkeeping and the value write under one lock.
+        let outcome = self
+            .runtime
+            .apply_progress(id, downloaded, parts, reset_to_single);
+        if outcome.first_single_reset {
+            let _ = self.db.reset_parts_to_single(id, downloaded);
+            // The Single engine truncated the file and restarted — any prior
+            // gob describes a dead layout; a resume that trusted it would
+            // write old task offsets into the truncated file.
+            let _ = gob::delete_state(id);
         }
-        if reset_to_single {
-            if self.runtime.mark_single_reset(id) {
-                let _ = self.db.reset_parts_to_single(id, downloaded);
-                // The Single engine truncated the file and restarted — any
-                // prior gob describes a dead layout; a resume that trusted it
-                // would write old task offsets into the truncated file.
-                let _ = gob::delete_state(id);
-            }
-            let parts = part_downloaded.unwrap_or_else(|| vec![downloaded]);
-            self.runtime.update_progress(id, downloaded, Some(parts));
-            return;
-        }
-        self.runtime.update_progress(id, downloaded, part_downloaded);
     }
 
     /// Mark download as completed: clean up runtime, update DB status.
@@ -388,14 +387,13 @@ impl ProgressLedger {
     /// Engine hook, called right before a degrade truncates the file: reset
     /// every progress record FIRST, so a crash between the two can never
     /// leave a copy claiming progress the truncated file no longer has.
-    /// Also arms the restart gate: progress events already queued from before
-    /// the restart get dropped instead of resurrecting stale numbers.
+    /// Order matters: the runtime is armed (gate + zeroing, one lock) BEFORE
+    /// the DB reset, and the flush loop checks the gate under that same lock
+    /// — so no flush can write pre-restart numbers over the reset row.
     pub fn invalidate_for_restart(&self, id: u64) {
+        self.runtime.arm_restart(id);
         let _ = self.db.reset_parts_to_single(id, 0);
         let _ = gob::delete_state(id);
-        self.runtime.mark_single_reset(id);
-        self.runtime.update_progress(id, 0, Some(vec![0]));
-        self.runtime.set_restart_pending(id);
     }
 
     /// Flush all runtime progress to DB. Returns entries flushed.

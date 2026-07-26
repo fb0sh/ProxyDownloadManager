@@ -244,8 +244,14 @@ impl Db {
         }];
         let parts_str = serde_json::to_string(&item.parts).map_err(PdmError::from)?;
         let conn = self.conn.lock().map_err(PdmError::from)?;
+        // 'queued' included: a degrade can fire before the DownloadStarted
+        // event flipped the admission-queued row to downloading.
+        // resumable=0: the reset means the server's Range support failed (or
+        // was never there) — future resumes must go straight to Single
+        // instead of degrading through another truncate.
         conn.execute(
-            "UPDATE downloads SET parts=?1, downloaded=?2 WHERE id=?3 AND status='downloading'",
+            "UPDATE downloads SET parts=?1, downloaded=?2, resumable=0
+             WHERE id=?3 AND (status='downloading' OR status='queued')",
             params![parts_str, downloaded, id],
         )
         .map_err(PdmError::from)?;

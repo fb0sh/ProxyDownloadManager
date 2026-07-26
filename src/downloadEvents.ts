@@ -56,6 +56,13 @@ export function patchDownloadProgress(
   });
 }
 
+export interface SubscribeOptions {
+  /** Patch progress only for this id — the details window watches one
+   * download; other downloads' 500ms progress events would only cause
+   * wasted re-renders there (the 1s poll covers them). */
+  progressId?: number;
+}
+
 /**
  * The one subscription to backend download events, with the one cache-write
  * policy: progress events patch the ["downloads"] cache in place; lifecycle
@@ -64,6 +71,7 @@ export function patchDownloadProgress(
 export function subscribeDownloadEvents(
   queryClient: QueryClient,
   handlers: DownloadEventHandlers = {},
+  options: SubscribeOptions = {},
 ): () => void {
   let cancelled = false;
   const unlisteners: Promise<() => void>[] = [];
@@ -79,6 +87,7 @@ export function subscribeDownloadEvents(
     listen<ProgressPayload>(
       EVENTS.DOWNLOAD_PROGRESS,
       guard((p) => {
+        if (options.progressId !== undefined && p.id !== options.progressId) return;
         queryClient.setQueryData<DownloadItem[]>(["downloads"], (old) =>
           patchDownloadProgress(old, p.id, p.downloaded, p.parts, p.reset_to_single),
         );

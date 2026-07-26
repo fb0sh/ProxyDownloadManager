@@ -196,6 +196,19 @@ pub async fn download_task(
 
         buf.extend_from_slice(&chunk);
 
+        // Bound the write to this task's region: a server that ignores Range
+        // on the offset-0 task streams the WHOLE file — everything past
+        // chunk_size belongs to other tasks and would only inflate counters.
+        if chunk_size > 0 && written + buf.len() as u64 >= chunk_size {
+            buf.truncate((chunk_size - written) as usize);
+            if let Err(e) = write_at(file, &buf, base_offset + written) {
+                return TaskResult::Fatal(format!("write_at error: {}", e));
+            }
+            let n = buf.len() as u64;
+            note_write(bytes_written, parts.as_deref(), base_offset + written, n);
+            return TaskResult::Complete;
+        }
+
         if buf.len() >= BUF_SIZE {
             if let Err(e) = write_at(file, &buf, base_offset + written) {
                 return TaskResult::Fatal(format!("write_at error: {}", e));

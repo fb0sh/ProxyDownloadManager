@@ -52,6 +52,7 @@ export default function NewDownloadWindow() {
 
     // Listen for URL from parent window (more reliable than query param)
     let cancelled = false;
+    let unlistenFn: (() => void) | null = null;
     (async () => {
       const { listen } = await import("@tauri-apps/api/event");
       console.log('[ProxyDM FE] NewDownloadWindow listening for new-download-url');
@@ -62,8 +63,8 @@ export default function NewDownloadWindow() {
         setUrl(u);
         if (extractFilename(u)) { setFilename(extractFilename(u)); setAutoFilled(true); }
       });
-      // Clean up listener if component unmounts before event arrives
-      return () => { cancelled = true; unlisten(); };
+      if (cancelled) unlisten();
+      else unlistenFn = unlisten;
     })();
 
     // Fallback: read clipboard
@@ -74,6 +75,11 @@ export default function NewDownloadWindow() {
         if (extractFilename(clipUrl)) { setFilename(extractFilename(clipUrl)); setAutoFilled(true); }
       }
     });
+
+    return () => {
+      cancelled = true;
+      if (unlistenFn) unlistenFn();
+    };
   }, []);
 
   const handleUrlChange = useCallback((value: string) => {

@@ -124,4 +124,27 @@ describe("subscribeDownloadEvents", () => {
     expect(qc.setQueryData).not.toHaveBeenCalled();
     expect(onStarted).not.toHaveBeenCalled();
   });
+
+  it("actually removes the backend listeners on unsubscribe", async () => {
+    const qc = fakeQueryClient();
+    const unsubscribe = subscribeDownloadEvents(qc as never);
+    expect(listeners.size).toBeGreaterThan(0);
+
+    unsubscribe();
+    // The unlisten fns run when the listen promises resolve.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(listeners.size).toBe(0);
+  });
+
+  it("respects the progressId filter (details window)", () => {
+    const qc = fakeQueryClient();
+    subscribeDownloadEvents(qc as never, {}, { progressId: 7 });
+
+    fire(EVENTS.DOWNLOAD_PROGRESS, { id: 1, downloaded: 500 });
+    expect(qc.setQueryData).not.toHaveBeenCalled();
+
+    fire(EVENTS.DOWNLOAD_PROGRESS, { id: 7, downloaded: 500 });
+    expect(qc.setQueryData).toHaveBeenCalledTimes(1);
+  });
 });

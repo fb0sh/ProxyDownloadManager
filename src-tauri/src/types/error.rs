@@ -29,6 +29,9 @@ pub enum PdmError {
     /// The server stopped honoring Range requests mid-download — concurrent
     /// can never finish; the engine degrades to a sequential restart.
     RangeLost,
+    /// All tasks finished but bytes are missing (server closed streams
+    /// early) — ranged transfers are unreliable; degrade to sequential.
+    Incomplete(String),
     /// Generic fallback with message.
     Other(String),
 }
@@ -47,6 +50,7 @@ impl fmt::Display for PdmError {
             Self::Network(msg) => write!(f, "Network error: {}", msg),
             Self::RetriesExhausted(msg) => write!(f, "Retries exhausted: {}", msg),
             Self::RangeLost => write!(f, "Server stopped honoring Range requests"),
+            Self::Incomplete(msg) => write!(f, "Download incomplete: {}", msg),
             Self::Other(msg) => write!(f, "{}", msg),
         }
     }

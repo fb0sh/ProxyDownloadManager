@@ -36,7 +36,11 @@ export function detailControls(
   };
 }
 
-export function useDownloadDetail(id: number | undefined) {
+export function useDownloadDetail(
+  id: number | undefined,
+  opts: { subscribe?: boolean } = {},
+) {
+  const { subscribe = true } = opts;
   const item = useDownload(id);
   const queryClient = useQueryClient();
   const pauseDownload = usePauseDownload();
@@ -46,11 +50,13 @@ export function useDownloadDetail(id: number | undefined) {
   const [pendingAction, setPendingAction] = useState<DetailPendingAction>(null);
 
   // Details window is a separate webview (own JS realm, own QueryClient) —
-  // it consumes the same seam with the default cache policy, no handlers.
+  // it consumes the same seam, patching progress only for its own download.
+  // The main-window PropertiesDialog passes subscribe:false: that webview
+  // already has the useDownloadEvents subscription.
   useEffect(() => {
-    if (id === undefined) return;
-    return subscribeDownloadEvents(queryClient);
-  }, [id, queryClient]);
+    if (!subscribe || id === undefined) return;
+    return subscribeDownloadEvents(queryClient, {}, { progressId: id });
+  }, [subscribe, id, queryClient]);
 
   /**
    * Click → flushSync disable (gray) immediately → await work →
@@ -116,7 +122,6 @@ export function useDownloadDetail(id: number | undefined) {
   return {
     item,
     urlCopied,
-    pendingAction,
     controls: detailControls(item?.status, pendingAction),
     handleCopyUrl,
     handleOpenFile,
