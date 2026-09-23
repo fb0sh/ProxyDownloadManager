@@ -195,7 +195,7 @@ impl ProgressLedger {
     /// flips back to Downloading when the engine actually starts.
     pub fn mark_queued(&self, id: u64) {
         if let Ok(Some(mut item)) = self.db.get_by_id(id) {
-            if matches!(item.status, DownloadStatus::Downloading) {
+            if matches!(item.status, DownloadStatus::Downloading | DownloadStatus::Connecting) {
                 item.status = DownloadStatus::Queued;
                 let _ = self.db.update_download(&item);
             }
@@ -209,7 +209,10 @@ impl ProgressLedger {
     pub fn on_started(&self, id: u64) {
         self.runtime.register(id);
         if let Ok(Some(mut item)) = self.db.get_by_id(id) {
-            if matches!(item.status, DownloadStatus::Queued) {
+            if matches!(
+                item.status,
+                DownloadStatus::Queued | DownloadStatus::Connecting | DownloadStatus::Retrying
+            ) {
                 item.status = DownloadStatus::Downloading;
                 item.last_try = now_str();
                 let _ = self.db.update_download(&item);
@@ -279,7 +282,25 @@ impl ProgressLedger {
             if matches!(item.status, DownloadStatus::Paused) {
                 return;
             }
-            item.status = DownloadStatus::Failed(error_msg);
+            item.status = DownloadStatus::Failed(error_msg.clone());
+            item.error_message = error_msg.clone();
+            item.last_error_at = now_str();
+            item.retry_count = item.retry_count.saturating_add(1);
+            if let Some(code) = error_msg
+                .split_whitespace()
+                .find_map(|t| t.strip_prefix("HTTP").and_then(|s| s.parse::<u16>().ok()).or_else(|| t.parse::<u16>().ok()))
+            {
+                item.http_status = Some(code);
+            }
+            if error_msg.to_ascii_lowercase().contains("timeout") {
+                item.error_code = "timeout".into();
+            } else if item.http_status == Some(401) || item.http_status == Some(403) {
+                item.error_code = "auth".into();
+            } else if item.http_status.map(|c| crate::retry::is_retryable_status(c)).unwrap_or(false) {
+                item.error_code = "http".into();
+            } else {
+                item.error_code = "failed".into();
+            }
             for part in item.parts.iter_mut() {
                 if matches!(part.status, PartStatus::Pending | PartStatus::Downloading) {
                     part.status = PartStatus::Failed("download failed".to_string());
@@ -298,7 +319,7 @@ impl ProgressLedger {
         if let Ok(Some(mut item)) = self.db.get_by_id(id) {
             // Queued: never started, nothing to reconcile — pausing just
             // takes it out of the waiting line.
-            if matches!(item.status, DownloadStatus::Downloading | DownloadStatus::Queued) {
+            if item.status.is_live() || matches!(item.status, DownloadStatus::Queued) {
                 let saved = gob::load_state(id).ok().flatten();
                 let basis = reconcile(&item, saved.as_ref());
                 apply_basis(&mut item, &basis);
@@ -315,10 +336,7 @@ impl ProgressLedger {
     /// never patch fields afterwards.
     pub fn begin_resume(&self, id: u64) -> PdmResult<ResumePlan> {
         let mut item = self.db.get_by_id(id)?.ok_or(PdmError::NotFound(id))?;
-        if matches!(
-            item.status,
-            DownloadStatus::Downloading | DownloadStatus::Completed
-        ) {
+        if item.status.is_live() || matches!(item.status, DownloadStatus::Completed) {
             return Err(PdmError::Other(format!(
                 "Download {} is {:?} — nothing to resume",
                 id, item.status
@@ -350,7 +368,7 @@ impl ProgressLedger {
         };
         let mut n = 0usize;
         for mut item in items {
-            if !matches!(item.status, DownloadStatus::Downloading) {
+            if !item.status.is_live() {
                 continue;
             }
             let saved = gob::load_state(item.id).ok().flatten();
@@ -377,6 +395,71 @@ impl ProgressLedger {
         self.db.delete_download(id)?;
         let _ = gob::delete_state(id);
         Ok(())
+    }
+
+    pub fn update_connections(&self, id: u64, connections: u32) -> PdmResult<()> {
+        let mut item = self.db.get_by_id(id)?.ok_or(PdmError::NotFound(id))?;
+        item.connections = connections;
+        self.db.update_download(&item)
+    }
+
+    pub fn update_rate_limit(&self, id: u64, rate_limit_bps: u64) -> PdmResult<()> {
+        let mut item = self.db.get_by_id(id)?.ok_or(PdmError::NotFound(id))?;
+        item.rate_limit_bps = rate_limit_bps;
+        self.db.update_download(&item)
+    }
+
+    pub fn find_active_duplicate(&self, url: &str, save_path: &str) -> PdmResult<Option<u64>> {
+        let items = self.db.list_downloads()?;
+        Ok(items.into_iter().find_map(|i| {
+            let same_url = i.url == url || (!i.final_url.is_empty() && i.final_url == url);
+            let same_path = i.save_path == save_path;
+            if (same_url || same_path) && (i.status.is_live() || matches!(i.status, DownloadStatus::Queued | DownloadStatus::Paused)) {
+                Some(i.id)
+            } else {
+                None
+            }
+        }))
+    }
+
+    /// Replace the URL (and optional validators) after a refresh-URL probe.
+    pub fn refresh_source(
+        &self,
+        id: u64,
+        new_url: String,
+        headers: std::collections::HashMap<String, String>,
+        etag: String,
+        last_modified: String,
+        content_type: String,
+        file_size: u64,
+    ) -> PdmResult<DownloadItem> {
+        let mut item = self.db.get_by_id(id)?.ok_or(PdmError::NotFound(id))?;
+        if item.total_size > 0 && file_size > 0 && item.total_size != file_size {
+            return Err(PdmError::ResourceMismatch(format!(
+                "size {} vs {}",
+                item.total_size, file_size
+            )));
+        }
+        if !item.etag.is_empty() && !etag.is_empty() && item.etag != etag {
+            return Err(PdmError::ResourceMismatch(format!(
+                "ETag {} vs {}",
+                item.etag, etag
+            )));
+        }
+        item.url = new_url.clone();
+        item.final_url = new_url;
+        item.headers = headers;
+        if !etag.is_empty() {
+            item.etag = etag;
+        }
+        if !last_modified.is_empty() {
+            item.last_modified = last_modified;
+        }
+        if !content_type.is_empty() {
+            item.content_type = content_type;
+        }
+        self.db.update_download(&item)?;
+        Ok(item)
     }
 
     /// Persist engine resume state (engine cancel callback).
@@ -440,12 +523,10 @@ mod tests {
             total_size: 1000,
             downloaded: 0,
             status: DownloadStatus::Queued,
-            parts: vec![],
-            proxy_name: "".to_string(),
             connections: 4,
             resumable: Some(true),
             created_at: "1234567890".to_string(),
-            last_try: "".to_string(),
+            ..Default::default()
         }
     }
 

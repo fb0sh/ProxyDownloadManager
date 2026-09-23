@@ -1,7 +1,10 @@
 use crate::network::limiter::MultiLimiter;
-use crate::types::{Task, PdmError};
+use crate::types::Task;
 use crate::engine::file_io::write_at;
 use crate::engine::part_progress::PartProgressTracker;
+use crate::headers::apply_headers;
+use crate::retry::{is_fatal_client_status, is_retryable_status};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -19,6 +22,8 @@ pub enum TaskResult {
     RangeNotSupported,
     /// Unrecoverable error — don't retry this chunk.
     Fatal(String),
+    /// Client error that must not be retried (401/403/404…).
+    FatalNoRetry(String),
 }
 
 fn note_write(
@@ -46,6 +51,7 @@ pub async fn download_task(
     user_agent: &str,
     bytes_written: &AtomicU64,
     parts: Option<Arc<PartProgressTracker>>,
+    headers: &HashMap<String, String>,
 ) -> TaskResult {
     let mut written: u64 = 0;
     let range_end = if task.length == 0 {
@@ -54,12 +60,8 @@ pub async fn download_task(
         format!("{}", task.offset + task.length - 1)
     };
     let range_header = format!("bytes={}-{}", task.offset, range_end);
-    let mut req = client
-        .get(url)
-        .header("Range", &range_header);
-    if !user_agent.is_empty() {
-        req = req.header("User-Agent", user_agent);
-    }
+    let mut req = client.get(url).header("Range", &range_header);
+    req = apply_headers(req, headers, user_agent);
     log::info!("[ProxyDM] concurrent_task offset={} range_end={}", task.offset, range_end);
     let resp = match req.send().await {
         Ok(r) => r,
@@ -93,7 +95,15 @@ pub async fn download_task(
         return TaskResult::RangeNotSupported;
     }
     if status != reqwest::StatusCode::OK && status != reqwest::StatusCode::PARTIAL_CONTENT {
-        return TaskResult::Fatal(format!("HTTP {}", status));
+        let code = status.as_u16();
+        let msg = format!("HTTP {}", code);
+        if is_fatal_client_status(code) {
+            return TaskResult::FatalNoRetry(msg);
+        }
+        if is_retryable_status(code) {
+            return TaskResult::Fatal(msg);
+        }
+        return TaskResult::Fatal(msg);
     }
 
     let stream = resp.bytes_stream();

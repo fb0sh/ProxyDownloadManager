@@ -89,4 +89,14 @@ describe("applyFilter", () => {
     expect(result).toHaveLength(3);
     expect(result.map((d) => d.id)).toEqual([2, 3, 4]);
   });
+
+  it("filters downloading including connecting/retrying", () => {
+    const extra = [...items, makeItem({ id: 5, status: "connecting" })];
+    expect(applyFilter(extra, "downloading").map((d) => d.id)).toEqual([2, 5]);
+  });
+
+  it("searches by name", () => {
+    const extra = [makeItem({ id: 1, file_name: "movie.mp4" }), makeItem({ id: 2, file_name: "archive.zip" })];
+    expect(applyFilter(extra, "all", "movie")).toHaveLength(1);
+  });
 });

@@ -5,12 +5,20 @@ use std::sync::Mutex;
 
 /// All columns in the downloads table, in order. Used for SELECT queries and row mapping.
 const COLUMNS: &str = "id, url, file_name, save_path, total_size, downloaded, status, last_try, \
-                        created_at, proxy_name, connections, parts, resumable";
+                        created_at, proxy_name, connections, parts, resumable, headers, final_url, \
+                        content_type, etag, last_modified, rate_limit_bps, error_code, error_message, \
+                        http_status, retry_count, last_error_at";
+
+fn row_get_str(row: &rusqlite::Row, name: &str) -> String {
+    row.get::<_, String>(name).unwrap_or_default()
+}
 
 fn row_to_item(row: &rusqlite::Row) -> rusqlite::Result<DownloadItem> {
     let parts_str: String = row.get("parts")?;
     let status_str: String = row.get("status")?;
     let resumable: Option<i32> = row.get("resumable")?;
+    let headers_str: String = row.get("headers").unwrap_or_else(|_| "{}".into());
+    let http_status: Option<i64> = row.get::<_, Option<i64>>("http_status").unwrap_or(None);
 
     Ok(DownloadItem {
         id: row.get("id")?,
@@ -26,6 +34,17 @@ fn row_to_item(row: &rusqlite::Row) -> rusqlite::Result<DownloadItem> {
         resumable: resumable.map(|v| v != 0),
         created_at: row.get("created_at")?,
         last_try: row.get("last_try")?,
+        headers: serde_json::from_str(&headers_str).unwrap_or_default(),
+        final_url: row_get_str(row, "final_url"),
+        content_type: row_get_str(row, "content_type"),
+        etag: row_get_str(row, "etag"),
+        last_modified: row_get_str(row, "last_modified"),
+        rate_limit_bps: row.get("rate_limit_bps").unwrap_or(0),
+        error_code: row_get_str(row, "error_code"),
+        error_message: row_get_str(row, "error_message"),
+        http_status: http_status.map(|v| v as u16),
+        retry_count: row.get("retry_count").unwrap_or(0),
+        last_error_at: row_get_str(row, "last_error_at"),
     })
 }
 
@@ -81,6 +100,7 @@ impl Db {
             );",
         )
         .map_err(PdmError::from)?;
+        migrate_columns(&conn)?;
         Ok(())
     }
 
@@ -114,10 +134,14 @@ impl Db {
     pub fn insert_download(&self, item: &DownloadItem) -> PdmResult<()> {
         let conn = self.conn.lock().map_err(PdmError::from)?;
         let parts_str = serde_json::to_string(&item.parts).map_err(PdmError::from)?;
+        let headers_str = serde_json::to_string(&item.headers).unwrap_or_else(|_| "{}".into());
         conn.execute(
             "INSERT INTO downloads (id, url, file_name, save_path, total_size, downloaded, status, last_try,
-                                    created_at, proxy_name, connections, parts, resumable)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                                    created_at, proxy_name, connections, parts, resumable,
+                                    headers, final_url, content_type, etag, last_modified, rate_limit_bps,
+                                    error_code, error_message, http_status, retry_count, last_error_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                     ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
             params![
                 item.id,
                 item.url,
@@ -132,6 +156,17 @@ impl Db {
                 item.connections,
                 parts_str,
                 item.resumable.map(|v| if v { 1 } else { 0 }),
+                headers_str,
+                item.final_url,
+                item.content_type,
+                item.etag,
+                item.last_modified,
+                item.rate_limit_bps,
+                item.error_code,
+                item.error_message,
+                item.http_status.map(|v| v as i64),
+                item.retry_count,
+                item.last_error_at,
             ],
         )
         .map_err(PdmError::from)?;
@@ -169,7 +204,7 @@ impl Db {
         let conn = self.conn.lock().map_err(PdmError::from)?;
         let Some(part_downloaded) = part_downloaded else {
             conn.execute(
-                "UPDATE downloads SET downloaded=?1 WHERE id=?2 AND status='downloading'",
+                "UPDATE downloads SET downloaded=?1 WHERE id=?2 AND status IN ('downloading','connecting','retrying','merging')",
                 params![downloaded, id],
             )
             .map_err(PdmError::from)?;
@@ -214,7 +249,7 @@ impl Db {
         }
         let parts_str = serde_json::to_string(&parts).map_err(PdmError::from)?;
         conn.execute(
-            "UPDATE downloads SET downloaded=?1, parts=?2 WHERE id=?3 AND status='downloading'",
+            "UPDATE downloads SET downloaded=?1, parts=?2 WHERE id=?3 AND status IN ('downloading','connecting','retrying','merging')",
             params![downloaded, parts_str, id],
         )
         .map_err(PdmError::from)?;
@@ -251,7 +286,7 @@ impl Db {
         // instead of degrading through another truncate.
         conn.execute(
             "UPDATE downloads SET parts=?1, downloaded=?2, resumable=0
-             WHERE id=?3 AND (status='downloading' OR status='queued')",
+             WHERE id=?3 AND status IN ('downloading','queued','connecting','retrying','merging')",
             params![parts_str, downloaded, id],
         )
         .map_err(PdmError::from)?;
@@ -261,11 +296,15 @@ impl Db {
     pub fn update_download(&self, item: &DownloadItem) -> PdmResult<()> {
         let conn = self.conn.lock().map_err(PdmError::from)?;
         let parts_str = serde_json::to_string(&item.parts).map_err(PdmError::from)?;
+        let headers_str = serde_json::to_string(&item.headers).unwrap_or_else(|_| "{}".into());
         conn.execute(
             "UPDATE downloads SET url=?1, file_name=?2, save_path=?3, total_size=?4, downloaded=?5,
                                    status=?6, last_try=?7, created_at=?8, proxy_name=?9,
-                                   connections=?10, parts=?11, resumable=?12
-             WHERE id=?13",
+                                   connections=?10, parts=?11, resumable=?12,
+                                   headers=?13, final_url=?14, content_type=?15, etag=?16,
+                                   last_modified=?17, rate_limit_bps=?18, error_code=?19,
+                                   error_message=?20, http_status=?21, retry_count=?22, last_error_at=?23
+             WHERE id=?24",
             params![
                 item.url,
                 item.file_name,
@@ -279,6 +318,17 @@ impl Db {
                 item.connections,
                 parts_str,
                 item.resumable.map(|v| if v { 1 } else { 0 }),
+                headers_str,
+                item.final_url,
+                item.content_type,
+                item.etag,
+                item.last_modified,
+                item.rate_limit_bps,
+                item.error_code,
+                item.error_message,
+                item.http_status.map(|v| v as i64),
+                item.retry_count,
+                item.last_error_at,
                 item.id,
             ],
         )
@@ -299,6 +349,9 @@ fn parse_status(s: &str) -> DownloadStatus {
         "downloading" => DownloadStatus::Downloading,
         "paused" => DownloadStatus::Paused,
         "completed" => DownloadStatus::Completed,
+        "connecting" => DownloadStatus::Connecting,
+        "retrying" => DownloadStatus::Retrying,
+        "merging" => DownloadStatus::Merging,
         s if s.starts_with("failed") => {
             let msg = s.strip_prefix("failed:").unwrap_or("");
             DownloadStatus::Failed(msg.to_string())
@@ -314,7 +367,49 @@ fn status_to_string(s: &DownloadStatus) -> String {
         DownloadStatus::Completed => "completed".to_string(),
         DownloadStatus::Failed(msg) => format!("failed:{}", msg),
         DownloadStatus::Queued => "queued".to_string(),
+        DownloadStatus::Connecting => "connecting".to_string(),
+        DownloadStatus::Retrying => "retrying".to_string(),
+        DownloadStatus::Merging => "merging".to_string(),
     }
+}
+
+fn migrate_columns(conn: &rusqlite::Connection) -> PdmResult<()> {
+    let existing = {
+        let mut stmt = conn
+            .prepare("PRAGMA table_info(downloads)")
+            .map_err(PdmError::from)?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(PdmError::from)?;
+        let mut names = std::collections::HashSet::new();
+        for row in rows {
+            names.insert(row.map_err(PdmError::from)?);
+        }
+        names
+    };
+    let wanted = [
+        ("headers", "TEXT NOT NULL DEFAULT '{}'"),
+        ("final_url", "TEXT NOT NULL DEFAULT ''"),
+        ("content_type", "TEXT NOT NULL DEFAULT ''"),
+        ("etag", "TEXT NOT NULL DEFAULT ''"),
+        ("last_modified", "TEXT NOT NULL DEFAULT ''"),
+        ("rate_limit_bps", "INTEGER NOT NULL DEFAULT 0"),
+        ("error_code", "TEXT NOT NULL DEFAULT ''"),
+        ("error_message", "TEXT NOT NULL DEFAULT ''"),
+        ("http_status", "INTEGER"),
+        ("retry_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("last_error_at", "TEXT NOT NULL DEFAULT ''"),
+    ];
+    for (name, decl) in wanted {
+        if !existing.contains(name) {
+            conn.execute(
+                &format!("ALTER TABLE downloads ADD COLUMN {} {}", name, decl),
+                [],
+            )
+            .map_err(PdmError::from)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -343,12 +438,10 @@ mod tests {
             total_size: 1000,
             downloaded: 0,
             status: DownloadStatus::Queued,
-            parts: vec![],
-            proxy_name: "".to_string(),
             connections: 4,
             resumable: Some(true),
             created_at: "2026-01-01".to_string(),
-            last_try: "".to_string(),
+            ..Default::default()
         }
     }
 

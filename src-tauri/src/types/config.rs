@@ -1,18 +1,41 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ProxyProtocol {
     #[serde(rename = "http")]
     Http,
+    #[serde(rename = "https")]
+    Https,
     #[serde(rename = "socks5")]
     Socks5,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl Default for ProxyProtocol {
+    fn default() -> Self {
+        Self::Http
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProxyConfig {
+    #[serde(default)]
     pub protocol: ProxyProtocol,
     pub host: String,
     pub port: u16,
+    #[serde(default)]
+    pub username: String,
+    #[serde(default)]
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum FileConflictPolicy {
+    Ask,
+    #[default]
+    Rename,
+    Overwrite,
+    Skip,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,6 +56,14 @@ pub struct Settings {
     pub danger_accept_invalid_certs: bool,
     #[serde(default = "default_global_shortcut")]
     pub global_shortcut: String,
+    #[serde(default)]
+    pub file_conflict: FileConflictPolicy,
+    /// Comma-separated proxy names used as a failover group. Empty = off.
+    #[serde(default)]
+    pub proxy_group: Vec<String>,
+    /// When a proxy group is set, try a direct connection after the group fails.
+    #[serde(default)]
+    pub proxy_group_fallback_direct: bool,
 }
 
 impl Default for Settings {
@@ -55,6 +86,9 @@ impl Default for Settings {
             language: String::from("en"),
             danger_accept_invalid_certs: true,
             global_shortcut: default_global_shortcut(),
+            file_conflict: FileConflictPolicy::Rename,
+            proxy_group: Vec::new(),
+            proxy_group_fallback_direct: false,
         }
     }
 }
@@ -77,6 +111,7 @@ mod tests {
         assert_eq!(s.max_connections, 0); // default is auto
         assert!(s.max_retries > 0);
         assert!(!s.download_dir.is_empty());
+        assert_eq!(s.file_conflict, FileConflictPolicy::Rename);
     }
 
     #[test]
@@ -86,5 +121,15 @@ mod tests {
         let back: Settings = serde_json::from_str(&json).unwrap();
         assert_eq!(s.max_connections, back.max_connections);
         assert_eq!(s.max_retries, back.max_retries);
+        assert_eq!(back.file_conflict, FileConflictPolicy::Rename);
+    }
+
+    #[test]
+    fn old_proxy_json_without_auth_parses() {
+        let json = r#"{"protocol":"socks5","host":"127.0.0.1","port":1080}"#;
+        let p: ProxyConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(p.host, "127.0.0.1");
+        assert!(p.username.is_empty());
+        assert!(p.password.is_empty());
     }
 }

@@ -3,6 +3,8 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 
 const ALIGN: u64 = 4096;
+pub const MAX_CONNECTIONS: u32 = 64;
+const MIN_SPLIT: u64 = 2 * 1024 * 1024;
 
 pub fn align_up(v: u64) -> u64 {
     (v + ALIGN - 1) & !(ALIGN - 1)
@@ -56,7 +58,7 @@ pub fn plan_chunks(
     let connections = compute_connection_count(file_size, requested_connections, max_connections);
 
     let parts = if supports_range && file_size > 0 {
-        let num_conns = if connections > 0 { connections.min(32) } else { 1 };
+        let num_conns = if connections > 0 { connections.min(MAX_CONNECTIONS) } else { 1 };
         let min_chunk = 2u64 * 1024 * 1024;
         let tasks = compute_chunks(file_size, num_conns, min_chunk);
         tasks.iter().enumerate().map(|(i, t)| DownloadPart {
@@ -84,20 +86,32 @@ pub fn plan_chunks(
 }
 
 pub fn compute_connection_count(file_size: u64, requested: u32, max_connections: u32) -> u32 {
-    let max_conns = max_connections.max(1).min(32);
-
-    if requested > 0 {
-        requested.min(32)
-    } else if file_size == 0 {
-        max_conns.min(2)
-    } else if file_size < 100 * 1024 * 1024 {
-        max_conns.min(2)
-    } else if file_size < 1024 * 1024 * 1024 {
-        max_conns.min(4)
-    } else if file_size < 10u64 * 1024 * 1024 * 1024 {
-        max_conns.min(8)
+    let hard_max = if max_connections == 0 {
+        MAX_CONNECTIONS
     } else {
-        max_conns.min(16)
+        max_connections.min(MAX_CONNECTIONS).max(1)
+    };
+    if requested > 0 {
+        return requested.clamp(1, hard_max);
+    }
+    auto_connections(file_size).clamp(1, hard_max)
+}
+
+/// Initial Auto strategy. Dynamic segmentation may raise concurrency later.
+pub fn auto_connections(file_size: u64) -> u32 {
+    const MIB: u64 = 1024 * 1024;
+    if file_size == 0 {
+        2
+    } else if file_size < 2 * MIB {
+        1
+    } else if file_size < 16 * MIB {
+        4
+    } else if file_size < 128 * MIB {
+        8
+    } else if file_size < 1024 * MIB {
+        16
+    } else {
+        32
     }
 }
 
@@ -158,6 +172,55 @@ impl ChunkQueue {
         self.tasks.lock()
             .map(|t| t.iter().map(|task| task.length).sum())
             .unwrap_or(0)
+    }
+
+    /// Pop a task, splitting the largest remaining range in half when the
+    /// queue would otherwise leave idle workers with one fat tail.
+    pub fn pop_or_steal(&self) -> Option<Task> {
+        let mut tasks = self.tasks.lock().ok()?;
+        if let Some(task) = tasks.pop_front() {
+            if task.length > MIN_SPLIT * 2 && tasks.is_empty() {
+                let half = align_up(task.length / 2).min(task.length);
+                if half >= MIN_SPLIT && task.length - half >= MIN_SPLIT {
+                    tasks.push_back(Task {
+                        offset: task.offset + half,
+                        length: task.length - half,
+                    });
+                    return Some(Task {
+                        offset: task.offset,
+                        length: half,
+                    });
+                }
+            }
+            return Some(task);
+        }
+        None
+    }
+
+    /// Split the largest queued task so a newly idle worker can help.
+    pub fn split_largest(&self, min_bytes: u64) -> Option<Task> {
+        let mut tasks = self.tasks.lock().ok()?;
+        let idx = tasks
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, t)| t.length)
+            .map(|(i, t)| (i, t.length))?;
+        if idx.1 < min_bytes.max(MIN_SPLIT) * 2 {
+            return None;
+        }
+        let mut task = tasks.remove(idx.0)?;
+        let half = align_up(task.length / 2).min(task.length);
+        if half < MIN_SPLIT || task.length - half < MIN_SPLIT {
+            tasks.insert(idx.0, task);
+            return None;
+        }
+        let stolen = Task {
+            offset: task.offset + half,
+            length: task.length - half,
+        };
+        task.length = half;
+        tasks.insert(idx.0, task);
+        Some(stolen)
     }
 }
 
@@ -233,5 +296,35 @@ mod tests {
         assert!(q.pop().is_none());
         assert!(q.is_empty());
         assert_eq!(q.remaining_bytes(), 0);
+    }
+
+    #[test]
+    fn auto_connections_follows_size_buckets() {
+        assert_eq!(auto_connections(1024), 1);
+        assert_eq!(auto_connections(3 * 1024 * 1024), 4);
+        assert_eq!(auto_connections(32 * 1024 * 1024), 8);
+        assert_eq!(auto_connections(200 * 1024 * 1024), 16);
+        assert_eq!(auto_connections(2 * 1024 * 1024 * 1024), 32);
+    }
+
+    #[test]
+    fn requested_connections_honor_64() {
+        assert_eq!(compute_connection_count(10 * 1024 * 1024 * 1024, 64, 0), 64);
+        assert_eq!(compute_connection_count(10 * 1024 * 1024 * 1024, 64, 32), 32);
+        assert_eq!(compute_connection_count(1024, 0, 0), 1);
+        assert_eq!(compute_connection_count(8 * 1024 * 1024, 0, 0), 4);
+    }
+
+    #[test]
+    fn steal_splits_large_tail() {
+        let q = ChunkQueue::new(vec![Task {
+            offset: 0,
+            length: 32 * 1024 * 1024,
+        }]);
+        let first = q.pop_or_steal().unwrap();
+        assert!(first.length < 32 * 1024 * 1024);
+        assert!(!q.is_empty());
+        let total = first.length + q.remaining_bytes();
+        assert_eq!(total, 32 * 1024 * 1024);
     }
 }

@@ -1,10 +1,9 @@
 import { useState, useEffect } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { ThemeProvider, BaseStyles, Text } from "@primer/react";
 import {
-  DownloadIcon, PlugIcon, ShieldIcon,
-  BrowserIcon, PasteIcon, SyncIcon,
-} from "@primer/octicons-react";
+  Download as DownloadIcon, Plug as PlugIcon, Shield as ShieldIcon,
+  Globe as BrowserIcon, Clipboard as PasteIcon, RefreshCw as SyncIcon,
+} from "lucide-react";
 import { setLanguage } from "../src/i18n";
 import {
   usePauseDownload, useResumeDownload, useDownloads, useSettings, useRedownloadDownload,
@@ -50,7 +49,7 @@ function AppInner() {
   }, [loadedSettings]);
 
   const selectedForRedownload = selectedIds.size === 1
-    ? downloads.find(d => selectedIds.has(d.id) && (d.status === "completed" || d.status.startsWith("failed")))
+    ? downloads.find(d => selectedIds.has(d.id) && (d.status === "completed" || (typeof d.status === "object" && "failed" in d.status)))
     : undefined;
 
   return (
@@ -78,7 +77,7 @@ function AppWithProvider() {
   const [dialog, setDialog] = useState<DemoDialog>(null);
   const dialogHooks = useDialog();
   const selection = useSelection();
-  const [filter, setFilter] = useState<"all" | "completed" | "incomplete">("all");
+  const [filter, setFilter] = useState<"all" | "downloading" | "completed" | "incomplete">("all");
 
   // Bridge: useDialog provides SharedDialog actions; extend with demo-specific dialog types
   const dialogActions = {
@@ -335,12 +334,12 @@ function Page() {
                 <div style={{ color: "#1f883d", marginBottom: 12 }}>
                   <IconEl size={24} />
                 </div>
-                <Text weight="semibold" style={{ display: "block", marginBottom: 6, fontSize: 15, color: "#1f2328" }}>
+                <div style={{ display: "block", marginBottom: 6, fontSize: 15, color: "#1f2328", fontWeight: 600 }}>
                   {f.title}
-                </Text>
-                <Text size="small" style={{ color: "#656d76", lineHeight: 1.6, display: "block" }}>
+                </div>
+                <div style={{ color: "#656d76", lineHeight: 1.6, display: "block", fontSize: 13 }}>
                   {f.desc}
-                </Text>
+                </div>
               </div>
             );
           })}
@@ -355,7 +354,7 @@ function Page() {
           </h2>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center" }}>
             {[
-              ["Tauri 2", "桌面框架"], ["React 19", "前端"], ["Primer React", "UI 组件"],
+              ["Tauri 2", "桌面框架"], ["React 19", "前端"], ["shadcn/ui", "UI 组件"],
               ["Rust", "后端引擎"], ["Tokio", "异步运行时"], ["reqwest", "HTTP 客户端"],
               ["SQLite", "任务存储"], ["TypeScript", "类型安全"],
             ].map(([name, desc]) => (
@@ -406,11 +405,7 @@ function Page() {
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <ThemeProvider colorMode="day">
-        <BaseStyles>
-          <Page />
-        </BaseStyles>
-      </ThemeProvider>
+      <Page />
     </QueryClientProvider>
   );
 }

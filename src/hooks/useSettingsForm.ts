@@ -3,17 +3,19 @@ import { useSettings } from "../query/downloadQueries";
 import { tauriClient } from "../tauriClient";
 import { open } from "@tauri-apps/plugin-dialog";
 import { setLanguage } from "../i18n";
-import type { Settings } from "../types";
+import type { ProxyProtocol, Settings } from "../types";
 
 export interface ProxyForm {
   name: string;
-  protocol: "http" | "socks5";
+  protocol: ProxyProtocol;
   host: string;
   port: number;
+  username: string;
+  password: string;
 }
 
 export function emptyProxy(): ProxyForm {
-  return { name: "", protocol: "socks5", host: "127.0.0.1", port: 1080 };
+  return { name: "", protocol: "socks5", host: "127.0.0.1", port: 1080, username: "", password: "" };
 }
 
 export function useSettingsForm(onClose: () => void) {
@@ -58,13 +60,20 @@ export function useSettingsForm(onClose: () => void) {
 
   const saveProxy = () => {
     if (!settings || !newProxy.name.trim()) return;
+    const cfg = {
+      protocol: newProxy.protocol,
+      host: newProxy.host,
+      port: newProxy.port,
+      username: newProxy.username,
+      password: newProxy.password,
+    };
     if (editingProxy) {
       const { [editingProxy]: _, ...rest } = settings.proxies;
-      const newProxies = { ...rest, [newProxy.name]: { protocol: newProxy.protocol, host: newProxy.host, port: newProxy.port } };
+      const newProxies = { ...rest, [newProxy.name]: cfg };
       const newDefault = settings.default_proxy === editingProxy ? newProxy.name : settings.default_proxy;
       setSettings({ ...settings, proxies: newProxies, default_proxy: newDefault });
     } else {
-      setSettings({ ...settings, proxies: { ...settings.proxies, [newProxy.name]: { protocol: newProxy.protocol, host: newProxy.host, port: newProxy.port } } });
+      setSettings({ ...settings, proxies: { ...settings.proxies, [newProxy.name]: cfg } });
     }
     setNewProxy(emptyProxy());
     setShowProxyForm(false);
@@ -75,7 +84,14 @@ export function useSettingsForm(onClose: () => void) {
     if (!settings) return;
     const p = settings.proxies[name];
     if (!p) return;
-    setNewProxy({ name, protocol: p.protocol, host: p.host, port: p.port });
+    setNewProxy({
+      name,
+      protocol: p.protocol,
+      host: p.host,
+      port: p.port,
+      username: p.username || "",
+      password: p.password || "",
+    });
     setEditingProxy(name);
     setShowProxyForm(true);
   };

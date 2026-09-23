@@ -3,10 +3,16 @@ use crate::network::pool::NetworkPool;
 use std::collections::HashMap;
 use std::error::Error;
 
+#[derive(Debug)]
 pub struct ProbeResult {
     pub supports_range: bool,
     pub file_size: u64,
     pub file_name: String,
+    pub content_type: String,
+    pub etag: String,
+    pub last_modified: String,
+    pub final_url: String,
+    pub is_hls: bool,
 }
 
 pub async fn probe(
@@ -28,12 +34,7 @@ pub async fn probe(
         let mut range_req = client.get(url);
         range_req = range_req.header("Range", "bytes=0-0");
         range_req = range_req.timeout(std::time::Duration::from_secs(30));
-        for (k, v) in headers {
-            range_req = range_req.header(k.as_str(), v.as_str());
-        }
-        if !ua.is_empty() {
-            range_req = range_req.header("User-Agent", ua.as_str());
-        }
+        range_req = crate::headers::apply_headers(range_req, headers, ua);
 
         let resp = range_req.send().await;
         let resp = match resp {
@@ -69,12 +70,9 @@ pub async fn probe(
                 .and_then(|s| s.parse::<u64>().ok())
                 .unwrap_or(0)
         } else if status == reqwest::StatusCode::FORBIDDEN || status == reqwest::StatusCode::METHOD_NOT_ALLOWED {
-            // Try fallback GET without Range (no UA switch yet, skip to next UA on retry)
             let mut get_req = client.get(url);
             get_req = get_req.timeout(std::time::Duration::from_secs(30));
-            if !ua.is_empty() {
-                get_req = get_req.header("User-Agent", ua.as_str());
-            }
+            get_req = crate::headers::apply_headers(get_req, headers, ua);
             match get_req.send().await {
                 Ok(r2) if r2.status().is_success() => {
                     r2.headers().get("content-length")
@@ -82,16 +80,46 @@ pub async fn probe(
                         .and_then(|s| s.parse::<u64>().ok())
                         .unwrap_or(0)
                 }
-                _ => continue, // try next UA
+                Ok(r2) if crate::retry::is_fatal_client_status(r2.status().as_u16()) => {
+                    return Err(PdmError::Http(r2.status().as_u16()));
+                }
+                _ => continue,
             }
+        } else if crate::retry::is_fatal_client_status(status.as_u16()) {
+            return Err(PdmError::Http(status.as_u16()));
         } else {
             return Err(PdmError::Probe(format!("HTTP {}", status)));
         };
 
-        // Detect filename from Content-Disposition or URL
-        let cd_header = resp.headers().get("content-disposition")
-            .and_then(|v| v.to_str().ok());
-        let file_name = crate::filename::extract_filename(url, cd_header)
+        let content_type = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let etag = resp
+            .headers()
+            .get("etag")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let last_modified = resp
+            .headers()
+            .get("last-modified")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let cd_owned = resp
+            .headers()
+            .get("content-disposition")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        let final_url = resp.url().to_string();
+        let is_hls = content_type.contains("mpegurl")
+            || content_type.contains("x-mpegURL")
+            || url.contains(".m3u8");
+
+        let file_name = crate::filename::extract_filename(url, cd_owned.as_deref())
             .unwrap_or_else(|| "download".to_string());
 
         log::info!("[ProxyDM] probe SUCCESS ua#{} range={} size={} name={}", i, supports_range, file_size, file_name);
@@ -99,6 +127,11 @@ pub async fn probe(
             supports_range,
             file_size,
             file_name,
+            content_type,
+            etag,
+            last_modified,
+            final_url,
+            is_hls,
         });
     }
 
@@ -111,10 +144,16 @@ pub async fn probe(
 }
 
 /// Probe result with filename override applied.
+#[derive(Default)]
 pub struct ProbeOutcome {
     pub file_name: String,
     pub file_size: u64,
     pub supports_range: bool,
+    pub content_type: String,
+    pub etag: String,
+    pub last_modified: String,
+    pub final_url: String,
+    pub is_hls: bool,
 }
 
 /// Probe with fallback: on failure, derive filename from URL.
@@ -135,9 +174,14 @@ pub async fn probe_with_fallback(
                 file_name: crate::filename::sanitize(&name),
                 file_size: r.file_size,
                 supports_range: r.supports_range,
+                content_type: r.content_type,
+                etag: r.etag,
+                last_modified: r.last_modified,
+                final_url: r.final_url,
+                is_hls: r.is_hls,
             }
         }
-        Err(e) => {
+        Err(_e) => {
             let name = if filename_override.is_empty() {
                 crate::filename::from_url(url).unwrap_or_else(|| "download".to_string())
             } else {
@@ -147,6 +191,7 @@ pub async fn probe_with_fallback(
                 file_name: crate::filename::sanitize(&name),
                 file_size: 0,
                 supports_range: false,
+                ..Default::default()
             }
         }
     }
@@ -206,6 +251,7 @@ mod tests {
             file_name: "report.pdf".to_string(),
             file_size: 4096,
             supports_range: true,
+            ..Default::default()
         };
         assert_eq!(outcome.file_name, "report.pdf");
         assert_eq!(outcome.file_size, 4096);
@@ -218,6 +264,7 @@ mod tests {
             file_name: "download".to_string(),
             file_size: 0,
             supports_range: false,
+            ..Default::default()
         };
         assert_eq!(outcome.file_name, "download");
         assert_eq!(outcome.file_size, 0);
@@ -339,5 +386,86 @@ mod tests {
         );
         assert_eq!(outcome.file_name, expected);
         assert_eq!(outcome.file_size, 512);
+    }
+
+    async fn spawn_guarded_server(need_header: &str, need_value: &str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let need_header = need_header.to_string();
+        let need_value = need_value.to_string();
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = match listener.accept().await {
+                    Ok(c) => c,
+                    Err(_) => return,
+                };
+                let mut buf = vec![0u8; 4096];
+                let mut total = Vec::new();
+                loop {
+                    let n = stream.read(&mut buf).await.unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    total.extend_from_slice(&buf[..n]);
+                    if total.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let req = String::from_utf8_lossy(&total);
+                let ok = req.lines().any(|l| {
+                    l.to_ascii_lowercase()
+                        .starts_with(&need_header.to_ascii_lowercase())
+                        && l.contains(&need_value)
+                });
+                let body = if ok {
+                    "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-0/2048\r\nContent-Length: 1\r\nContent-Disposition: attachment; filename=secret.bin\r\n\r\nX"
+                } else {
+                    "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n"
+                };
+                let _ = stream.write_all(body.as_bytes()).await;
+            }
+        });
+        format!("http://{}/secret.bin", addr)
+    }
+
+    #[tokio::test]
+    async fn probe_cookie_protected() {
+        let url = spawn_guarded_server("Cookie:", "sid=abc").await;
+        let pool = Arc::new(NetworkPool::new(false));
+        let mut headers = HashMap::new();
+        headers.insert("Cookie".into(), "sid=abc".into());
+        let r = probe(&url, &headers, None, &pool, &["ua".into()]).await.unwrap();
+        assert_eq!(r.file_size, 2048);
+        assert!(r.supports_range);
+    }
+
+    #[tokio::test]
+    async fn probe_referer_protected() {
+        let url = spawn_guarded_server("Referer:", "https://app.example/").await;
+        let pool = Arc::new(NetworkPool::new(false));
+        let mut headers = HashMap::new();
+        headers.insert("Referer".into(), "https://app.example/".into());
+        let r = probe(&url, &headers, None, &pool, &["ua".into()]).await.unwrap();
+        assert_eq!(r.file_name, "secret.bin");
+    }
+
+    #[tokio::test]
+    async fn probe_authorization_protected() {
+        let url = spawn_guarded_server("Authorization:", "Bearer tok").await;
+        let pool = Arc::new(NetworkPool::new(false));
+        let mut headers = HashMap::new();
+        headers.insert("Authorization".into(), "Bearer tok".into());
+        let r = probe(&url, &headers, None, &pool, &["ua".into()]).await.unwrap();
+        assert!(r.supports_range);
+    }
+
+    #[tokio::test]
+    async fn probe_missing_auth_is_http_error() {
+        let url = spawn_guarded_server("Authorization:", "Bearer tok").await;
+        let pool = Arc::new(NetworkPool::new(false));
+        let headers = HashMap::new();
+        let err = probe(&url, &headers, None, &pool, &["ua".into()]).await.unwrap_err();
+        assert!(matches!(err, PdmError::Http(403) | PdmError::Probe(_)));
     }
 }

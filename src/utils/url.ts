@@ -53,8 +53,42 @@ export function extractFilename(url: string): string {
   return "";
 }
 
-export function applyFilter(items: DownloadItem[], f: "all" | "completed" | "incomplete") {
-  if (f === "all") return items;
-  if (f === "completed") return items.filter((d) => d.status === "completed");
-  return items.filter((d) => d.status === "downloading" || d.status === "paused" || d.status === "queued");
+export type StatusFilter = "all" | "downloading" | "completed" | "incomplete";
+export type TypeFilter = "all" | "archive" | "video" | "audio" | "document" | "other";
+
+const TYPE_EXTS: Record<Exclude<TypeFilter, "all" | "other">, string[]> = {
+  archive: [".zip", ".tar", ".gz", ".7z", ".rar", ".iso", ".bz2", ".xz"],
+  video: [".mp4", ".mkv", ".avi", ".mov", ".webm", ".ts", ".m3u8"],
+  audio: [".mp3", ".flac", ".aac", ".wav", ".ogg", ".m4a"],
+  document: [".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".txt"],
+};
+
+export function fileTypeOf(name: string): TypeFilter {
+  const lower = name.toLowerCase();
+  for (const [kind, exts] of Object.entries(TYPE_EXTS) as [Exclude<TypeFilter, "all" | "other">, string[]][]) {
+    if (exts.some((e) => lower.endsWith(e))) return kind;
+  }
+  return "other";
+}
+
+export function applyFilter(
+  items: DownloadItem[],
+  f: StatusFilter,
+  query = "",
+  type: TypeFilter = "all",
+) {
+  let next = items;
+  if (f === "completed") next = next.filter((d) => d.status === "completed");
+  else if (f === "downloading") {
+    next = next.filter((d) => {
+      const s = typeof d.status === "string" ? d.status : "failed";
+      return s === "downloading" || s === "connecting" || s === "retrying" || s === "merging";
+    });
+  } else if (f === "incomplete") {
+    next = next.filter((d) => d.status !== "completed");
+  }
+  if (type !== "all") next = next.filter((d) => fileTypeOf(d.file_name) === type);
+  const q = query.trim().toLowerCase();
+  if (q) next = next.filter((d) => d.file_name.toLowerCase().includes(q) || d.url.toLowerCase().includes(q));
+  return next;
 }

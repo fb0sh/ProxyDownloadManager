@@ -55,6 +55,8 @@ mod tests {
             protocol: crate::types::ProxyProtocol::Socks5,
             host: "127.0.0.1".to_string(),
             port: 1080,
+            username: String::new(),
+            password: String::new(),
         });
 
         let toml_str = toml::to_string(&s).unwrap();

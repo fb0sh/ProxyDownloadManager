@@ -90,7 +90,7 @@ function useActions(dialogActs: DialogActionTypes, selectActs: SelectionActions,
 export default function App() {
   const dialog = useDialog();
   const selection = useSelection();
-  const [filter, setFilter] = useState<"all" | "completed" | "incomplete">("all");
+  const [filter, setFilter] = useState<"all" | "downloading" | "completed" | "incomplete">("all");
 
   const actions = useActions(dialog, selection, selection.selectedIds);
 

@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { Button, TextInput } from "@primer/react";
-import { Dialog } from "@primer/react/experimental";
 import { t } from "../../i18n";
 import { useStartDownload } from "../../query/downloadQueries";
+import { AppDialog } from "../ui/dialog";
+import { Button } from "../ui/button";
+import { Input } from "../ui/input";
 
 interface NewDownloadDialogProps {
   onClose: () => void;
@@ -26,22 +27,19 @@ export default function NewDownloadDialog({ onClose, initialUrl = "" }: NewDownl
   };
 
   return (
-    <Dialog onClose={onClose} title={t("newDownload.title")}>
-      <Dialog.Body>
-        <TextInput
-          block
+    <AppDialog title={t("newDownload.title")} onClose={onClose}>
+      <div className="flex flex-col gap-3 p-3">
+        <Input
           placeholder="https://example.com/file.zip"
           value={url}
           onChange={(e) => setUrl(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") handleStart(); }}
         />
-      </Dialog.Body>
-      <Dialog.Footer>
-        <Button onClick={onClose}>Cancel</Button>
-        <Button variant="primary" onClick={handleStart} disabled={!url.trim()}>
-          {t("newDownload.start")}
-        </Button>
-      </Dialog.Footer>
-    </Dialog>
+        <div className="flex justify-end gap-2">
+          <Button onClick={onClose}>{t("newDownload.cancel")}</Button>
+          <Button variant="default" onClick={handleStart} disabled={!url.trim()}>{t("newDownload.download")}</Button>
+        </div>
+      </div>
+    </AppDialog>
   );
 }

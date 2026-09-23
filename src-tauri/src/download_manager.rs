@@ -142,6 +142,9 @@ impl DownloadManager {
         save_path: String,
         proxy_name: String,
         connections: u32,
+        headers: std::collections::HashMap<String, String>,
+        rate_limit_bps: u64,
+        start_paused: bool,
     ) -> PdmResult<u64> {
         self.log_info(&format!("Download start url={} proxy={}", url, proxy_name));
         self.execute_download(DownloadSpec {
@@ -150,6 +153,9 @@ impl DownloadManager {
             save_path,
             proxy_name,
             connections,
+            headers,
+            rate_limit_bps,
+            start_paused,
         })
         .await
     }
@@ -173,6 +179,9 @@ impl DownloadManager {
             save_path: save_dir,
             proxy_name: existing.proxy_name,
             connections: existing.connections,
+            headers: existing.headers,
+            rate_limit_bps: existing.rate_limit_bps,
+            start_paused: false,
         })
         .await
     }
@@ -282,10 +291,114 @@ impl DownloadManager {
         );
     }
 
+    pub async fn probe_url(
+        &self,
+        url: String,
+        headers: std::collections::HashMap<String, String>,
+        proxy_name: String,
+    ) -> PdmResult<ProbeInfo> {
+        let pool = self.worker_pool.pool_ref();
+        let headers = crate::headers::filter_headers(&headers);
+        let proxy_url = self.settings.resolve_proxy_url(&proxy_name);
+        let settings = self.settings.get();
+        let user_agents = self.settings.build_user_agents();
+        let result = crate::probe::probe(&url, &headers, proxy_url.as_deref(), &pool, &user_agents).await?;
+        let suggested = crate::engine::chunk::compute_connection_count(
+            result.file_size,
+            0,
+            settings.max_connections,
+        );
+        let mut info = ProbeInfo {
+            url: url.clone(),
+            final_url: result.final_url,
+            file_name: result.file_name,
+            file_size: result.file_size,
+            content_type: result.content_type.clone(),
+            supports_range: result.supports_range,
+            etag: result.etag,
+            last_modified: result.last_modified,
+            suggested_connections: suggested,
+            is_hls: result.is_hls,
+            hls_variants: vec![],
+        };
+        if result.is_hls {
+            if let Ok(text) = crate::engine::hls::fetch_text(
+                &url,
+                &headers,
+                proxy_url.as_deref(),
+                pool.as_ref(),
+                &settings.user_agent,
+            )
+            .await
+            {
+                if let Ok(p) = crate::engine::hls::parse_playlist(&text, &url) {
+                    info.hls_variants = p.variants;
+                    if p.drm {
+                        return Err(PdmError::Unsupported(
+                            "DRM-protected HLS is not supported".into(),
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(info)
+    }
+
+    pub async fn set_runtime_connections(&self, id: u64, connections: u32) -> PdmResult<()> {
+        let n = connections.min(crate::engine::chunk::MAX_CONNECTIONS).max(1);
+        self.ledger.update_connections(id, n)?;
+        let _ = self.worker_pool.set_connections(id, n).await;
+        Ok(())
+    }
+
+    pub async fn set_runtime_rate_limit(&self, id: u64, rate_limit_bps: u64) -> PdmResult<()> {
+        self.ledger.update_rate_limit(id, rate_limit_bps)?;
+        let _ = self.worker_pool.set_download_rate_limit(id, rate_limit_bps).await;
+        Ok(())
+    }
+
+    pub fn set_global_rate_limit(&self, bps: u64) {
+        self.worker_pool.set_global_rate_limit(bps);
+    }
+
+    pub async fn refresh_url(
+        &self,
+        id: u64,
+        new_url: String,
+        headers: std::collections::HashMap<String, String>,
+    ) -> PdmResult<()> {
+        let headers = crate::headers::filter_headers(&headers);
+        let existing = self
+            .ledger
+            .get_item(id)?
+            .ok_or(PdmError::NotFound(id))?;
+        let pool = self.worker_pool.pool_ref();
+        let proxy_url = self.settings.resolve_proxy_url(&existing.proxy_name);
+        let user_agents = self.settings.build_user_agents();
+        let probed = crate::probe::probe(
+            &new_url,
+            &headers,
+            proxy_url.as_deref(),
+            &pool,
+            &user_agents,
+        )
+        .await?;
+        self.ledger.refresh_source(
+            id,
+            new_url,
+            headers,
+            probed.etag,
+            probed.last_modified,
+            probed.content_type,
+            probed.file_size,
+        )?;
+        Ok(())
+    }
+
     // ── Shared pipeline: probe → plan chunks → disk check → DB insert → spawn worker. ──
     async fn execute_download(&self, spec: DownloadSpec) -> PdmResult<u64> {
         let pool = self.worker_pool.pool_ref();
-        let headers = std::collections::HashMap::new();
+        let headers = crate::headers::filter_headers(&spec.headers);
         let proxy_url_str = self.settings.resolve_proxy_url(&spec.proxy_name);
         let proxy_opt = proxy_url_str.as_deref();
         let settings = self.settings.get();
@@ -317,16 +430,29 @@ impl DownloadManager {
             ));
         }
 
-        let max_conns = settings.max_connections.max(1).min(32);
-        let connections =
-            crate::engine::chunk::compute_connection_count(file_size, spec.connections, max_conns);
+        let connections = crate::engine::chunk::compute_connection_count(
+            file_size,
+            spec.connections,
+            settings.max_connections,
+        );
 
         let save_dir = if spec.save_path.is_empty() {
-            settings.download_dir
+            settings.download_dir.clone()
         } else {
-            spec.save_path
+            spec.save_path.clone()
         };
-        let full_path = unique_filename(&save_dir, &file_name);
+        let candidate = std::path::Path::new(&save_dir).join(&file_name);
+        let candidate_str = candidate.to_string_lossy().to_string();
+
+        if let Some(dup) = self.ledger.find_active_duplicate(&spec.url, &candidate_str)? {
+            return Err(PdmError::DuplicateDownload(dup));
+        }
+
+        let full_path = apply_conflict_policy(
+            &save_dir,
+            &file_name,
+            settings.file_conflict,
+        )?;
 
         crate::engine::chunk::check_disk_space(&full_path, file_size)?;
 
@@ -334,26 +460,49 @@ impl DownloadManager {
         let plan = crate::engine::chunk::plan_chunks(
             file_size,
             connections,
-            supports_range,
+            supports_range && !outcome.is_hls,
             settings.max_connections,
         );
 
         let item = DownloadItem {
             id,
-            url: spec.url,
+            url: spec.url.clone(),
             file_name,
             save_path: full_path,
             total_size: file_size,
             downloaded: 0,
-            status: DownloadStatus::Downloading,
+            status: if spec.start_paused {
+                DownloadStatus::Paused
+            } else {
+                DownloadStatus::Connecting
+            },
             parts: plan.parts,
             proxy_name: spec.proxy_name,
             connections,
             resumable: Some(supports_range),
             created_at: now_str(),
             last_try: String::new(),
+            headers,
+            final_url: if outcome.final_url.is_empty() {
+                spec.url
+            } else {
+                outcome.final_url
+            },
+            content_type: outcome.content_type,
+            etag: outcome.etag,
+            last_modified: outcome.last_modified,
+            rate_limit_bps: spec.rate_limit_bps,
+            ..Default::default()
         };
         self.ledger.insert_item(&item)?;
+
+        if spec.start_paused {
+            return Ok(id);
+        }
+
+        if outcome.is_hls {
+            return self.spawn_hls(item, proxy_url_str).await;
+        }
 
         let cfg = item.to_engine_config(
             &proxy_url_str.unwrap_or_default(),
@@ -361,15 +510,89 @@ impl DownloadManager {
             settings.global_rate_limit,
             settings.max_retries,
         );
-        if let Admission::Queued = self
-            .worker_pool
-            .add_with_id(cfg, id, self.make_hooks())
-            .await?
-        {
-            self.ledger.mark_queued(id);
+        match self.worker_pool.add_with_id(cfg, id, self.make_hooks()).await? {
+            Admission::Queued => self.ledger.mark_queued(id),
+            Admission::Started => {}
         }
 
         Ok(id)
+    }
+
+    async fn spawn_hls(&self, item: DownloadItem, proxy_url: Option<String>) -> PdmResult<u64> {
+        let id = item.id;
+        let pool = self.worker_pool.pool_ref();
+        let headers = item.headers.clone();
+        let save_path = item.save_path.clone();
+        let url = if item.final_url.is_empty() {
+            item.url.clone()
+        } else {
+            item.final_url.clone()
+        };
+        let ua = self.settings.get().user_agent;
+        let conns = item.connections.max(1);
+        let ledger = self.ledger.clone();
+        let bus = self.bus.clone();
+        tauri::async_runtime::spawn(async move {
+            ledger.on_started(id);
+            let result = crate::engine::hls::download_hls(
+                &url,
+                &save_path,
+                &headers,
+                proxy_url.as_deref(),
+                pool.as_ref(),
+                &ua,
+                conns,
+                |done, total| {
+                    let _ = done;
+                    let _ = total;
+                },
+            )
+            .await;
+            match result {
+                Ok(()) => {
+                    ledger.on_completed(id);
+                    bus.emit(
+                        crate::event_bus::FrontendEvent::DownloadCompleted,
+                        serde_json::json!({ "id": id, "file_name": item.file_name }),
+                    );
+                }
+                Err(e) => {
+                    ledger.on_error(id, e.to_string());
+                    bus.emit(
+                        crate::event_bus::FrontendEvent::DownloadError,
+                        serde_json::json!({ "id": id, "url": url, "message": e.to_string() }),
+                    );
+                }
+            }
+        });
+        Ok(id)
+    }
+}
+
+pub fn apply_conflict_policy(
+    dir: &str,
+    filename: &str,
+    policy: crate::types::FileConflictPolicy,
+) -> PdmResult<String> {
+    let trimmed = dir.trim_end_matches(['/', '\\']);
+    let dir = if trimmed.is_empty() || trimmed.ends_with(':') {
+        dir
+    } else {
+        trimmed
+    };
+    let dir_path = std::path::Path::new(dir);
+    let candidate = dir_path.join(filename);
+    if !candidate.exists() {
+        return Ok(candidate.to_string_lossy().to_string());
+    }
+    match policy {
+        crate::types::FileConflictPolicy::Rename => Ok(unique_filename(dir, filename)),
+        crate::types::FileConflictPolicy::Overwrite => {
+            Ok(candidate.to_string_lossy().to_string())
+        }
+        crate::types::FileConflictPolicy::Skip | crate::types::FileConflictPolicy::Ask => {
+            Err(PdmError::FileExists(candidate.to_string_lossy().to_string()))
+        }
     }
 }
 
@@ -408,6 +631,9 @@ struct DownloadSpec {
     save_path: String,
     proxy_name: String,
     connections: u32,
+    headers: std::collections::HashMap<String, String>,
+    rate_limit_bps: u64,
+    start_paused: bool,
 }
 
 #[cfg(test)]
@@ -420,6 +646,36 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         let result = unique_filename(dir.to_str().unwrap(), "test.zip");
         assert!(result.ends_with("test.zip"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn conflict_rename_adds_number() {
+        let dir = std::env::temp_dir().join("pdm_test_unique_2");
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(dir.join("test.zip"), b"x").unwrap();
+        let result = apply_conflict_policy(
+            dir.to_str().unwrap(),
+            "test.zip",
+            crate::types::FileConflictPolicy::Rename,
+        )
+        .unwrap();
+        assert!(result.ends_with("test.1.zip"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn conflict_ask_errors() {
+        let dir = std::env::temp_dir().join("pdm_test_unique_3");
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(dir.join("test.zip"), b"x").unwrap();
+        let err = apply_conflict_policy(
+            dir.to_str().unwrap(),
+            "test.zip",
+            crate::types::FileConflictPolicy::Ask,
+        )
+        .unwrap_err();
+        assert!(matches!(err, PdmError::FileExists(_)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

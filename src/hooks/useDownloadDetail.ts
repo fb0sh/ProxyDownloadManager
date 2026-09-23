@@ -30,7 +30,7 @@ export function detailControls(
 ): DetailControls {
   return {
     busy: pending !== null,
-    showPause: status === "downloading" || pending === "pause",
+    showPause: status === "downloading" || status === "connecting" || status === "retrying" || status === "merging" || pending === "pause",
     showResume: status === "paused" || status === "queued" || pending === "resume",
     showOpen: status === "completed" || pending === "openFile" || pending === "openFolder",
   };

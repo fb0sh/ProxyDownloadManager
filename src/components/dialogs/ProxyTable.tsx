@@ -1,7 +1,10 @@
-import { Button, FormControl, Select, TextInput } from "@primer/react";
 import { t } from "../../i18n";
 import type { Settings } from "../../types";
 import type { ProxyForm } from "../../hooks/useSettingsForm";
+import { Button } from "../ui/button";
+import { Input } from "../ui/input";
+import { Select } from "../ui/select";
+import { Label } from "../ui/label";
 
 interface ProxyTableProps {
   settings: Settings;
@@ -22,70 +25,70 @@ export default function ProxyTable({
   editingProxy, testResults, onTestProxy, onSaveProxy, onStartEdit, onRemove,
 }: ProxyTableProps) {
   return (
-    <div style={{ border: "1px solid var(--borderColor-muted, #d8dee4)", borderRadius: 6, overflow: "hidden" }}>
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-        <thead>
-          <tr style={{ borderBottom: "2px solid var(--borderColor-muted, #d8dee4)", background: "var(--bgColor-subtle, #f6f8fa)" }}>
-            <th style={{ textAlign: "left", padding: "6px 12px", fontWeight: 600, fontSize: 12, color: "var(--fgColor-muted, #656d76)" }}>{t("settings.name")}</th>
-            <th style={{ textAlign: "left", padding: "6px 12px", fontWeight: 600, fontSize: 12, color: "var(--fgColor-muted, #656d76)" }}>{t("settings.type")}</th>
-            <th style={{ textAlign: "left", padding: "6px 12px", fontWeight: 600, fontSize: 12, color: "var(--fgColor-muted, #656d76)" }}>{t("settings.hostPort")}</th>
-            <th style={{ width: 200 }} />
+    <div className="overflow-hidden rounded-md border border-border">
+      <table className="w-full text-[13px]">
+        <thead className="bg-muted text-left text-[11px] text-muted-foreground">
+          <tr>
+            <th className="px-3 py-1.5">{t("settings.name")}</th>
+            <th className="px-3 py-1.5">{t("settings.type")}</th>
+            <th className="px-3 py-1.5">{t("settings.hostPort")}</th>
+            <th className="px-3 py-1.5">{t("settings.username")}</th>
+            <th />
           </tr>
         </thead>
         <tbody>
           {Object.entries(settings.proxies).map(([name, proxy]) => {
             const tr = testResults[name];
             return (
-              <tr key={name} style={{ borderBottom: "1px solid var(--borderColor-muted, #d8dee4)" }}>
-                <td style={{ padding: "8px 12px", fontWeight: 600, fontSize: 13 }}>{name}</td>
-                <td style={{ padding: "8px 12px", fontSize: 13, color: "var(--fgColor-muted, #656d76)" }}>{proxy.protocol.toUpperCase()}</td>
-                <td style={{ padding: "8px 12px", fontSize: 13, fontFamily: "ui-monospace, SFMono-Regular, monospace" }}>{proxy.host}:{proxy.port}</td>
-                <td style={{ padding: "6px 8px", display: "flex", gap: 6, alignItems: "center" }}>
-                  <Button size="small" onClick={() => onStartEdit(name)}>{t("settings.edit")}</Button>
-                  <Button size="small" onClick={() => onTestProxy(name)} disabled={tr === null}>
-                    {tr === null ? "..." : t("settings.test")}
-                  </Button>
-                  <Button size="small" onClick={() => onRemove(name)}>{t("settings.remove")}</Button>
-                  {tr && tr !== null && (
-                    <span style={{ fontSize: 11, color: tr.ok ? "var(--fgColor-success, #1a7f37)" : "var(--fgColor-danger, #cf222e)", whiteSpace: "nowrap" }}>
-                      {tr.ok ? `${tr.latency_ms}ms` : (tr.error ? tr.error.slice(0, 30) : "FAIL")}
-                    </span>
-                  )}
+              <tr key={name} className="border-t border-border">
+                <td className="px-3 py-1.5 font-medium">{name}</td>
+                <td className="px-3 py-1.5 uppercase text-muted-foreground">{proxy.protocol}</td>
+                <td className="px-3 py-1.5 font-mono">{proxy.host}:{proxy.port}</td>
+                <td className="px-3 py-1.5">{proxy.username ? "••••" : "—"}</td>
+                <td className="px-2 py-1">
+                  <div className="flex items-center gap-1">
+                    <Button size="sm" onClick={() => onStartEdit(name)}>{t("settings.edit")}</Button>
+                    <Button size="sm" onClick={() => onTestProxy(name)}>{tr === null ? "…" : t("settings.test")}</Button>
+                    <Button size="sm" onClick={() => onRemove(name)}>{t("settings.remove")}</Button>
+                    {tr && (
+                      <span className={tr.ok ? "text-[11px] text-success" : "text-[11px] text-destructive"}>
+                        {tr.ok ? `${tr.latency_ms}ms` : (tr.error ? tr.error.slice(0, 24) : "FAIL")}
+                      </span>
+                    )}
+                  </div>
                 </td>
               </tr>
             );
           })}
           {Object.keys(settings.proxies).length === 0 && (
-            <tr><td colSpan={4} style={{ padding: 16, textAlign: "center", color: "var(--fgColor-muted, #656d76)", fontSize: 13 }}>{t("settings.noProxy")}</td></tr>
+            <tr><td colSpan={5} className="p-4 text-center text-muted-foreground">{t("settings.noProxy")}</td></tr>
           )}
         </tbody>
       </table>
-
       {showProxyForm ? (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: 12, border: "1px solid var(--borderColor-default, #d0d7de)", borderRadius: 6, background: "var(--bgColor-subtle, #f6f8fa)" }}>
-          <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
-            <div style={{ flex: "0 0 130px" }}>
-              <FormControl><FormControl.Label>{t("settings.name")}</FormControl.Label><TextInput value={newProxy.name} onChange={(e) => setNewProxy({ ...newProxy, name: e.target.value })} placeholder="my-proxy" block /></FormControl>
-            </div>
-            <div style={{ flex: "0 0 110px" }}>
-              <FormControl><FormControl.Label>{t("settings.type")}</FormControl.Label><Select value={newProxy.protocol} onChange={(e) => setNewProxy({ ...newProxy, protocol: e.target.value as "http" | "socks5" })}><Select.Option value="socks5">SOCKS5</Select.Option><Select.Option value="http">HTTP</Select.Option></Select></FormControl>
-            </div>
-            <div style={{ flex: 1 }}>
-              <FormControl><FormControl.Label>Host</FormControl.Label><TextInput value={newProxy.host} onChange={(e) => setNewProxy({ ...newProxy, host: e.target.value })} placeholder="127.0.0.1" block /></FormControl>
-            </div>
-            <div style={{ flex: "0 0 90px" }}>
-              <FormControl><FormControl.Label>Port</FormControl.Label><TextInput type="number" value={String(newProxy.port)} onChange={(e) => setNewProxy({ ...newProxy, port: Number(e.target.value) })} min={1} max={65535} block /></FormControl>
-            </div>
+        <div className="grid grid-cols-2 gap-2 border-t border-border bg-muted p-3">
+          <div><Label>{t("settings.name")}</Label><Input value={newProxy.name} onChange={(e) => setNewProxy({ ...newProxy, name: e.target.value })} /></div>
+          <div>
+            <Label>{t("settings.type")}</Label>
+            <Select value={newProxy.protocol} onChange={(e) => setNewProxy({ ...newProxy, protocol: e.target.value as ProxyForm["protocol"] })}>
+              <option value="socks5">SOCKS5</option>
+              <option value="http">HTTP</option>
+              <option value="https">HTTPS</option>
+            </Select>
           </div>
-          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-            <Button size="small" onClick={() => { setShowProxyForm(false); }}>{t("settings.cancel")}</Button>
-            <Button size="small" variant="primary" onClick={onSaveProxy} disabled={!newProxy.name.trim()}>
-              {editingProxy ? t("settings.updateProxy") : t("settings.addProxy")}
-            </Button>
+          <div><Label>Host</Label><Input value={newProxy.host} onChange={(e) => setNewProxy({ ...newProxy, host: e.target.value })} /></div>
+          <div><Label>Port</Label><Input type="number" value={String(newProxy.port)} onChange={(e) => setNewProxy({ ...newProxy, port: Number(e.target.value) })} /></div>
+          <div><Label>{t("settings.username")}</Label><Input value={newProxy.username} onChange={(e) => setNewProxy({ ...newProxy, username: e.target.value })} /></div>
+          <div><Label>{t("settings.password")}</Label><Input type="password" value={newProxy.password} onChange={(e) => setNewProxy({ ...newProxy, password: e.target.value })} /></div>
+          <div className="col-span-2 flex justify-end gap-2">
+            <Button onClick={() => setShowProxyForm(false)}>{t("settings.cancel")}</Button>
+            <Button variant="default" onClick={onSaveProxy}>{editingProxy ? t("settings.updateProxy") : t("settings.addProxy")}</Button>
           </div>
         </div>
       ) : (
-        <Button onClick={() => setShowProxyForm(true)}>{t("settings.addProxy")}</Button>
+        <div className="border-t border-border p-2">
+          <Button size="sm" onClick={() => setShowProxyForm(true)}>{t("settings.addProxy")}</Button>
+        </div>
       )}
     </div>
   );

@@ -40,7 +40,7 @@ export function useDownloadEvents({ queryClient }: DownloadEventsOptions) {
 
   useEffect(() => {
     return subscribeDownloadEvents(queryClient, {
-      onBrowserDownloadUrl: (url) => openNewDownload(url),
+      onBrowserDownloadUrl: (payload) => openNewDownload(payload),
       onCreated: async () => {
         try {
           const mainWin = await WebviewWindow.getByLabel("main");

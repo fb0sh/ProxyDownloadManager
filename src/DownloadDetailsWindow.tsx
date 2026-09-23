@@ -1,242 +1,112 @@
 import { useEffect, useState } from "react";
-import { Text, Label, Button } from "@primer/react";
-import { CopyIcon } from "@primer/octicons-react";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { formatBytes } from "./utils/format";
-import { formatTimestamp, statusColor, statusString } from "./utils/download";
+import { formatBytes, formatRateLimit, statusColor, statusString } from "./utils/format";
 import { useDownloadDetail, useDownloadIdFromUrl } from "./hooks/useDownloadDetail";
 import { useDownloadSpeed } from "./hooks/useDownloadSpeed";
 import { useSettings } from "./query/downloadQueries";
 import ProgressMap from "./components/ProgressMap";
 import { overallPercent } from "./utils/progressMap";
 import { setLanguage, t } from "./i18n";
-
-const card: React.CSSProperties = {
-  border: "1px solid var(--borderColor-muted, #d8dee4)", borderRadius: 6,
-};
-const hdr: React.CSSProperties = {
-  padding: "5px 10px", fontSize: 11, fontWeight: 600,
-  color: "var(--fgColor-muted, #656d76)",
-  borderBottom: "1px solid var(--borderColor-muted, #d8dee4)",
-  background: "var(--bgColor-subtle, #f6f8fa)",
-  textTransform: "uppercase", letterSpacing: "0.05em",
-};
-const bd: React.CSSProperties = {
-  padding: "8px 10px",
-};
-const r: React.CSSProperties = {
-  display: "flex", fontSize: 12, lineHeight: 1.5,
-};
-const l: React.CSSProperties = {
-  width: 80, flexShrink: 0, color: "var(--fgColor-muted, #656d76)", fontWeight: 600,
-};
-const v: React.CSSProperties = {
-  flex: 1, minWidth: 0, wordBreak: "break-all", color: "var(--fgColor-default, #1f2328)",
-};
+import { Button } from "./components/ui/button";
+import { Badge } from "./components/ui/badge";
+import { Progress } from "./components/ui/progress";
+import { Select } from "./components/ui/select";
+import { Input } from "./components/ui/input";
+import { Label } from "./components/ui/label";
+import { tauriClient } from "./tauriClient";
 
 export default function DownloadDetailsWindow() {
   const idParam = new URLSearchParams(window.location.search).get("id");
   const id = useDownloadIdFromUrl();
   const { settings: loadedSettings } = useSettings();
   const [, bumpLang] = useState(0);
+  const [conns, setConns] = useState<number | null>(null);
+  const [rate, setRate] = useState("0");
+  const [newUrl, setNewUrl] = useState("");
 
-  // Each webview is a fresh JS realm — without this the details window
-  // always renders in English regardless of the language setting.
-  // setLanguage only mutates module state, so force one re-render after it:
-  // a static (completed/paused) item never re-renders otherwise.
   useEffect(() => {
     if (loadedSettings) {
       setLanguage(loadedSettings.language || "en");
       bumpLang((n) => n + 1);
     }
   }, [loadedSettings]);
+
   const {
-    item,
-    urlCopied,
-    controls,
-    handleCopyUrl,
-    handleOpenFile,
-    handleOpenFolder,
-    handlePause,
-    handleResume,
+    item, urlCopied, controls, handleCopyUrl, handleOpenFile, handleOpenFolder, handlePause, handleResume,
   } = useDownloadDetail(id);
 
-  // Hooks must run before any early return
-  const speedInputs = item?.status === "downloading" && item ? [item] : [];
+  const speedInputs = item && (item.status === "downloading" || item.status === "connecting") ? [item] : [];
   const speeds = useDownloadSpeed(speedInputs);
 
-  const closeWindow = () => { getCurrentWebviewWindow().close(); };
+  useEffect(() => {
+    if (item) {
+      setConns(item.connections);
+      setRate(String(item.rate_limit_bps || 0));
+    }
+  }, [item?.id]);
 
-  const handleOpenFileAndClose = async () => {
-    const ok = await handleOpenFile();
-    if (ok) closeWindow();
+  if (!idParam) return <div className="grid h-screen place-items-center">No download ID provided</div>;
+  if (!item) return <div className="grid h-screen place-items-center">Loading...</div>;
+
+  const progress = overallPercent(item.downloaded, item.total_size, item.status);
+  const speed = speeds.get(item.id);
+  const variant = statusColor(item.status);
+  const badge = variant === "attention" ? "warning" : variant === "default" ? "default" : variant;
+
+  const applyRuntime = async () => {
+    if (conns != null) await tauriClient.setDownloadConnections(item.id, conns);
+    await tauriClient.setDownloadRateLimit(item.id, Number(rate) || 0);
   };
-  const handleOpenFolderAndClose = async () => {
-    const ok = await handleOpenFolder();
-    if (ok) closeWindow();
+
+  const refresh = async () => {
+    if (!newUrl.trim()) return;
+    await tauriClient.refreshDownloadUrl(item.id, newUrl.trim());
+    setNewUrl("");
   };
-
-  if (!idParam) return <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100vh" }}><Text>No download ID provided</Text></div>;
-  if (!item) return <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100vh" }}><Text>Loading...</Text></div>;
-
-  const speedInfo = speeds.get(item.id);
-  // Same dash policy as the table: speed value or "—" while downloading.
-  const speedLabel =
-    item.status === "downloading" ? `(${speedInfo?.display ?? "—"})` : null;
-
-  const resumable = item.resumable === true ? t("properties.yes") : item.resumable === false ? t("properties.no") : t("properties.unknown");
-  const pct = overallPercent(item.downloaded, item.total_size, item.status);
-  const { busy, showPause, showResume, showOpen } = controls;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh", fontSize: 12, background: "var(--bgColor-default, #fff)" }}>
-      {/* Header: title + status + actions */}
-      <div style={{
-        display: "flex", alignItems: "center", gap: 8,
-        padding: "10px 14px", borderBottom: "1px solid var(--borderColor-muted, #d8dee4)",
-        background: "var(--bgColor-subtle, #f6f8fa)",
-      }}>
-        <Text weight="semibold" size="small" style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {item.file_name}
-        </Text>
-        <Label variant={statusColor(item.status)} style={{ fontSize: 11 }}>{statusString(item.status)}</Label>
-        {showPause && (
-          <Button size="small" onClick={handlePause} disabled={busy}>
-            {t("toolbar.stop")}
-          </Button>
-        )}
-        {showResume && (
-          <Button size="small" onClick={handleResume} disabled={busy} variant="primary">
-            {t("toolbar.resume")}
-          </Button>
-        )}
-        {showOpen && (
-          <>
-            <Button size="small" onClick={handleOpenFileAndClose} disabled={busy}>
-              {t("downloadRow.open")}
-            </Button>
-            <Button size="small" onClick={handleOpenFolderAndClose} disabled={busy}>
-              {t("downloadRow.openFolder")}
-            </Button>
-          </>
-        )}
+    <div className="flex h-full flex-col gap-2 overflow-auto p-3">
+      <div className="flex items-center gap-2">
+        <div className="min-w-0 flex-1 truncate font-semibold">{item.file_name}</div>
+        <Badge variant={badge}>{statusString(item.status)}</Badge>
       </div>
-
-      {/* Overall progress — under title, above URL */}
-      <div style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 10,
-        padding: "8px 14px",
-        borderBottom: "1px solid var(--borderColor-muted, #d8dee4)",
-      }}>
-        <div
-          role="progressbar"
-          aria-valuenow={pct}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          style={{
-            flex: 1,
-            height: 8,
-            borderRadius: 4,
-            background: "var(--bgColor-muted, #eaeef2)",
-            overflow: "hidden",
-          }}
-        >
-          <div style={{
-            width: `${pct}%`,
-            height: "100%",
-            background: "var(--bgColor-success-emphasis, #1a7f37)",
-            transition: "width 0.2s ease-out",
-            borderRadius: 4,
-          }} />
+      <Progress value={progress} />
+      <div className="flex gap-3 text-[12px] text-muted-foreground">
+        <span>{formatBytes(item.downloaded)} / {item.total_size ? formatBytes(item.total_size) : "—"}</span>
+        <span>{speed?.display ?? "—"}</span>
+      </div>
+      <div className="flex gap-1">
+        {controls.showPause && <Button size="sm" disabled={controls.busy} onClick={handlePause}>{t("toolbar.stop")}</Button>}
+        {controls.showResume && <Button size="sm" disabled={controls.busy} onClick={handleResume}>{t("toolbar.resume")}</Button>}
+        {controls.showOpen && <Button size="sm" onClick={async () => { if (await handleOpenFile()) getCurrentWebviewWindow().close(); }}>{t("downloadRow.open")}</Button>}
+        <Button size="sm" onClick={async () => { if (await handleOpenFolder()) getCurrentWebviewWindow().close(); }}>{t("downloadRow.openFolder")}</Button>
+        <Button size="sm" onClick={handleCopyUrl}>{urlCopied ? "OK" : t("downloadRow.copyUrl")}</Button>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <Label>{t("properties.connections")}</Label>
+          <Select value={String(conns ?? item.connections)} onChange={(e) => setConns(Number(e.target.value))}>
+            {[1, 4, 8, 16, 32, 64].map((n) => <option key={n} value={n}>{n}</option>)}
+          </Select>
         </div>
-        <Text size="small" weight="semibold" style={{
-          flexShrink: 0,
-          minWidth: 40,
-          textAlign: "right",
-          fontVariantNumeric: "tabular-nums",
-          color: "var(--fgColor-default, #1f2328)",
-          whiteSpace: "nowrap",
-        }}>
-          {pct}%
-        </Text>
-        {speedLabel && (
-          <Text size="small" style={{
-            flexShrink: 0,
-            fontVariantNumeric: "tabular-nums",
-            color: "var(--fgColor-muted, #656d76)",
-            whiteSpace: "nowrap",
-          }}>
-            {speedLabel}
-          </Text>
-        )}
-      </div>
-
-      {/* URL */}
-      <div style={{ padding: "8px 14px", borderBottom: "1px solid var(--borderColor-muted, #d8dee4)" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-          <Text size="small" style={{
-            color: "var(--fgColor-muted, #656d76)",
-            flex: 1, minWidth: 0,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-            lineHeight: 1.4,
-          }}>
-            {item.url}
-          </Text>
-          <Button size="small" onClick={handleCopyUrl}
-            leadingVisual={CopyIcon}
-            disabled={busy}
-            style={{ flexShrink: 0 }}
-          >
-            {urlCopied ? "✓" : ""}
-          </Button>
+        <div>
+          <Label>{t("properties.speedLimit")}</Label>
+          <Select value={rate} onChange={(e) => setRate(e.target.value)}>
+            <option value="0">{formatRateLimit(0)}</option>
+            <option value={String(256 * 1024)}>256 KB/s</option>
+            <option value={String(1024 * 1024)}>1 MB/s</option>
+            <option value={String(5 * 1024 * 1024)}>5 MB/s</option>
+          </Select>
         </div>
       </div>
-
-      {/* Content cards */}
-      <div style={{ padding: "10px 14px", flex: 1, overflow: "auto", display: "flex", flexDirection: "column", gap: 10 }}>
-
-        {/* 1. File */}
-        <div style={card}>
-          <div style={hdr}>{t("properties.file")}</div>
-          <div style={bd}>
-            <div style={r}><span style={l}>{t("properties.size")}</span><span style={v}>{formatBytes(item.total_size)}</span></div>
-            <div style={r}><span style={l}>{t("properties.savePath")}</span><span style={v}>{item.save_path || "—"}</span></div>
-            <div style={r}><span style={l}>{t("properties.created")}</span><span style={v}>{formatTimestamp(item.created_at)}</span></div>
-          </div>
-        </div>
-
-        {/* 2. Progress Map */}
-        <div style={card}>
-          <div style={hdr}>{t("properties.progressMap")}</div>
-          <div style={bd}>
-            <ProgressMap parts={item.parts ?? []} status={item.status} />
-          </div>
-        </div>
-
-        {/* 3. Download */}
-        <div style={card}>
-          <div style={hdr}>{t("properties.download")}</div>
-          <div style={bd}>
-            <div style={r}><span style={l}>{t("properties.status")}</span><span style={v}>{statusString(item.status)}</span></div>
-            <div style={r}><span style={l}>{t("properties.resumable")}</span><span style={v}>{resumable}</span></div>
-            <div style={r}><span style={l}>{t("properties.lastTry")}</span><span style={v}>{formatTimestamp(item.last_try)}</span></div>
-          </div>
-        </div>
-
-        {/* 4. Network */}
-        <div style={card}>
-          <div style={hdr}>{t("properties.network")}</div>
-          <div style={bd}>
-            <div style={r}><span style={l}>{t("properties.connections")}</span><span style={v}>{String(item.connections)}</span></div>
-            <div style={r}><span style={l}>{t("properties.proxy")}</span><span style={v}>{item.proxy_name || "—"}</span></div>
-          </div>
-        </div>
-
+      <Button size="sm" onClick={applyRuntime}>{t("properties.apply")}</Button>
+      <Label>{t("properties.refreshUrl")}</Label>
+      <div className="flex gap-1">
+        <Input value={newUrl} onChange={(e) => setNewUrl(e.target.value)} placeholder={t("properties.newUrl")} />
+        <Button size="sm" onClick={refresh}>{t("properties.apply")}</Button>
       </div>
+      <p className="text-[11px] text-muted-foreground">{t("properties.authHidden")}</p>
+      <ProgressMap parts={item.parts} status={item.status} />
     </div>
   );
 }

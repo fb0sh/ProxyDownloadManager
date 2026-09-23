@@ -23,7 +23,7 @@ impl NetworkPool {
         if let Some(client) = map.get(&key) {
             return Ok(client.clone());
         }
-        log::info!("[ProxyDM] pool creating new client for proxy={}", key);
+        log::info!("[ProxyDM] pool creating new client for proxy={}", crate::headers::redact_log(&key));
         let mut builder = reqwest::Client::builder()
             .pool_max_idle_per_host(128)
             .tcp_keepalive(Some(Duration::from_secs(60)))
@@ -33,7 +33,7 @@ impl NetworkPool {
 
         if let Some(proxy_str) = proxy_url {
             if let Ok(proxy) = Proxy::all(proxy_str) {
-                log::info!("[ProxyDM] pool applying proxy: {}", proxy_str);
+                log::info!("[ProxyDM] pool applying proxy: {}", crate::headers::redact_log(proxy_str));
                 builder = builder.proxy(proxy);
             }
         }

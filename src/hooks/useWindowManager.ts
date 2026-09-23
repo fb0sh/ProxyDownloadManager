@@ -1,12 +1,20 @@
 import { useCallback } from "react";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { t } from "../i18n";
+import type { PendingDownloadRequest } from "../types";
 
 export function useWindowManager() {
-  const openNewDownload = useCallback(async (url?: string) => {
+  const openNewDownload = useCallback(async (payload?: string | PendingDownloadRequest) => {
     const existing = await WebviewWindow.getByLabel("new-download");
-    if (existing) { existing.setFocus(); return; }
+    if (existing) {
+      existing.setFocus();
+      if (payload) {
+        try { await existing.emit("new-download-request", payload); } catch { /* window may have closed */ }
+      }
+      return;
+    }
 
+    const url = typeof payload === "string" ? payload : payload?.url;
     const base = window.location.origin + window.location.pathname.replace(/\/+$/, "");
     const params = new URLSearchParams();
     params.set("view", "new-download");
@@ -14,13 +22,13 @@ export function useWindowManager() {
 
     const win = new WebviewWindow("new-download", {
       url: `${base}?${params.toString()}`,
-      width: 600,
-      height: 490,
+      width: 640,
+      height: 560,
       title: t("newDownload.title"),
     });
     win.once("tauri://created", async () => {
-      if (url) {
-        try { await win.emit("new-download-url", url); } catch { /* window may have closed */ }
+      if (payload) {
+        try { await win.emit("new-download-request", payload); } catch { /* window may have closed */ }
       }
       await win.show().catch(() => {});
       await win.unminimize().catch(() => {});
@@ -42,8 +50,8 @@ export function useWindowManager() {
     const base = window.location.origin + window.location.pathname.replace(/\/+$/, "");
     const win = new WebviewWindow("download-details", {
       url: `${base}?view=download-details&id=${id}`,
-      width: 480,
-      height: 460,
+      width: 520,
+      height: 560,
       title: t("properties.title"),
     });
     win.once("tauri://created", async () => {

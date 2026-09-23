@@ -4,7 +4,7 @@
 import { listen } from "@tauri-apps/api/event";
 import type { QueryClient } from "@tanstack/react-query";
 import { EVENTS } from "./constants/events";
-import type { DownloadItem } from "./types";
+import type { DownloadItem, PendingDownloadRequest } from "./types";
 import { applyPartDownloaded } from "./utils/progressMap";
 
 /** Wire payloads (field names are Rust snake_case, mirrored by event_handler.rs tests). */
@@ -33,7 +33,7 @@ export interface DownloadEventHandlers {
   onStarted?: (id: number) => void;
   onCompleted?: (payload: CompletedPayload) => void;
   onError?: (payload: ErrorPayload) => void;
-  onBrowserDownloadUrl?: (url: string) => void;
+  onBrowserDownloadUrl?: (req: string | PendingDownloadRequest) => void;
   onCreated?: () => void;
 }
 
@@ -137,9 +137,9 @@ export function subscribeDownloadEvents(
   );
 
   unlisteners.push(
-    listen<string>(
+    listen<string | PendingDownloadRequest>(
       EVENTS.BROWSER_DOWNLOAD_URL,
-      guard((url) => handlers.onBrowserDownloadUrl?.(url)),
+      guard((payload) => handlers.onBrowserDownloadUrl?.(payload)),
     ),
   );
 

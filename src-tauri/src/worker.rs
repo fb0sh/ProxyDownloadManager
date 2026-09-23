@@ -4,7 +4,7 @@ use crate::network::pool::NetworkPool;
 use crate::network::limiter::MultiLimiter;
 use crate::engine;
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex, Semaphore};
 
@@ -23,7 +23,14 @@ struct PendingDownload {
     hooks: EngineHooks,
 }
 
-type ActiveMap = Arc<Mutex<HashMap<u64, (Arc<AtomicBool>, tokio::task::JoinHandle<()>)>>>;
+struct ActiveDownload {
+    cancel: Arc<AtomicBool>,
+    handle: tokio::task::JoinHandle<()>,
+    limiter: Arc<MultiLimiter>,
+    desired_connections: Arc<AtomicU32>,
+}
+
+type ActiveMap = Arc<Mutex<HashMap<u64, ActiveDownload>>>;
 
 /// Everything a running task needs to clean up after itself and hand its
 /// permit to the next queued download.
@@ -33,7 +40,7 @@ struct SpawnCtx {
     event_tx: mpsc::UnboundedSender<Event>,
     active: ActiveMap,
     pending: Arc<Mutex<VecDeque<PendingDownload>>>,
-    global_rate_limit: u64,
+    global_limiter: Arc<crate::network::limiter::RateLimiter>,
 }
 
 pub struct WorkerPool {
@@ -43,7 +50,7 @@ pub struct WorkerPool {
     active: ActiveMap,
     pending: Arc<Mutex<VecDeque<PendingDownload>>>,
     next_id: AtomicU64,
-    global_rate_limit: u64,
+    global_limiter: Arc<crate::network::limiter::RateLimiter>,
 }
 
 impl WorkerPool {
@@ -56,7 +63,7 @@ impl WorkerPool {
             active: Arc::new(Mutex::new(HashMap::new())),
             pending: Arc::new(Mutex::new(VecDeque::new())),
             next_id: AtomicU64::new(next_id_start),
-            global_rate_limit,
+            global_limiter: Arc::new(crate::network::limiter::RateLimiter::new(global_rate_limit)),
         }
     }
 
@@ -70,7 +77,7 @@ impl WorkerPool {
             event_tx: self.event_tx.clone(),
             active: self.active.clone(),
             pending: self.pending.clone(),
-            global_rate_limit: self.global_rate_limit,
+            global_limiter: self.global_limiter.clone(),
         }
     }
 
@@ -91,8 +98,8 @@ impl WorkerPool {
         }
         match self.semaphore.clone().try_acquire_owned() {
             Ok(permit) => {
-                let (cancel, handle) = Self::launch(self.ctx(), cfg, permit, id, hooks);
-                self.active.lock().await.insert(id, (cancel, handle));
+                let active = Self::launch(self.ctx(), cfg, permit, id, hooks);
+                self.active.lock().await.insert(id, active);
                 Ok(Admission::Started)
             }
             Err(_) => {
@@ -112,24 +119,29 @@ impl WorkerPool {
         permit: tokio::sync::OwnedSemaphorePermit,
         id: u64,
         hooks: EngineHooks,
-    ) -> (Arc<AtomicBool>, tokio::task::JoinHandle<()>) {
+    ) -> ActiveDownload {
         cfg.id = id;
         log::info!("[ProxyDM] spawn id={} url={} proxy={} conns={}",
-            id, cfg.url, cfg.proxy_url, cfg.connections);
+            id, cfg.url, crate::headers::redact_log(&cfg.proxy_url), cfg.connections);
         let cancel = Arc::new(AtomicBool::new(false));
         let cancel_for_task = cancel.clone();
+        let desired = cfg
+            .desired_connections
+            .clone()
+            .unwrap_or_else(|| Arc::new(AtomicU32::new(cfg.connections.max(1))));
+        cfg.desired_connections = Some(desired.clone());
+        let limiter = Arc::new(MultiLimiter::with_global(
+            ctx.global_limiter.clone(),
+            cfg.rate_limit_bps,
+        ));
+        let limiter_for_task = limiter.clone();
 
         let handle = tokio::spawn(async move {
-            let limiter = Arc::new(MultiLimiter::new(
-                ctx.global_rate_limit,
-                cfg.rate_limit_bps,
-            ));
-
             let result = engine::run_download(
                 cfg,
                 ctx.pool.clone(),
                 ctx.event_tx.clone(),
-                limiter,
+                limiter_for_task,
                 cancel_for_task.clone(),
                 hooks,
             )
@@ -153,8 +165,8 @@ impl WorkerPool {
             // (prevents a paused→resumed worker from removing the new worker's entry)
             {
                 let mut active = ctx.active.lock().await;
-                if let Some((entry_cancel, _)) = active.get(&id) {
-                    if Arc::ptr_eq(entry_cancel, &cancel_for_task) {
+                if let Some(entry) = active.get(&id) {
+                    if Arc::ptr_eq(&entry.cancel, &cancel_for_task) {
                         active.remove(&id);
                     }
                 }
@@ -167,14 +179,19 @@ impl WorkerPool {
                 Some(p) => {
                     log::info!("[ProxyDM] slot handoff → queued id={}", p.id);
                     let ctx_next = ctx.clone();
-                    let (cancel_next, handle_next) =
+                    let next_active =
                         Self::launch(ctx_next.clone(), p.cfg, permit, p.id, p.hooks);
-                    ctx_next.active.lock().await.insert(p.id, (cancel_next, handle_next));
+                    ctx_next.active.lock().await.insert(p.id, next_active);
                 }
                 None => drop(permit),
             }
         });
-        (cancel, handle)
+        ActiveDownload {
+            cancel,
+            handle,
+            limiter,
+            desired_connections: desired,
+        }
     }
 
     /// Cancel a download by setting its cancel flag and removing it from the active map.
@@ -185,10 +202,10 @@ impl WorkerPool {
             return None;
         }
         let mut active = self.active.lock().await;
-        if let Some((cancel, handle)) = active.remove(&id) {
+        if let Some(entry) = active.remove(&id) {
             log::info!("[ProxyDM] cancel id={} (flag set)", id);
-            cancel.store(true, Ordering::Relaxed);
-            Some(handle)
+            entry.cancel.store(true, Ordering::Relaxed);
+            Some(entry.handle)
         } else {
             log::info!("[ProxyDM] cancel id={} (not found, already done?)", id);
             None
@@ -204,10 +221,10 @@ impl WorkerPool {
         }
         let handle = {
             let mut active = self.active.lock().await;
-            if let Some((cancel, handle)) = active.remove(&id) {
+            if let Some(entry) = active.remove(&id) {
                 log::info!("[ProxyDM] cancel_and_wait id={} (flag set, waiting)", id);
-                cancel.store(true, Ordering::Relaxed);
-                Some(handle)
+                entry.cancel.store(true, Ordering::Relaxed);
+                Some(entry.handle)
             } else {
                 log::info!("[ProxyDM] cancel_and_wait id={} (not found, already done?)", id);
                 None
@@ -237,6 +254,31 @@ impl WorkerPool {
     pub fn clear_clients(&self) {
         self.pool.clear();
     }
+
+    pub fn set_global_rate_limit(&self, bps: u64) {
+        self.global_limiter.set_bps(bps);
+    }
+
+    pub async fn set_download_rate_limit(&self, id: u64, bps: u64) -> bool {
+        let active = self.active.lock().await;
+        if let Some(entry) = active.get(&id) {
+            entry.limiter.set_download_bps(bps);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub async fn set_connections(&self, id: u64, connections: u32) -> bool {
+        let n = connections.clamp(1, crate::engine::chunk::MAX_CONNECTIONS);
+        let active = self.active.lock().await;
+        if let Some(entry) = active.get(&id) {
+            entry.desired_connections.store(n, Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
+    }
 }
 
 #[cfg(test)]
@@ -263,6 +305,7 @@ mod tests {
             downloaded: 0,
             part_ranges: vec![(0, 100)],
             part_downloaded: vec![],
+            desired_connections: None,
         }
     }
 

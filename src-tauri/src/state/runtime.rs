@@ -229,12 +229,8 @@ mod tests {
             total_size: 1000,
             downloaded: 0,
             status: crate::types::DownloadStatus::Downloading,
-            parts: vec![],
-            proxy_name: String::new(),
             connections: 1,
-            resumable: None,
-            created_at: String::new(),
-            last_try: String::new(),
+            ..Default::default()
         };
         db.insert_download(&item).unwrap();
 
@@ -279,12 +275,8 @@ mod tests {
             total_size: 1000,
             downloaded: 0,
             status: crate::types::DownloadStatus::Downloading,
-            parts: vec![],
-            proxy_name: String::new(),
             connections: 1,
-            resumable: None,
-            created_at: String::new(),
-            last_try: String::new(),
+            ..Default::default()
         };
         db.insert_download(&item).unwrap();
 

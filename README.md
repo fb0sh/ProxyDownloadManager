@@ -152,13 +152,13 @@ pnpm tauri build
 |-----------|------|
 | 桌面框架   | [Tauri 2](https://v2.tauri.app/) |
 | 前端      | [React 19](https://react.dev/)、[TypeScript](https://www.typescriptlang.org/)、[Vite](https://vite.dev/) |
-| UI        | [Primer React 38](https://primer.style/react/)、[Octicons](https://primer.style/octicons/) |
-| 状态管理   | [Zustand 5](https://github.com/pmndrs/zustand) |
+| UI        | [shadcn/ui](https://ui.shadcn.com/)、[Tailwind CSS v4](https://tailwindcss.com/)、[Lucide](https://lucide.dev/) |
+| 状态管理   | [TanStack Query](https://tanstack.com/query) |
 | 后端      | [Rust](https://www.rustlang.org/)、[tokio](https://tokio.rs/)、[reqwest 0.12](https://docs.rs/reqwest/) |
 | 存储      | SQLite via [rusqlite](https://github.com/rusqlite/rusqlite) |
 | 日志      | [log](https://docs.rs/log/) crate（统一 `log::info!` / `log::error!`，输出到 `~/Library/Logs/ProxyDM/proxydm.log`）|
 | 代理      | HTTP / SOCKS5 via `reqwest` |
-| 扩展      | Chrome MV3、Firefox Manifest V2 |
+| 扩展      | Chrome / Edge / Firefox MV3 |
 
 ## 贡献指南
 

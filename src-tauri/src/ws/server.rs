@@ -6,22 +6,57 @@ use std::time::Duration;
 
 use tungstenite::Message;
 
-use crate::types::{Event, PendingDownloadRequest};
+use crate::headers::{filter_headers, redact_log};
+use crate::types::{DownloadAck, Event, PendingDownloadRequest};
 
 /// Parse a WebSocket text message into a PendingDownloadRequest.
-/// Three-tier fallback:
-/// 1. Browser extension JSON: { action, url, filename, proxy_name, connections }
-/// 2. Direct PendingDownloadRequest JSON
-/// 3. Raw text treated as URL
+///
+/// Accepts:
+/// 1. Structured v1 JSON (`protocol_version`, `request_id`, `url`, headers, …)
+/// 2. Legacy browser JSON `{ action, url, filename, proxy_name, connections }`
+/// 3. Direct `PendingDownloadRequest` JSON
+/// 4. Raw URL text
 pub fn parse_message(text: &str) -> PendingDownloadRequest {
+    if let Ok(mut req) = serde_json::from_str::<PendingDownloadRequest>(text) {
+        if !req.url.is_empty() {
+            req.headers = filter_headers(&req.headers);
+            if req.connections == 0 && text.contains("\"connections\"") {
+                // explicit 0 = Auto; keep it
+            }
+            return req;
+        }
+    }
+
     #[derive(serde::Deserialize)]
     struct Incoming {
+        #[serde(default)]
+        protocol_version: u32,
+        #[serde(default)]
+        request_id: String,
         #[serde(default)]
         action: String,
         #[serde(default)]
         url: String,
         #[serde(default)]
+        final_url: String,
+        #[serde(default)]
         filename: String,
+        #[serde(default)]
+        method: String,
+        #[serde(default)]
+        referrer: String,
+        #[serde(default)]
+        user_agent: String,
+        #[serde(default)]
+        cookies: String,
+        #[serde(default)]
+        headers: std::collections::HashMap<String, String>,
+        #[serde(default)]
+        tab_url: String,
+        #[serde(default)]
+        content_type: String,
+        #[serde(default)]
+        content_length: u64,
         #[serde(default)]
         proxy_name: String,
         connections: Option<u32>,
@@ -31,23 +66,37 @@ pub fn parse_message(text: &str) -> PendingDownloadRequest {
         .ok()
         .filter(|i| !i.url.is_empty())
         .map(|i| PendingDownloadRequest {
+            protocol_version: if i.protocol_version == 0 { 1 } else { i.protocol_version },
+            request_id: i.request_id,
+            action: i.action,
             url: i.url,
+            final_url: i.final_url,
             filename: i.filename,
+            method: i.method,
+            referrer: i.referrer,
+            user_agent: i.user_agent,
+            cookies: i.cookies,
+            headers: filter_headers(&i.headers),
+            tab_url: i.tab_url,
+            content_type: i.content_type,
+            content_length: i.content_length,
             proxy_name: i.proxy_name,
-            connections: i.connections.unwrap_or(1),
-        })
-        .or_else(|| {
-            serde_json::from_str::<PendingDownloadRequest>(text).ok()
+            connections: i.connections.unwrap_or(0),
         })
         .unwrap_or_else(|| {
             let filename = text.rsplit('/').next().unwrap_or("").to_string();
             PendingDownloadRequest {
+                protocol_version: 0,
                 url: text.to_string(),
                 filename,
-                proxy_name: String::new(),
-                connections: 1,
+                connections: 0,
+                ..Default::default()
             }
         })
+}
+
+pub fn ack_json(ack: &DownloadAck) -> String {
+    serde_json::to_string(ack).unwrap_or_else(|_| r#"{"accepted":false,"reason":"serialize"}"#.into())
 }
 
 pub struct WsServer {
@@ -88,9 +137,6 @@ impl WsServer {
 
                 match stream {
                     Ok(stream) => {
-                        // Set the accepted stream to BLOCKING mode.
-                        // The listener is non-blocking for the accept loop,
-                        // but connection handling needs blocking I/O.
                         let _ = stream.set_nonblocking(false);
                         let et = event_tx.clone();
                         let rt = request_tx.clone();
@@ -118,7 +164,7 @@ impl WsServer {
 
     fn handle_connection(
         stream: std::net::TcpStream,
-        event_tx: tokio::sync::mpsc::UnboundedSender<Event>,
+        _event_tx: tokio::sync::mpsc::UnboundedSender<Event>,
         request_tx: tokio::sync::mpsc::UnboundedSender<PendingDownloadRequest>,
     ) {
         let peer = stream.peer_addr().ok();
@@ -151,26 +197,39 @@ impl WsServer {
 
             match msg {
                 Message::Text(text) => {
-                    let max_preview = text.char_indices().nth(200).map(|(i, _)| i).unwrap_or(text.len());
-                    log::info!("[ProxyDM WS] Received: {}", &text[..max_preview]);
+                    let preview = redact_log(&text);
+                    let max_preview = preview.char_indices().nth(200).map(|(i, _)| i).unwrap_or(preview.len());
+                    log::info!("[ProxyDM WS] Received: {}", &preview[..max_preview]);
 
                     let request = parse_message(&text);
+                    let request_id = request.request_id.clone();
 
-                    log::info!("[ProxyDM WS] Sending to request_tx... url={}", request.url);
-
-                    if let Err(e) = request_tx.send(request) {
-                        log::error!("[ProxyDM WS] request_tx.send ERROR: {:?}", e);
-                        break;
+                    if request.url.is_empty() {
+                        let ack = DownloadAck::fail(&request_id, "empty url");
+                        let _ = ws.send(Message::Text(ack_json(&ack).into()));
+                        continue;
                     }
 
-                    log::info!("[ProxyDM WS] request_tx.send OK");
+                    log::info!(
+                        "[ProxyDM WS] Sending to request_tx... url={} headers={}",
+                        request.effective_url(),
+                        request.headers.len()
+                    );
 
-                    log::info!("[ProxyDM WS] event_tx OK, sending ack...");
-                    if let Err(e) = ws.send(Message::Text(r#"{"status":"ok"}"#.into())) {
+                    let ack = match request_tx.send(request) {
+                        Ok(()) => DownloadAck::ok(&request_id),
+                        Err(e) => {
+                            log::error!("[ProxyDM WS] request_tx.send ERROR: {:?}", e);
+                            let ack = DownloadAck::fail(&request_id, "desktop not accepting downloads");
+                            let _ = ws.send(Message::Text(ack_json(&ack).into()));
+                            break;
+                        }
+                    };
+
+                    if let Err(e) = ws.send(Message::Text(ack_json(&ack).into())) {
                         log::error!("[ProxyDM WS] ack send ERROR: {:?}", e);
                         break;
                     }
-                    log::info!("[ProxyDM WS] All done, connection handling complete.");
                 }
                 Message::Close(_) => {
                     log::info!("[WS] Peer requested close from {:?}", peer);
@@ -182,15 +241,11 @@ impl WsServer {
                         break;
                     }
                 }
-                Message::Pong(_) => {
-                    // Ignore unsolicited pong
-                }
+                Message::Pong(_) => {}
                 Message::Binary(_) => {
                     log::warn!("[WS] Unexpected binary message from {:?}", peer);
                 }
-                Message::Frame(_) => {
-                    // Internal frame type, ignore
-                }
+                Message::Frame(_) => {}
             }
         }
     }
@@ -225,7 +280,6 @@ mod tests {
         let req = parse_message(url);
         assert_eq!(req.url, url);
         assert_eq!(req.filename, "video.mp4");
-        assert_eq!(req.connections, 1);
         assert!(req.proxy_name.is_empty());
     }
 
@@ -234,7 +288,6 @@ mod tests {
         let json = r#"{"action":"","url":""}"#;
         let req = parse_message(json);
         assert_eq!(req.url, json);
-        assert_eq!(req.connections, 1);
     }
 
     #[test]
@@ -242,6 +295,46 @@ mod tests {
         let json = r#"{"action":"add","url":"https://x.com/a.zip","filename":"a.zip"}"#;
         let req = parse_message(json);
         assert_eq!(req.url, "https://x.com/a.zip");
-        assert_eq!(req.connections, 1); // default
+        assert_eq!(req.connections, 0);
+    }
+
+    #[test]
+    fn test_parse_v1_with_headers() {
+        let json = r#"{
+            "protocol_version":1,
+            "request_id":"abc",
+            "action":"add",
+            "url":"https://cdn.example/file.zip",
+            "final_url":"https://cdn.example/file.zip?sig=1",
+            "filename":"file.zip",
+            "method":"GET",
+            "referrer":"https://example.com/page",
+            "user_agent":"Mozilla/5.0",
+            "cookies":"sid=1",
+            "headers":{"Cookie":"sid=1","Referer":"https://example.com/page","Host":"cdn.example","Sec-Fetch-Mode":"navigate","Authorization":"Bearer x"},
+            "tab_url":"https://example.com/page",
+            "content_type":"application/zip",
+            "content_length":1024
+        }"#;
+        let req = parse_message(json);
+        assert_eq!(req.request_id, "abc");
+        assert_eq!(req.final_url, "https://cdn.example/file.zip?sig=1");
+        assert!(req.headers.contains_key("Cookie"));
+        assert!(req.headers.contains_key("Referer"));
+        assert!(req.headers.contains_key("Authorization"));
+        assert!(!req.headers.keys().any(|k| k.eq_ignore_ascii_case("host")));
+        assert!(!req.headers.keys().any(|k| k.to_ascii_lowercase().starts_with("sec-")));
+    }
+
+    #[test]
+    fn ack_json_contains_request_id() {
+        let ack = DownloadAck::ok("rid-1");
+        let s = ack_json(&ack);
+        assert!(s.contains("rid-1"));
+        assert!(s.contains("\"accepted\":true"));
+        let fail = DownloadAck::fail("rid-1", "offline");
+        let s = ack_json(&fail);
+        assert!(s.contains("\"accepted\":false"));
+        assert!(s.contains("offline"));
     }
 }

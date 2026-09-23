@@ -5,6 +5,32 @@
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-09-23
+
+### Added
+
+- 浏览器扩展结构化 DownloadRequest（Cookie / Referer / Authorization 等）与 `{request_id, accepted, reason}` ACK；桌面离线时保留浏览器原下载
+- 探测与分段下载共用同一请求上下文；Cookie / Referer / Basic Auth 保护资源的 mock 测试
+- 下载状态 Connecting / Retrying / Merging；失败记录 error_code / http_status / retry_count
+- 连接数硬上限 64，Auto 按文件大小分档；ChunkQueue 尾部分片窃取；下载中可改连接数与限速
+- 按错误类型重试（429/5xx/timeout 退避 + jitter；401/403 不自动重试）
+- 代理用户名/密码（HTTP / HTTPS CONNECT / SOCKS5）、文件冲突策略、Refresh URL、基础 HLS（master/media → 合并 `.ts`）
+- 扩展 popup：连接状态、拦截开关、媒体嗅探、Alt/Delete 跳过本次、忽略规则
+- 新建下载异步 probe、目录选择器、Download Later；主列表搜索/类型过滤与行级重渲染
+- 前端迁移到 shadcn/ui + Tailwind CSS v4 + Lucide
+
+### Changed
+
+- WebSocket 兼容旧版纯 URL / `{action,url}` 协议
+- 进度库刷盘间隔改为 3 秒；UI 进度事件仍约 500ms
+- 日志对 Authorization / Cookie / Proxy-Authorization 输出 `<redacted>`
+- README「最高 64 线程」与引擎行为对齐
+
+### Fixed
+
+- `execute_download` / resume 不再丢弃请求头
+- 设置里 Auto（0）不再被当成 1 连接上限
+
 ## [0.11.0] - 2026-07-26
 
 ### Added

@@ -4,14 +4,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import App from "./App";
 import NewDownloadWindow from "./NewDownloadWindow";
 import DownloadDetailsWindow from "./DownloadDetailsWindow";
-
-import "@primer/primitives/dist/css/functional/themes/light.css";
-import { BaseStyles, ThemeProvider } from "@primer/react";
+import "./index.css";
 import { tauriClient } from "./tauriClient";
 import { setLanguage } from "./i18n";
 
-// Eager language init for every webview: events (WS downloads on autostart)
-// can arrive before the per-window settings effects have run.
 tauriClient
   .getSettings()
   .then((s) => setLanguage(s.language || "en"))
@@ -27,18 +23,13 @@ const queryClient = new QueryClient({
 });
 
 function RootLayout() {
-  // If opened as a child window for New Download, render standalone view
   const params = new URLSearchParams(window.location.search);
   const view = params.get("view");
 
   if (view === "new-download") {
     return (
       <QueryClientProvider client={queryClient}>
-        <ThemeProvider>
-          <BaseStyles>
-            <NewDownloadWindow />
-          </BaseStyles>
-        </ThemeProvider>
+        <NewDownloadWindow />
       </QueryClientProvider>
     );
   }
@@ -46,22 +37,14 @@ function RootLayout() {
   if (view === "download-details") {
     return (
       <QueryClientProvider client={queryClient}>
-        <ThemeProvider>
-          <BaseStyles>
-            <DownloadDetailsWindow />
-          </BaseStyles>
-        </ThemeProvider>
+        <DownloadDetailsWindow />
       </QueryClientProvider>
     );
   }
 
   return (
     <QueryClientProvider client={queryClient}>
-      <ThemeProvider>
-        <BaseStyles>
-          <App />
-        </BaseStyles>
-      </ThemeProvider>
+      <App />
     </QueryClientProvider>
   );
 }

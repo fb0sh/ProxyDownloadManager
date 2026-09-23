@@ -83,11 +83,35 @@ pub(crate) fn resolve_proxy_url_from(proxy_name: &str, settings: &Settings) -> O
         return None;
     }
     let proxy = settings.proxies.get(proxy_name)?;
+    Some(proxy_url(proxy))
+}
+
+pub fn proxy_url(proxy: &ProxyConfig) -> String {
     let protocol = match proxy.protocol {
         ProxyProtocol::Http => "http",
+        ProxyProtocol::Https => "https",
         ProxyProtocol::Socks5 => "socks5",
     };
-    Some(format!("{}://{}:{}", protocol, proxy.host, proxy.port))
+    if proxy.username.is_empty() {
+        format!("{}://{}:{}", protocol, proxy.host, proxy.port)
+    } else {
+        let user = urlencoding_minimal(&proxy.username);
+        let pass = urlencoding_minimal(&proxy.password);
+        format!("{}://{}:{}@{}:{}", protocol, user, pass, proxy.host, proxy.port)
+    }
+}
+
+fn urlencoding_minimal(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -111,5 +135,21 @@ mod tests {
         let svc = SettingsService::new();
         let s = svc.get();
         assert!(!s.download_dir.is_empty());
+    }
+
+    #[test]
+    fn proxy_url_includes_auth() {
+        let p = ProxyConfig {
+            protocol: ProxyProtocol::Http,
+            host: "127.0.0.1".into(),
+            port: 8080,
+            username: "user".into(),
+            password: "p@ss".into(),
+        };
+        let url = proxy_url(&p);
+        assert!(url.starts_with("http://user:"));
+        assert!(url.contains("127.0.0.1:8080"));
+        assert!(!url.contains("p@ss"));
+        assert!(url.contains("%40"));
     }
 }

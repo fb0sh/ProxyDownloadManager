@@ -32,8 +32,79 @@ pub async fn start_download(
     save_path: String,
     proxy_name: String,
     connections: u32,
+    headers: Option<std::collections::HashMap<String, String>>,
+    rate_limit_bps: Option<u64>,
+    start_paused: Option<bool>,
 ) -> Result<u64, PdmError> {
-    state.dm.start_download(url, filename, save_path, proxy_name, connections).await
+    state
+        .dm
+        .start_download(
+            url,
+            filename,
+            save_path,
+            proxy_name,
+            connections,
+            headers.unwrap_or_default(),
+            rate_limit_bps.unwrap_or(0),
+            start_paused.unwrap_or(false),
+        )
+        .await
+}
+
+#[tauri::command]
+pub async fn probe_url(
+    state: State<'_, Arc<AppState>>,
+    url: String,
+    headers: Option<std::collections::HashMap<String, String>>,
+    proxy_name: Option<String>,
+) -> Result<ProbeInfo, PdmError> {
+    state
+        .dm
+        .probe_url(url, headers.unwrap_or_default(), proxy_name.unwrap_or_default())
+        .await
+}
+
+#[tauri::command]
+pub async fn set_download_connections(
+    state: State<'_, Arc<AppState>>,
+    id: u64,
+    connections: u32,
+) -> Result<(), PdmError> {
+    state.dm.set_runtime_connections(id, connections).await
+}
+
+#[tauri::command]
+pub async fn set_download_rate_limit(
+    state: State<'_, Arc<AppState>>,
+    id: u64,
+    rate_limit_bps: u64,
+) -> Result<(), PdmError> {
+    state.dm.set_runtime_rate_limit(id, rate_limit_bps).await
+}
+
+#[tauri::command]
+pub fn set_global_rate_limit(
+    state: State<'_, Arc<AppState>>,
+    rate_limit_bps: u64,
+) -> Result<(), PdmError> {
+    let mut settings = state.settings.get();
+    settings.global_rate_limit = rate_limit_bps;
+    state.settings.save(&settings)?;
+    state.dm.set_global_rate_limit(rate_limit_bps);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn refresh_download_url(
+    state: State<'_, Arc<AppState>>,
+    id: u64,
+    url: String,
+    headers: Option<std::collections::HashMap<String, String>>,
+) -> Result<(), PdmError> {
+    state
+        .dm
+        .refresh_url(id, url, headers.unwrap_or_default())
+        .await
 }
 
 #[tauri::command]

@@ -8,6 +8,8 @@ mod network;
 mod worker;
 mod ws;
 mod cmd;
+mod headers;
+mod retry;
 mod tray;
 mod icons;
 mod filename;
@@ -88,7 +90,7 @@ fn spawn_ws_forwarder(
                 let _: () = unsafe { msg_send![ns_app, activateIgnoringOtherApps: true] };
             }
 
-            bus.emit(crate::event_bus::FrontendEvent::BrowserDownloadUrl, req.url.clone());
+            bus.emit(crate::event_bus::FrontendEvent::BrowserDownloadUrl, req);
         }
         log::info!("[ProxyDM consumer] request_rx stream ended!");
     });
@@ -112,7 +114,7 @@ fn start_ws_server(
 fn spawn_flush_loop(ledger: Arc<crate::state::ledger::ProgressLedger>) {
     tauri::async_runtime::spawn(async move {
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             let flushed = ledger.flush();
             if flushed > 0 {
                 log::debug!("[ProxyDM] Flushed {} progress entries to DB", flushed);
@@ -254,6 +256,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             cmd::list_downloads,
             cmd::start_download,
+            cmd::probe_url,
+            cmd::set_download_connections,
+            cmd::set_download_rate_limit,
+            cmd::set_global_rate_limit,
+            cmd::refresh_download_url,
             cmd::pause_download,
             cmd::resume_download,
             cmd::cancel_download,

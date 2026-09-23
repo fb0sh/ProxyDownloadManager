@@ -141,6 +141,7 @@ mod tests {
             filename: "file.zip".to_string(),
             proxy_name: "my-proxy".to_string(),
             connections: 8,
+            ..Default::default()
         };
         write_pending_request(&req).unwrap();
         let taken = take_pending_request().unwrap().unwrap();

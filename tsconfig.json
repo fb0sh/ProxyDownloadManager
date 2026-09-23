@@ -11,6 +11,7 @@
     "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
+    "allowJs": true,
     "noEmit": true,
     "jsx": "react-jsx",
 
@@ -21,7 +22,9 @@
     "noFallthroughCasesInSwitch": true,
 
     /* Testing */
-    "types": ["vitest/globals"]
+    "types": ["vitest/globals"],
+    "baseUrl": ".",
+    "paths": { "@/*": ["src/*"] }
   },
   "include": ["src"],
   "references": [{ "path": "./tsconfig.node.json" }]

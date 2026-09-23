@@ -144,10 +144,10 @@ Browser Extension                Desktop App
 ### TypeScript / React
 
 - Use functional components with hooks.
-- Primer React components for UI consistency (Button, Dialog, Text, etc.).
+- Use shadcn/ui primitives in `src/components/ui` plus Lucide icons.
 - i18n: translate user-facing strings via `t('key')` from `src/i18n/`.
-- State: Zustand for global UI state, TanStack Query for server-state (future).
-- CSS: inline styles or Primer CSS variables; avoid separate CSS files for new components.
+- State: TanStack Query for download/settings server-state, React context for selection/dialogs.
+- CSS: Tailwind v4 utility classes and CSS variables in `src/index.css`.
 
 ### Commit Messages
 

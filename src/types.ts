@@ -12,6 +12,17 @@ export interface DownloadItem {
   resumable: boolean | null;
   created_at: string;
   last_try: string;
+  headers?: Record<string, string>;
+  final_url?: string;
+  content_type?: string;
+  etag?: string;
+  last_modified?: string;
+  rate_limit_bps?: number;
+  error_code?: string;
+  error_message?: string;
+  http_status?: number | null;
+  retry_count?: number;
+  last_error_at?: string;
 }
 
 export interface DownloadPart {
@@ -30,6 +41,9 @@ export type DownloadStatus =
   | "completed"
   | "failed"
   | "queued"
+  | "connecting"
+  | "retrying"
+  | "merging"
   | { failed: string };
 
 export type PartStatus =
@@ -38,13 +52,17 @@ export type PartStatus =
   | "completed"
   | "failed";
 
-export type ProxyProtocol = "http" | "socks5";
+export type ProxyProtocol = "http" | "https" | "socks5";
 
 export interface ProxyConfig {
   protocol: ProxyProtocol;
   host: string;
   port: number;
+  username?: string;
+  password?: string;
 }
+
+export type FileConflictPolicy = "ask" | "rename" | "overwrite" | "skip";
 
 export interface Settings {
   download_dir: string;
@@ -60,6 +78,9 @@ export interface Settings {
   language: string;
   danger_accept_invalid_certs: boolean;
   global_shortcut: string;
+  file_conflict?: FileConflictPolicy;
+  proxy_group?: string[];
+  proxy_group_fallback_direct?: boolean;
 }
 
 export interface AssetInfo {
@@ -77,6 +98,39 @@ export interface UpdateInfo {
   assets: AssetInfo[];
 }
 
+export interface ProbeInfo {
+  url: string;
+  final_url: string;
+  file_name: string;
+  file_size: number;
+  content_type: string;
+  supports_range: boolean;
+  etag: string;
+  last_modified: string;
+  suggested_connections: number;
+  is_hls: boolean;
+  hls_variants: { uri: string; bandwidth: number; resolution: string; codecs: string }[];
+}
+
+export interface PendingDownloadRequest {
+  protocol_version?: number;
+  request_id?: string;
+  action?: string;
+  url: string;
+  final_url?: string;
+  filename?: string;
+  method?: string;
+  referrer?: string;
+  user_agent?: string;
+  cookies?: string;
+  headers?: Record<string, string>;
+  tab_url?: string;
+  content_type?: string;
+  content_length?: number;
+  proxy_name?: string;
+  connections?: number;
+}
+
 /** Structured error type matching Rust's PdmError (tagged union). */
 export type PdmError =
   | { kind: "cancelled" }
@@ -90,4 +144,9 @@ export type PdmError =
   | { kind: "network"; value: string }
   | { kind: "retries_exhausted"; value: string }
   | { kind: "range_lost" }
-  | { kind: "other"; value: string };
+  | { kind: "other"; value: string }
+  | { kind: "file_exists"; value: string }
+  | { kind: "duplicate_download"; value: number }
+  | { kind: "resource_mismatch"; value: string }
+  | { kind: "hls"; value: string }
+  | { kind: "unsupported"; value: string };

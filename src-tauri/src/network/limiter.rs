@@ -17,6 +17,14 @@ impl RateLimiter {
         }
     }
 
+    pub fn set_bps(&self, bps: u64) {
+        self.bps.store(bps, Ordering::Relaxed);
+    }
+
+    pub fn bps(&self) -> u64 {
+        self.bps.load(Ordering::Relaxed)
+    }
+
     pub async fn wait_n(&self, n: u64) {
         let bps = self.bps.load(Ordering::Relaxed);
         if bps == 0 {
@@ -46,16 +54,31 @@ impl RateLimiter {
 }
 
 pub struct MultiLimiter {
-    pub global: RateLimiter,
-    pub per_download: RateLimiter,
+    pub global: std::sync::Arc<RateLimiter>,
+    pub per_download: std::sync::Arc<RateLimiter>,
 }
 
 impl MultiLimiter {
     pub fn new(global_bps: u64, download_bps: u64) -> Self {
         Self {
-            global: RateLimiter::new(global_bps),
-            per_download: RateLimiter::new(download_bps),
+            global: std::sync::Arc::new(RateLimiter::new(global_bps)),
+            per_download: std::sync::Arc::new(RateLimiter::new(download_bps)),
         }
+    }
+
+    pub fn with_global(global: std::sync::Arc<RateLimiter>, download_bps: u64) -> Self {
+        Self {
+            global,
+            per_download: std::sync::Arc::new(RateLimiter::new(download_bps)),
+        }
+    }
+
+    pub fn set_global_bps(&self, bps: u64) {
+        self.global.set_bps(bps);
+    }
+
+    pub fn set_download_bps(&self, bps: u64) {
+        self.per_download.set_bps(bps);
     }
 
     pub async fn wait_n(&self, n: u64) {
@@ -86,5 +109,14 @@ mod tests {
         let limiter = MultiLimiter::new(100_000, 0);
         // Per-download unlimited, global has limit
         limiter.wait_n(1).await;
+    }
+
+    #[tokio::test]
+    async fn test_set_bps_runtime() {
+        let limiter = RateLimiter::new(0);
+        limiter.set_bps(1024);
+        assert_eq!(limiter.bps(), 1024);
+        limiter.set_bps(0);
+        limiter.wait_n(1_000_000).await;
     }
 }

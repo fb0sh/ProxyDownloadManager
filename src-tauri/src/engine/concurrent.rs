@@ -5,7 +5,7 @@ use crate::engine::file_io::{create_output_file, finalize_file};
 use crate::engine::part_progress::{encode_progress_data, PartProgressTracker, PartRange};
 use crate::engine::task_download::{download_task, TaskResult};
 use crate::types::{Event, EventKind, EngineConfig, PdmError, PdmResult};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -54,11 +54,18 @@ impl ConcurrentDownloader {
             parts_tracker.seed_from_parts(&cfg.part_downloaded);
         }
 
-        let num_conns = if cfg.connections > 0 {
-            cfg.connections.min(32)
-        } else {
-            let sqrt = (cfg.total_size as f64 / 1024.0 / 1024.0).sqrt() as u32;
-            sqrt.max(1).min(32)
+        let num_conns = {
+            let target = cfg
+                .desired_connections
+                .as_ref()
+                .map(|a| a.load(Ordering::Relaxed))
+                .filter(|n| *n > 0)
+                .unwrap_or(cfg.connections);
+            if target > 0 {
+                target.min(chunk::MAX_CONNECTIONS)
+            } else {
+                chunk::auto_connections(cfg.total_size).min(chunk::MAX_CONNECTIONS)
+            }
         };
 
         if tasks.is_empty() {
@@ -123,6 +130,13 @@ impl ConcurrentDownloader {
             }
         });
 
+        let headers = std::sync::Arc::new(cfg.headers.clone());
+        let desired = cfg
+            .desired_connections
+            .clone()
+            .unwrap_or_else(|| std::sync::Arc::new(AtomicU32::new(num_workers)));
+        let live_workers = std::sync::Arc::new(AtomicU32::new(0));
+
         // Spawn workers
         for _worker_id in 0..num_workers {
             let queue = queue.clone();
@@ -137,6 +151,10 @@ impl ConcurrentDownloader {
             let stop_for_task = stop.clone();
             let bytes_written = bytes_written.clone();
             let parts = parts_tracker.clone();
+            let headers = headers.clone();
+            let desired = desired.clone();
+            let live_workers = live_workers.clone();
+            live_workers.fetch_add(1, Ordering::Relaxed);
 
             // On any abort the popped task goes back into the queue first, so
             // the drain-based resume snapshot always covers remaining work.
@@ -158,16 +176,33 @@ impl ConcurrentDownloader {
                 let mut retries_left = max_retries;
                 loop {
                     if stop.load(Ordering::Relaxed) {
+                        live_workers.fetch_sub(1, Ordering::Relaxed);
                         return;
                     }
-                    let task = match queue.pop() {
+                    if live_workers.load(Ordering::Relaxed) > desired.load(Ordering::Relaxed).max(1) {
+                        live_workers.fetch_sub(1, Ordering::Relaxed);
+                        return;
+                    }
+                    let task = match queue.pop_or_steal() {
                         Some(t) => t,
-                        None => break,
+                        None => {
+                            if let Some(stolen) = queue.split_largest(2 * 1024 * 1024) {
+                                stolen
+                            } else {
+                                tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+                                if queue.is_empty() {
+                                    live_workers.fetch_sub(1, Ordering::Relaxed);
+                                    return;
+                                }
+                                continue;
+                            }
+                        }
                     };
 
                     let result = download_task(
                         &url, &client, &*file, &task, &stop_for_task, &limiter, &user_agent, &bytes_written,
                         Some(parts.clone()),
+                        headers.as_ref(),
                     ).await;
 
                     match result {
@@ -180,10 +215,19 @@ impl ConcurrentDownloader {
                             retries_left = max_retries;
                         }
                         TaskResult::Cancelled => {
+                            live_workers.fetch_sub(1, Ordering::Relaxed);
                             return;
                         }
                         TaskResult::RangeNotSupported => {
                             abort(&queue, task, PdmError::RangeLost, &stop, &abort_reason);
+                            live_workers.fetch_sub(1, Ordering::Relaxed);
+                            return;
+                        }
+                        TaskResult::FatalNoRetry(msg) => {
+                            abort(&queue, task, PdmError::Http(
+                                msg.split_whitespace().nth(1).and_then(|s| s.parse().ok()).unwrap_or(403)
+                            ), &stop, &abort_reason);
+                            live_workers.fetch_sub(1, Ordering::Relaxed);
                             return;
                         }
                         TaskResult::Fatal(msg) => {
@@ -196,20 +240,17 @@ impl ConcurrentDownloader {
                                     &stop,
                                     &abort_reason,
                                 );
+                                live_workers.fetch_sub(1, Ordering::Relaxed);
                                 return;
                             }
                             retries_left -= 1;
-                            // Task back in the queue BEFORE the backoff, so a
-                            // pause during the sleep still snapshots it; the
-                            // sleep itself wakes early on stop instead of
-                            // holding cancel_and_wait for up to 30s.
                             queue.push(task);
                             let attempt = max_retries - retries_left;
-                            let backoff_secs = 2u64.pow(attempt.min(5)).min(30);
-                            let deadline = std::time::Instant::now()
-                                + std::time::Duration::from_secs(backoff_secs);
+                            let delay = crate::retry::backoff_delay(attempt);
+                            let deadline = std::time::Instant::now() + delay;
                             while std::time::Instant::now() < deadline {
                                 if stop.load(Ordering::Relaxed) {
+                                    live_workers.fetch_sub(1, Ordering::Relaxed);
                                     return;
                                 }
                                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -221,8 +262,117 @@ impl ConcurrentDownloader {
             handles.push(handle);
         }
 
+        // Scale-up watcher: extra workers join the same queue without restarting the download.
+        {
+            let queue = queue.clone();
+            let file = file.clone();
+            let client = client.clone();
+            let stop = stop.clone();
+            let abort_reason = abort_reason.clone();
+            let limiter = limiter.clone();
+            let url = cfg.url.clone();
+            let max_retries = cfg.max_retries;
+            let user_agent = cfg.user_agent.clone();
+            let bytes_written = bytes_written.clone();
+            let parts = parts_tracker.clone();
+            let headers = headers.clone();
+            let desired = desired.clone();
+            let live_workers = live_workers.clone();
+            let scale_handle = tokio::spawn(async move {
+                while !stop.load(Ordering::Relaxed) {
+                    let want = desired.load(Ordering::Relaxed).min(chunk::MAX_CONNECTIONS).max(1);
+                    let have = live_workers.load(Ordering::Relaxed);
+                    if want > have {
+                        live_workers.fetch_add(1, Ordering::Relaxed);
+                        let queue = queue.clone();
+                        let file = file.clone();
+                        let client = client.clone();
+                        let stop = stop.clone();
+                        let abort_reason = abort_reason.clone();
+                        let limiter = limiter.clone();
+                        let url = url.clone();
+                        let user_agent = user_agent.clone();
+                        let bytes_written = bytes_written.clone();
+                        let parts = parts.clone();
+                        let headers = headers.clone();
+                        let desired = desired.clone();
+                        let live_workers = live_workers.clone();
+                        tokio::spawn(async move {
+                            let mut retries_left = max_retries;
+                            loop {
+                                if stop.load(Ordering::Relaxed) {
+                                    live_workers.fetch_sub(1, Ordering::Relaxed);
+                                    return;
+                                }
+                                if live_workers.load(Ordering::Relaxed) > desired.load(Ordering::Relaxed).max(1) {
+                                    live_workers.fetch_sub(1, Ordering::Relaxed);
+                                    return;
+                                }
+                                let task = match queue.pop_or_steal() {
+                                    Some(t) => t,
+                                    None => match queue.split_largest(2 * 1024 * 1024) {
+                                        Some(t) => t,
+                                        None => {
+                                            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+                                            if queue.is_empty() {
+                                                live_workers.fetch_sub(1, Ordering::Relaxed);
+                                                return;
+                                            }
+                                            continue;
+                                        }
+                                    },
+                                };
+                                let result = download_task(
+                                    &url, &client, &*file, &task, &stop, &limiter, &user_agent, &bytes_written,
+                                    Some(parts.clone()),
+                                    headers.as_ref(),
+                                ).await;
+                                match result {
+                                    TaskResult::Complete => retries_left = max_retries,
+                                    TaskResult::Partial { remaining } => queue.push(remaining),
+                                    TaskResult::Cancelled | TaskResult::RangeNotSupported | TaskResult::FatalNoRetry(_) => {
+                                        if matches!(result, TaskResult::RangeNotSupported) {
+                                            queue.push(task);
+                                        }
+                                        live_workers.fetch_sub(1, Ordering::Relaxed);
+                                        return;
+                                    }
+                                    TaskResult::Fatal(msg) => {
+                                        if retries_left == 0 {
+                                            queue.push(task);
+                                            if let Ok(mut g) = abort_reason.lock() {
+                                                if g.is_none() {
+                                                    *g = Some(PdmError::RetriesExhausted(msg));
+                                                }
+                                            }
+                                            stop.store(true, Ordering::Relaxed);
+                                            live_workers.fetch_sub(1, Ordering::Relaxed);
+                                            return;
+                                        }
+                                        retries_left -= 1;
+                                        queue.push(task);
+                                        tokio::time::sleep(crate::retry::backoff_delay(max_retries - retries_left)).await;
+                                    }
+                                }
+                            }
+                        });
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+            });
+            let _ = scale_handle;
+        }
+
         for h in handles {
             let _ = h.await;
+        }
+        let wait_deadline = std::time::Instant::now() + std::time::Duration::from_secs(600);
+        while live_workers.load(Ordering::Relaxed) > 0
+            && !stop.load(Ordering::Relaxed)
+            && !cancel.load(Ordering::Relaxed)
+            && std::time::Instant::now() < wait_deadline
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
         log::info!("[ProxyDM] concurrent id={} all workers done", cfg.id);
 

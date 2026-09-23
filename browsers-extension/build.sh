@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
 # build.sh — assemble browser extension directories from shared/ source
-#
-# Usage: ./build.sh
-#
-# Copies shared/background.js and shared/icons/ into chrome/, edge/, firefox/.
-# Keeps per-browser manifest.json intact (they genuinely differ).
 # =============================================================================
 set -euo pipefail
 
@@ -18,12 +13,12 @@ echo "==> Building browser extensions from shared/ source"
 for browser in "${BROWSERS[@]}"; do
   target="$SCRIPT_DIR/$browser"
   echo "  -> $browser"
-
-  # Copy background.js
-  cp "$SHARED/background.js" "$target/background.js"
-
-  # Copy icons
   mkdir -p "$target/icons"
+  cp "$SHARED/background.js" "$target/background.js"
+  cp "$SHARED/protocol.js" "$target/protocol.js"
+  cp "$SHARED/content.js" "$target/content.js"
+  cp "$SHARED/popup.html" "$target/popup.html"
+  cp "$SHARED/popup.js" "$target/popup.js"
   cp "$SHARED/icons/"*.png "$target/icons/"
 done
 

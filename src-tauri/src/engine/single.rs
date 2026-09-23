@@ -22,9 +22,7 @@ impl SingleDownloader {
             .get_client(if cfg.proxy_url.is_empty() { None } else { Some(&cfg.proxy_url) })
             .map_err(|e| PdmError::ClientBuild(e.to_string()))?
             .get(&cfg.url);
-        if !cfg.user_agent.is_empty() {
-            req = req.header("User-Agent", &cfg.user_agent);
-        }
+        req = crate::headers::apply_headers(req, &cfg.headers, &cfg.user_agent);
         let resp = req
             .send()
             .await

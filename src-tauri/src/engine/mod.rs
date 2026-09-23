@@ -1,6 +1,7 @@
 pub mod chunk;
 pub mod concurrent;
 pub mod file_io;
+pub mod hls;
 pub mod part_progress;
 pub mod single;
 pub mod task_download;
@@ -183,6 +184,7 @@ mod tests {
                 vec![]
             },
             part_downloaded: vec![],
+            desired_connections: None,
         }
     }
 

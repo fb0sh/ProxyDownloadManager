@@ -32,6 +32,16 @@ pub enum PdmError {
     /// All tasks finished but bytes are missing (server closed streams
     /// early) — ranged transfers are unreliable; degrade to sequential.
     Incomplete(String),
+    /// Destination file already exists and the conflict policy is Ask/Skip.
+    FileExists(String),
+    /// An in-progress download already targets this URL + path.
+    DuplicateDownload(u64),
+    /// Refresh URL probed a different resource than the existing .pdm.
+    ResourceMismatch(String),
+    /// HLS playlist / segment failure.
+    Hls(String),
+    /// Feature is intentionally unsupported (DRM, encrypted HLS, …).
+    Unsupported(String),
     /// Generic fallback with message.
     Other(String),
 }
@@ -51,6 +61,11 @@ impl fmt::Display for PdmError {
             Self::RetriesExhausted(msg) => write!(f, "Retries exhausted: {}", msg),
             Self::RangeLost => write!(f, "Server stopped honoring Range requests"),
             Self::Incomplete(msg) => write!(f, "Download incomplete: {}", msg),
+            Self::FileExists(path) => write!(f, "File exists: {}", path),
+            Self::DuplicateDownload(id) => write!(f, "Duplicate of download {}", id),
+            Self::ResourceMismatch(msg) => write!(f, "Resource mismatch: {}", msg),
+            Self::Hls(msg) => write!(f, "HLS: {}", msg),
+            Self::Unsupported(msg) => write!(f, "Unsupported: {}", msg),
             Self::Other(msg) => write!(f, "{}", msg),
         }
     }

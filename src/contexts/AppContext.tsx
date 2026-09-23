@@ -28,8 +28,8 @@ interface AppCtx {
   dialogActions: DialogActions;
   selectedIds: Set<number>;
   selectionActions: SelectionActions;
-  filter: "all" | "completed" | "incomplete";
-  setFilter: (f: "all" | "completed" | "incomplete") => void;
+  filter: "all" | "downloading" | "completed" | "incomplete";
+  setFilter: (f: "all" | "downloading" | "completed" | "incomplete") => void;
   actions: AppActions;
   onRedownloadItem?: DownloadItem;
 }
@@ -41,8 +41,8 @@ interface AppProviderProps {
   dialogActions: DialogActions;
   selectedIds: Set<number>;
   selectionActions: SelectionActions;
-  filter: "all" | "completed" | "incomplete";
-  setFilter: (f: "all" | "completed" | "incomplete") => void;
+  filter: "all" | "downloading" | "completed" | "incomplete";
+  setFilter: (f: "all" | "downloading" | "completed" | "incomplete") => void;
   actions: AppActions;
   onRedownloadItem?: DownloadItem;
   children: ReactNode;

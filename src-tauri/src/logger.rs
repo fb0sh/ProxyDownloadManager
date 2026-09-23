@@ -38,6 +38,7 @@ impl Logger {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default();
         let secs = now.as_secs();
+        let msg = crate::headers::redact_log(msg);
         let line = format!("[{}] [{}] {}\n", Self::fmt_time(secs), level, msg);
         if let Ok(mut guard) = self.file.lock() {
             if let Some(ref mut f) = *guard {
@@ -102,10 +103,11 @@ impl Log for Logger {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default();
         let secs = now.as_secs();
+        let msg = crate::headers::redact_log(&record.args().to_string());
         let line = format!("[{}] [{}] [{}] {}\n",
             Logger::fmt_time(secs), level,
             record.module_path().unwrap_or("?"),
-            record.args());
+            msg);
         if let Ok(mut guard) = self.file.lock() {
             if let Some(ref mut f) = *guard {
                 let _ = f.write_all(line.as_bytes());

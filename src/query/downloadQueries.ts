@@ -9,7 +9,7 @@ export function useDownloads() {
   return useQuery({
     queryKey: DOWNLOADS_KEY,
     queryFn: tauriClient.listDownloads,
-    refetchInterval: 1000,
+    refetchInterval: 3000,
     refetchIntervalInBackground: true,
   });
 }
@@ -22,9 +22,10 @@ export function useDownload(id: number | undefined) {
 export function useStartDownload() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ url, filename, proxyName, connections, savePath }: {
+    mutationFn: (opts: {
       url: string; filename: string; proxyName: string; connections: number; savePath: string;
-    }) => tauriClient.startDownload(url, filename, proxyName, connections, savePath),
+      headers?: Record<string, string>; rateLimitBps?: number; startPaused?: boolean;
+    }) => tauriClient.startDownload(opts),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: DOWNLOADS_KEY }),
   });
 }
