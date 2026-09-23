@@ -45,17 +45,22 @@ export function useWindowManager() {
 
   const openDetails = useCallback(async (id: number) => {
     const existing = await WebviewWindow.getByLabel("download-details");
-    if (existing) { existing.setFocus(); return; }
+    if (existing) {
+      try { await existing.emit("details-id", id); } catch { /* window may have closed */ }
+      await existing.show().catch(() => {});
+      await existing.setFocus().catch(() => {});
+      return;
+    }
 
     const base = window.location.origin + window.location.pathname.replace(/\/+$/, "");
     const win = new WebviewWindow("download-details", {
       url: `${base}?view=download-details&id=${id}`,
-      width: 520,
-      height: 560,
+      width: 460,
+      height: 520,
       title: t("properties.title"),
     });
     win.once("tauri://created", async () => {
-      await win.setAlwaysOnTop(true).catch(() => {});
+      await win.show().catch(() => {});
       await win.setFocus().catch(() => {});
     });
     win.once("tauri://error", (e) => console.error("Failed to open details:", e));

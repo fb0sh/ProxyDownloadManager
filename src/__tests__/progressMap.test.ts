@@ -114,3 +114,25 @@ describe("overallPercent (the one formula)", () => {
     expect(overallPercent(500, 0, "downloading")).toBe(0);
   });
 });
+
+import { threadBars } from "../components/ProgressMap";
+
+describe("threadBars", () => {
+  it("folds parts onto connection slots", () => {
+    const parts = [
+      part(0, 0, 100, 100),
+      part(1, 100, 200, 50),
+      part(2, 200, 300, 0),
+      part(3, 300, 400, 0),
+    ];
+    const bars = threadBars(parts, 2);
+    expect(bars).toHaveLength(2);
+    expect(bars[0]!.index).toBe(1);
+    expect(bars[0]!.percent).toBe(50); // parts 0+2: 100/200
+    expect(bars[1]!.percent).toBe(25); // parts 1+3: 50/200
+  });
+
+  it("returns empty bars when there are no parts yet", () => {
+    expect(threadBars([], 4).map((b) => b.percent)).toEqual([0, 0, 0, 0]);
+  });
+});

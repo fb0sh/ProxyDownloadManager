@@ -51,13 +51,13 @@ export default function Layout({ onRedownloadItem }: LayoutProps) {
         hasRedownloadable={!!onRedownloadItem}
         onRedownloadItem={onRedownloadItem}
       />
-      <div className="flex items-center gap-2 border-b border-border px-2 py-1">
+      <div className="flex items-center gap-2 border-b border-border px-2 py-1.5">
         {filters.map((f) => (
           <button
             key={f.id}
             type="button"
             onClick={() => setFilter(f.id)}
-            className={`h-6 rounded-md px-2 text-[12px] ${filter === f.id ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"}`}
+            className={`h-8 rounded-md px-3 text-[13px] ${filter === f.id ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"}`}
           >
             {f.label} {f.n}
           </button>

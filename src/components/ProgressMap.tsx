@@ -1,92 +1,56 @@
-import type { DownloadPart, DownloadStatus } from "../types";
-import { cellPercents } from "../utils/progressMap";
+import type { DownloadPart } from "../types";
 import { t } from "../i18n";
 
-const COLS = 8;
-const CELL = 36;
+const ROW_H = 28;
+const VISIBLE = 5;
 
-interface ProgressMapProps {
-  parts: DownloadPart[];
-  /** Status drives the map rules (Completed → all cells 100%). */
-  status: DownloadStatus;
+export interface ThreadBar {
+  index: number;
+  percent: number;
 }
 
-/**
- * Progress Map: one cell per fixed Part, 8 columns LTR then top→bottom.
- * Green fills bottom-up by part %; percent label centered. The status rules
- * live in cellPercents — this component only renders.
- */
-export default function ProgressMap({ parts, status }: ProgressMapProps) {
-  if (!parts.length) {
-    return (
-      <div style={{ fontSize: 12, color: "var(--fgColor-muted, #656d76)" }}>
-        {t("properties.progressMapEmpty")}
-      </div>
-    );
+/** One bar per connection, folding parts onto connection slots. */
+export function threadBars(parts: DownloadPart[], connections: number): ThreadBar[] {
+  const n = Math.max(1, connections || parts.length || 1);
+  const buckets = Array.from({ length: n }, () => ({ downloaded: 0, size: 0 }));
+  if (parts.length === 0) {
+    return buckets.map((_, i) => ({ index: i + 1, percent: 0 }));
   }
+  for (const p of parts) {
+    const i = (p.index % n + n) % n;
+    buckets[i].downloaded += p.downloaded;
+    buckets[i].size += Math.max(0, p.end - p.start);
+  }
+  return buckets.map((b, i) => ({
+    index: i + 1,
+    percent: b.size > 0 ? Math.min(100, Math.floor((b.downloaded / b.size) * 100)) : 0,
+  }));
+}
 
-  const percents = cellPercents(parts, status);
+interface ThreadBarsProps {
+  parts: DownloadPart[];
+  connections: number;
+}
 
+export default function ProgressMap({ parts, connections }: ThreadBarsProps) {
+  const bars = threadBars(parts, connections);
+  if (!bars.length) {
+    return <div className="text-[13px] text-muted-foreground">{t("properties.progressMapEmpty")}</div>;
+  }
   return (
     <div
-      role="img"
-      aria-label={t("properties.progressMap")}
-      style={{
-        display: "grid",
-        gridTemplateColumns: `repeat(${COLS}, ${CELL}px)`,
-        gap: 4,
-        width: "fit-content",
-        maxWidth: "100%",
-      }}
+      className="overflow-y-auto pr-1"
+      style={{ maxHeight: ROW_H * VISIBLE }}
     >
-      {parts.map((part, i) => {
-        const pct = percents[i] ?? 0;
-        return (
-          <div
-            key={part.index}
-            title={`${pct}% · ${part.start}–${part.end}`}
-            style={{
-              width: CELL,
-              height: CELL,
-              position: "relative",
-              border: "1px solid var(--borderColor-muted, #d8dee4)",
-              borderRadius: 3,
-              overflow: "hidden",
-              background: "var(--bgColor-muted, #eaeef2)",
-              flexShrink: 0,
-            }}
-          >
-            <div
-              style={{
-                position: "absolute",
-                left: 0,
-                right: 0,
-                bottom: 0,
-                height: `${pct}%`,
-                background: "var(--bgColor-success-emphasis, #1a7f37)",
-                transition: "height 0.2s ease-out",
-              }}
-            />
-            <span
-              style={{
-                position: "absolute",
-                inset: 0,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                fontSize: 8,
-                fontWeight: 600,
-                lineHeight: 1,
-                color: pct > 55 ? "#fff" : "var(--fgColor-default, #1f2328)",
-                textShadow: pct > 55 ? "0 0 2px rgba(0,0,0,0.35)" : undefined,
-                userSelect: "none",
-              }}
-            >
-              {pct}%
-            </span>
+      {bars.map((bar) => (
+        <div key={bar.index} className="flex items-center gap-2" style={{ height: ROW_H }}>
+          <span className="w-8 shrink-0 tabular text-[12px] text-muted-foreground">#{bar.index}</span>
+          <div className="h-2.5 min-w-0 flex-1 overflow-hidden rounded-sm bg-muted">
+            <div className="h-full bg-foreground" style={{ width: `${bar.percent}%` }} />
           </div>
-        );
-      })}
+          <span className="w-10 shrink-0 tabular text-right text-[12px]">{bar.percent}%</span>
+        </div>
+      ))}
     </div>
   );
 }

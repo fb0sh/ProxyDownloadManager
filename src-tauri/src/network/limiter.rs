@@ -1,24 +1,34 @@
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+struct Bucket {
+    last_check: Instant,
+    allowance: f64,
+}
 
 pub struct RateLimiter {
     bps: AtomicU64,
-    last_check: Mutex<Instant>,
-    allowance: Mutex<f64>,
+    bucket: Mutex<Bucket>,
 }
 
 impl RateLimiter {
     pub fn new(bps: u64) -> Self {
         Self {
             bps: AtomicU64::new(bps),
-            last_check: Mutex::new(Instant::now()),
-            allowance: Mutex::new(0.0),
+            bucket: Mutex::new(Bucket {
+                last_check: Instant::now(),
+                allowance: 0.0,
+            }),
         }
     }
 
     pub fn set_bps(&self, bps: u64) {
         self.bps.store(bps, Ordering::Relaxed);
+        if let Ok(mut b) = self.bucket.lock() {
+            b.allowance = 0.0;
+            b.last_check = Instant::now();
+        }
     }
 
     pub fn bps(&self) -> u64 {
@@ -26,30 +36,35 @@ impl RateLimiter {
     }
 
     pub async fn wait_n(&self, n: u64) {
-        let bps = self.bps.load(Ordering::Relaxed);
-        if bps == 0 {
-            return; // no limit
-        }
-        let wait_secs = {
-            let mut allowance = self.allowance.lock().unwrap();
-            let mut last_check = self.last_check.lock().unwrap();
-            let now = Instant::now();
-            let elapsed = now.duration_since(*last_check).as_secs_f64();
-            *last_check = now;
-            *allowance += elapsed * (bps as f64);
-            if *allowance > (bps as f64) * 2.0 {
-                *allowance = (bps as f64) * 2.0;
-            }
-            if *allowance >= n as f64 {
-                *allowance -= n as f64;
+        let mut remaining = n as f64;
+        while remaining > 0.0 {
+            let bps = self.bps.load(Ordering::Relaxed);
+            if bps == 0 {
                 return;
             }
-            let deficit = n as f64 - *allowance;
-            *allowance = 0.0;
-            deficit / (bps as f64)
-        };
-        // Locks dropped here — safe to await without blocking the executor
-        tokio::time::sleep(Duration::from_secs_f64(wait_secs)).await;
+            let sleep_secs = {
+                let mut bucket = match self.bucket.lock() {
+                    Ok(g) => g,
+                    Err(_) => return,
+                };
+                let now = Instant::now();
+                let elapsed = now.duration_since(bucket.last_check).as_secs_f64();
+                bucket.last_check = now;
+                bucket.allowance += elapsed * (bps as f64);
+                let cap = bps as f64 * 0.25;
+                if bucket.allowance > cap {
+                    bucket.allowance = cap;
+                }
+                let take = bucket.allowance.min(remaining);
+                bucket.allowance -= take;
+                remaining -= take;
+                if remaining <= 0.0 {
+                    return;
+                }
+                (remaining / (bps as f64)).clamp(0.001, 0.25)
+            };
+            tokio::time::sleep(Duration::from_secs_f64(sleep_secs)).await;
+        }
     }
 }
 
@@ -94,7 +109,6 @@ mod tests {
     #[tokio::test]
     async fn test_rate_limiter_no_limit() {
         let limiter = RateLimiter::new(0);
-        // Should return immediately when bps is 0
         limiter.wait_n(10_000_000).await;
     }
 
@@ -107,7 +121,6 @@ mod tests {
     #[tokio::test]
     async fn test_multi_limiter_partial_limit() {
         let limiter = MultiLimiter::new(100_000, 0);
-        // Per-download unlimited, global has limit
         limiter.wait_n(1).await;
     }
 
@@ -118,5 +131,18 @@ mod tests {
         assert_eq!(limiter.bps(), 1024);
         limiter.set_bps(0);
         limiter.wait_n(1_000_000).await;
+    }
+
+    #[tokio::test]
+    async fn test_wait_n_respects_bps() {
+        let limiter = RateLimiter::new(80_000);
+        let start = Instant::now();
+        limiter.wait_n(40_000).await;
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed >= Duration::from_millis(350),
+            "expected throttle, got {:?}",
+            elapsed
+        );
     }
 }

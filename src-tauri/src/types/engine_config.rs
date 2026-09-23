@@ -49,7 +49,7 @@ impl DownloadItem {
         &self,
         proxy_url: &str,
         user_agent: &str,
-        rate_limit_bps: u64,
+        _rate_limit_bps: u64,
         max_retries: u32,
     ) -> EngineConfig {
         let (part_ranges, part_downloaded) = if self.parts.is_empty() {
@@ -85,11 +85,7 @@ impl DownloadItem {
             proxy_name: self.proxy_name.clone(),
             total_size: self.total_size,
             supports_range: self.resumable.unwrap_or(true),
-            rate_limit_bps: if self.rate_limit_bps > 0 {
-                self.rate_limit_bps
-            } else {
-                rate_limit_bps
-            },
+            rate_limit_bps: self.rate_limit_bps,
             connections: self.connections,
             max_retries,
             user_agent: ua,
@@ -108,7 +104,7 @@ impl ResumePlan {
         self,
         proxy_url: &str,
         user_agent: &str,
-        rate_limit_bps: u64,
+        _rate_limit_bps: u64,
         max_retries: u32,
     ) -> EngineConfig {
         let headers = self.item.headers.clone();
@@ -132,11 +128,7 @@ impl ResumePlan {
             proxy_name: self.item.proxy_name,
             total_size: self.item.total_size,
             supports_range: self.item.resumable.unwrap_or(true),
-            rate_limit_bps: if self.item.rate_limit_bps > 0 {
-                self.item.rate_limit_bps
-            } else {
-                rate_limit_bps
-            },
+            rate_limit_bps: self.item.rate_limit_bps,
             connections: self.item.connections,
             max_retries,
             user_agent: ua,

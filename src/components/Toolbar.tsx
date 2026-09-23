@@ -37,35 +37,33 @@ export default function Toolbar({
 
   const onGlobalRate = async (value: string) => {
     const bps = Number(value);
-    if (!settings) {
-      await tauriClient.setGlobalRateLimit(bps);
-      return;
-    }
-    await saveSettings({ ...settings, global_rate_limit: bps });
     await tauriClient.setGlobalRateLimit(bps);
+    if (settings) {
+      await saveSettings({ ...settings, global_rate_limit: bps });
+    }
   };
 
   return (
-    <div className="flex items-center gap-1 border-b border-border bg-muted px-1.5 py-1">
-      <Button variant="default" size="sm" onClick={onNewDownload}>
-        <Plus className="h-3.5 w-3.5" /> {t("toolbar.new")}
+    <div className="flex items-center gap-1.5 border-b border-border bg-muted px-2 py-1.5">
+      <Button variant="default" onClick={onNewDownload}>
+        <Plus className="h-4 w-4" /> {t("toolbar.new")}
       </Button>
       {hasPausedSelected && (
-        <Button size="sm" onClick={onResumeSelected}><Play className="h-3.5 w-3.5" /> {t("toolbar.resume")}</Button>
+        <Button onClick={onResumeSelected}><Play className="h-4 w-4" /> {t("toolbar.resume")}</Button>
       )}
       {hasDownloadingSelected && (
-        <Button size="sm" onClick={onPauseSelected}><Square className="h-3.5 w-3.5" /> {t("toolbar.stop")}</Button>
+        <Button onClick={onPauseSelected}><Square className="h-4 w-4" /> {t("toolbar.stop")}</Button>
       )}
       {(hasPausedSelected || hasDownloadingSelected || hasCompletedSelected || hasFailedSelected) && (
-        <Button size="sm" variant="destructive" onClick={onDeleteSelected}><Trash2 className="h-3.5 w-3.5" /> {t("toolbar.delete")}</Button>
+        <Button variant="destructive" onClick={onDeleteSelected}><Trash2 className="h-4 w-4" /> {t("toolbar.delete")}</Button>
       )}
       {hasRedownloadable && handleRedownloadSelected && (
-        <Button size="sm" onClick={handleRedownloadSelected}><RotateCcw className="h-3.5 w-3.5" /> {t("toolbar.redownload")}</Button>
+        <Button onClick={handleRedownloadSelected}><RotateCcw className="h-4 w-4" /> {t("toolbar.redownload")}</Button>
       )}
-      <div className="ml-2 flex items-center gap-1 text-muted-foreground">
-        <Gauge className="h-3.5 w-3.5" />
+      <div className="ml-2 flex items-center gap-1.5 text-[13px] text-muted-foreground">
+        <Gauge className="h-4 w-4" />
         <Select
-          className="w-[110px]"
+          className="w-[120px]"
           value={String(settings?.global_rate_limit ?? 0)}
           onChange={(e) => onGlobalRate(e.target.value)}
         >
@@ -75,11 +73,11 @@ export default function Toolbar({
         </Select>
       </div>
       <div className="flex-1" />
-      <Button size="sm" variant="ghost" onClick={onLog}><ScrollText className="h-3.5 w-3.5" /> {t("toolbar.log")}</Button>
-      <Button size="sm" variant="ghost" onClick={onSettings}><Settings className="h-3.5 w-3.5" /> {t("toolbar.settings")}</Button>
-      <Button size="sm" variant="ghost" onClick={onExtension}><Globe className="h-3.5 w-3.5" /> {t("toolbar.extension")}</Button>
-      <Button size="sm" variant="ghost" onClick={onAbout}><Info className="h-3.5 w-3.5" /> {t("toolbar.about")}</Button>
-      <Button size="sm" variant="ghost" onClick={onQuit}><LogOut className="h-3.5 w-3.5" /> {t("toolbar.quit")}</Button>
+      <Button variant="ghost" onClick={onLog}><ScrollText className="h-4 w-4" /> {t("toolbar.log")}</Button>
+      <Button variant="ghost" onClick={onSettings}><Settings className="h-4 w-4" /> {t("toolbar.settings")}</Button>
+      <Button variant="ghost" onClick={onExtension}><Globe className="h-4 w-4" /> {t("toolbar.extension")}</Button>
+      <Button variant="ghost" onClick={onAbout}><Info className="h-4 w-4" /> {t("toolbar.about")}</Button>
+      <Button variant="ghost" onClick={onQuit}><LogOut className="h-4 w-4" /> {t("toolbar.quit")}</Button>
     </div>
   );
 }

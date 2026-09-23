@@ -3,7 +3,7 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useStartDownload, useSettings } from "./query/downloadQueries";
 import { setLanguage, t } from "./i18n";
-import { looksLikeDownloadUrl, extractFilename } from "./utils/download";
+import { extractFilename } from "./utils/download";
 import { formatBytes } from "./utils/format";
 import { tauriClient } from "./tauriClient";
 import type { PendingDownloadRequest, ProbeInfo } from "./types";
@@ -11,17 +11,6 @@ import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { Label } from "./components/ui/label";
 import { Select } from "./components/ui/select";
-
-async function readClipboardUrl(): Promise<string | null> {
-  try {
-    const { readText } = await import("@tauri-apps/plugin-clipboard-manager");
-    const text = await readText();
-    if (text && (text.startsWith("http://") || text.startsWith("https://") || text.startsWith("ftp://")) && looksLikeDownloadUrl(text)) {
-      return text;
-    }
-  } catch { /* clipboard read failed */ }
-  return null;
-}
 
 export default function NewDownloadWindow() {
   const { settings: loadedSettings } = useSettings();
@@ -87,10 +76,6 @@ export default function NewDownloadWindow() {
       else unlistenFn = () => { unlisten(); unlistenOld(); };
     })();
 
-    readClipboardUrl().then((clipUrl) => {
-      if (clipUrl && !url) applyRequest(clipUrl);
-    });
-
     return () => {
       cancelled = true;
       if (unlistenFn) unlistenFn();
@@ -132,13 +117,28 @@ export default function NewDownloadWindow() {
   const submit = async (paused: boolean) => {
     if (!url) return;
     try {
-      await startDownload.mutateAsync({
+      const id = await startDownload.mutateAsync({
         url, filename, proxyName, connections, savePath, headers, startPaused: paused,
       });
-      try {
-        const { emit } = await import("@tauri-apps/api/event");
-        await emit("download-created");
-      } catch { /* non-critical */ }
+      const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+      const existing = await WebviewWindow.getByLabel("download-details");
+      const base = window.location.origin + window.location.pathname.replace(/\/+$/, "");
+      if (existing) {
+        try { await existing.emit("details-id", id); } catch { /* closed */ }
+        await existing.show().catch(() => {});
+        await existing.setFocus().catch(() => {});
+      } else {
+        const win = new WebviewWindow("download-details", {
+          url: `${base}?view=download-details&id=${id}`,
+          width: 460,
+          height: 520,
+          title: t("properties.title"),
+        });
+        win.once("tauri://created", async () => {
+          await win.show().catch(() => {});
+          await win.setFocus().catch(() => {});
+        });
+      }
       getCurrentWebviewWindow().close();
     } catch (err) {
       alert(t("downloadError.failed") + ": " + (err instanceof Error ? err.message : String(err)));

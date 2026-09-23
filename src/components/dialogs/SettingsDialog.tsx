@@ -79,6 +79,18 @@ export default function SettingsDialog({ onClose }: SettingsDialogProps) {
         </div>
         <div className="col-span-2">
           <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{t("settings.proxy")}</div>
+          <div className="mb-2 max-w-xs">
+            <Label>{t("settings.defaultProxy")}</Label>
+            <Select
+              value={settings.default_proxy}
+              onChange={(e) => setSettings({ ...settings, default_proxy: e.target.value })}
+            >
+              <option value="">{t("settings.none")}</option>
+              {Object.keys(settings.proxies).map((name) => (
+                <option key={name} value={name}>{name}</option>
+              ))}
+            </Select>
+          </div>
           <ProxyTable
             settings={settings}
             newProxy={form.newProxy}

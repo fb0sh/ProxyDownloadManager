@@ -1,6 +1,5 @@
 import { useEffect } from "react";
 import type { QueryClient } from "@tanstack/react-query";
-import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { t } from "../i18n";
 import { subscribeDownloadEvents } from "../downloadEvents";
@@ -36,29 +35,22 @@ async function sendDownloadNotification(id: number, title: string, body?: string
 /** Main-window consumer of the download-events seam: the cache-write policy
  * lives in the subscription; this hook only adds the domain reactions. */
 export function useDownloadEvents({ queryClient }: DownloadEventsOptions) {
-  const { openNewDownload, openDetails } = useWindowManager();
+  const { openNewDownload } = useWindowManager();
 
   useEffect(() => {
     return subscribeDownloadEvents(queryClient, {
       onBrowserDownloadUrl: (payload) => openNewDownload(payload),
-      onCreated: async () => {
-        try {
-          const mainWin = await WebviewWindow.getByLabel("main");
-          if (mainWin) { await mainWin.show(); await mainWin.setFocus(); }
-        } catch { /* main window may not exist */ }
-      },
       onStarted: (id) => {
         sendDownloadNotification(id, t("notification.started"));
       },
       onCompleted: async ({ id, file_name }) => {
         await sendDownloadNotification(id, t("notification.completed"), file_name);
-        openDetails(id);
       },
       onError: ({ id, message }) => {
         sendDownloadNotification(id, t("downloadError.failed"), message.slice(0, 100));
       },
     });
-  }, [queryClient, openNewDownload, openDetails]);
+  }, [queryClient, openNewDownload]);
 
   // Window focus refresh
   useEffect(() => {

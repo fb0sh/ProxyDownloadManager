@@ -3,7 +3,6 @@ import Layout from "./components/Layout";
 import DialogRenderer from "./components/DialogRenderer";
 import { useDialog, type DialogActions as DialogActionTypes } from "./hooks/useDialog";
 import { useSelection, type SelectionActions } from "./hooks/useSelection";
-import { useClipboardDetection } from "./hooks/useClipboard";
 import { usePauseDownload, useResumeDownload, useDownloads, useSettings, useRedownloadDownload } from "./query/downloadQueries";
 import { useDownloadEvents } from "./hooks/useDownloadEvents";
 import { useWindowManager } from "./hooks/useWindowManager";
@@ -27,7 +26,6 @@ function AppInner() {
     }
   }, [loadedSettings]);
 
-  useClipboardDetection();
   useDownloadEvents({ queryClient });
 
   const selectedForRedownload = selectedIds.size === 1

@@ -299,10 +299,24 @@ impl DownloadManager {
     ) -> PdmResult<ProbeInfo> {
         let pool = self.worker_pool.pool_ref();
         let headers = crate::headers::filter_headers(&headers);
-        let proxy_url = self.settings.resolve_proxy_url(&proxy_name);
         let settings = self.settings.get();
+        let proxy_url = self.settings.resolve_proxy_url(&proxy_name);
+        let default_url = self.settings.resolve_proxy_url(&settings.default_proxy);
+        let fallback = if proxy_url != default_url {
+            default_url.as_deref()
+        } else {
+            None
+        };
         let user_agents = self.settings.build_user_agents();
-        let result = crate::probe::probe(&url, &headers, proxy_url.as_deref(), &pool, &user_agents).await?;
+        let result = crate::probe::probe_then_default_proxy(
+            &url,
+            &headers,
+            proxy_url.as_deref(),
+            fallback,
+            pool.as_ref(),
+            &user_agents,
+        )
+        .await?;
         let suggested = crate::engine::chunk::compute_connection_count(
             result.file_size,
             0,
@@ -399,20 +413,55 @@ impl DownloadManager {
     async fn execute_download(&self, spec: DownloadSpec) -> PdmResult<u64> {
         let pool = self.worker_pool.pool_ref();
         let headers = crate::headers::filter_headers(&spec.headers);
-        let proxy_url_str = self.settings.resolve_proxy_url(&spec.proxy_name);
-        let proxy_opt = proxy_url_str.as_deref();
         let settings = self.settings.get();
+        let proxy_url_str = self.settings.resolve_proxy_url(&spec.proxy_name);
+        let default_url = self.settings.resolve_proxy_url(&settings.default_proxy);
+        let fallback = if proxy_url_str != default_url {
+            default_url.clone()
+        } else {
+            None
+        };
         let user_agents = self.settings.build_user_agents();
 
-        let outcome = crate::probe::probe_with_fallback(
+        let probed = crate::probe::probe_then_default_proxy(
             &spec.url,
             &headers,
-            proxy_opt,
-            &pool,
+            proxy_url_str.as_deref(),
+            fallback.as_deref(),
+            pool.as_ref(),
             &user_agents,
-            &spec.file_name,
         )
         .await;
+        let outcome = match probed {
+            Ok(r) => {
+                let name = if spec.file_name.is_empty() {
+                    r.file_name
+                } else {
+                    spec.file_name.clone()
+                };
+                crate::probe::ProbeOutcome {
+                    file_name: crate::filename::sanitize(&name),
+                    file_size: r.file_size,
+                    supports_range: r.supports_range,
+                    content_type: r.content_type,
+                    etag: r.etag,
+                    last_modified: r.last_modified,
+                    final_url: r.final_url,
+                    is_hls: r.is_hls,
+                }
+            }
+            Err(_) => {
+                crate::probe::probe_with_fallback(
+                    &spec.url,
+                    &headers,
+                    proxy_url_str.as_deref(),
+                    &pool,
+                    &user_agents,
+                    &spec.file_name,
+                )
+                .await
+            }
+        };
 
         let file_name = outcome.file_name;
         let file_size = outcome.file_size;

@@ -156,6 +156,40 @@ pub struct ProbeOutcome {
     pub is_hls: bool,
 }
 
+/// Probe with a 3s budget. If that misses, retry through `fallback_proxy`
+/// (typically the configured default proxy, or Direct).
+pub async fn probe_then_default_proxy(
+    url: &str,
+    headers: &HashMap<String, String>,
+    primary_proxy: Option<&str>,
+    fallback_proxy: Option<&str>,
+    pool: &NetworkPool,
+    user_agents: &[String],
+) -> PdmResult<ProbeResult> {
+    let first = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        probe(url, headers, primary_proxy, pool, user_agents),
+    )
+    .await;
+    match first {
+        Ok(Ok(result)) => Ok(result),
+        other => {
+            let same = primary_proxy == fallback_proxy;
+            if same {
+                return match other {
+                    Ok(r) => r,
+                    Err(_) => probe(url, headers, primary_proxy, pool, user_agents).await,
+                };
+            }
+            log::info!(
+                "[ProxyDM] probe missed 3s budget or failed; retrying via fallback proxy={:?}",
+                fallback_proxy
+            );
+            probe(url, headers, fallback_proxy, pool, user_agents).await
+        }
+    }
+}
+
 /// Probe with fallback: on failure, derive filename from URL.
 pub async fn probe_with_fallback(
     url: &str,

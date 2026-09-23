@@ -153,6 +153,7 @@ pub fn save_settings(state: State<'_, Arc<AppState>>, settings: Settings) -> Res
         settings.language, settings.download_dir, settings.max_connections, settings.danger_accept_invalid_certs);
 
     let result = state.settings.save(&settings)?;
+    state.dm.set_global_rate_limit(settings.global_rate_limit);
 
     if result.tls_changed {
         state.dm.clear_client_pool();
