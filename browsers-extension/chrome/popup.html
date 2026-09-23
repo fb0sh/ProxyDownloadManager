@@ -4,55 +4,111 @@
     <meta charset="utf-8" />
     <title>ProxyDM</title>
     <style>
-      :root { color-scheme: light; }
-      body { font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; width: 320px; color: #1c2329; background: #f4f6f8; }
-      header { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid #d5dde3; background: #fff; }
-      h1 { font-size: 13px; margin: 0; font-weight: 650; }
-      .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
-      .on { background: #0e7c86; }
-      .off { background: #b42318; }
-      section { padding: 10px 12px; }
+      :root {
+        --background: oklch(1 0 0);
+        --foreground: oklch(0.145 0 0);
+        --muted: oklch(0.97 0 0);
+        --muted-foreground: oklch(0.556 0 0);
+        --border: oklch(0.922 0 0);
+        --primary: oklch(0.205 0 0);
+        --primary-foreground: oklch(0.985 0 0);
+        --destructive: oklch(0.577 0.245 27.325);
+        --radius: 0.625rem;
+      }
+      body {
+        font: 13px/1.4 ui-sans-serif, system-ui, sans-serif;
+        margin: 0;
+        width: 320px;
+        color: var(--foreground);
+        background: var(--background);
+      }
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--border);
+        background: var(--muted);
+      }
+      h1 { font-size: 13px; margin: 0; font-weight: 600; }
+      .dot { width: 8px; height: 8px; border-radius: 999px; display: inline-block; margin-right: 6px; }
+      .on { background: var(--foreground); }
+      .off { background: var(--destructive); }
+      section { padding: 10px 12px; border-bottom: 1px solid var(--border); }
       .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
-      button { font: inherit; border: 1px solid #c5ced6; background: #fff; border-radius: 4px; padding: 4px 8px; cursor: pointer; }
-      button.primary { background: #0e7c86; color: #fff; border-color: #0e7c86; }
-      label { font-size: 12px; color: #4b5963; }
-      input[type="text"], input[type="number"] { width: 100%; box-sizing: border-box; border: 1px solid #c5ced6; border-radius: 4px; padding: 4px 6px; font: inherit; }
+      button {
+        font: inherit;
+        border: 1px solid var(--border);
+        background: var(--background);
+        color: var(--foreground);
+        border-radius: calc(var(--radius) - 2px);
+        padding: 6px 10px;
+        cursor: pointer;
+        height: 32px;
+      }
+      button.primary {
+        background: var(--primary);
+        color: var(--primary-foreground);
+        border-color: var(--primary);
+      }
+      label { font-size: 13px; color: var(--muted-foreground); display: block; margin: 6px 0 4px; }
+      input[type="text"], input[type="number"] {
+        width: 100%;
+        box-sizing: border-box;
+        border: 1px solid var(--border);
+        border-radius: calc(var(--radius) - 2px);
+        padding: 6px 8px;
+        font: inherit;
+        height: 32px;
+        background: var(--background);
+        color: var(--foreground);
+      }
       ul { list-style: none; margin: 0; padding: 0; max-height: 180px; overflow: auto; }
-      li { padding: 6px 0; border-top: 1px solid #e6ebef; display: flex; gap: 8px; align-items: center; }
-      li span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
-      .muted { color: #6a7680; font-size: 12px; }
+      li {
+        padding: 8px 0;
+        border-top: 1px solid var(--border);
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        cursor: pointer;
+      }
+      li:hover { background: var(--muted); }
+      li span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+      .muted { color: var(--muted-foreground); font-size: 12px; }
+      .error { color: var(--destructive); font-size: 12px; margin-top: 6px; }
     </style>
   </head>
   <body>
     <header>
       <h1>ProxyDM</h1>
-      <div id="conn"><span class="dot off"></span><span>Disconnected</span></div>
+      <div id="conn"></div>
     </header>
     <section>
       <div class="row">
-        <label>Capture downloads</label>
-        <button id="toggle">Off</button>
+        <label id="lbl-capture"></label>
+        <button id="toggle"></button>
       </div>
       <div class="row">
-        <label>Skip next download</label>
-        <button id="bypass">Once</button>
+        <label id="lbl-skip"></label>
+        <button id="bypass"></button>
       </div>
-      <p class="muted">Hold Alt or Delete while clicking a download to use the browser once.</p>
+      <p class="muted" id="skip-hint"></p>
     </section>
     <section>
-      <div class="row"><strong>Media on this tab</strong><span id="count" class="muted">0</span></div>
+      <div class="row"><strong id="lbl-media"></strong><span id="count" class="muted">0</span></div>
       <ul id="media"></ul>
+      <div class="error" id="error" hidden></div>
     </section>
     <section>
-      <div class="row"><strong>Filters</strong></div>
-      <label>Minimum size (bytes)</label>
+      <div class="row"><strong id="lbl-filters"></strong></div>
+      <label id="lbl-minsize"></label>
       <input id="minSize" type="number" min="0" />
-      <label>Ignored domains</label>
-      <input id="ignoredDomains" type="text" placeholder="cdn.example, static.foo" />
-      <label>Ignored extensions</label>
-      <input id="ignoredExtensions" type="text" placeholder="ico, svg, json" />
-      <div class="row" style="margin-top:8px"><button id="save" class="primary">Save filters</button></div>
+      <label id="lbl-domains"></label>
+      <input id="ignoredDomains" type="text" />
+      <label id="lbl-exts"></label>
+      <input id="ignoredExtensions" type="text" />
+      <div class="row" style="margin-top:8px"><button id="save" class="primary"></button></div>
     </section>
-    <script src="popup.js"></script>
+    <script type="module" src="popup.js"></script>
   </body>
 </html>

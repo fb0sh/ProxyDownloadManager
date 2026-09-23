@@ -13,6 +13,7 @@ import {
   mediaDedupKey,
   shouldSkipMediaUrl,
 } from "./protocol.js";
+import { t } from "./i18n.js";
 
 const WS_URL = "ws://127.0.0.1:18999";
 let ws = null;
@@ -71,10 +72,10 @@ function updateIcon(enabled) {
     },
   });
   const title = connected
-    ? "ProxyDM connected"
+    ? t("actionConnected")
     : enabled
-      ? "ProxyDM enabled — desktop offline"
-      : "ProxyDM disabled";
+      ? t("actionOffline")
+      : t("actionDisabled");
   chrome.action.setTitle({ title });
   if (!enabled) {
     chrome.action.setBadgeText({ text: "✕" });
@@ -195,9 +196,9 @@ function sendReliable(payload) {
 
 function createContextMenus() {
   chrome.contextMenus.removeAll(() => {
-    chrome.contextMenus.create({ id: "dl-link", title: "Download with ProxyDM", contexts: ["link", "video", "audio"] });
-    chrome.contextMenus.create({ id: "dl-page", title: "Download page with ProxyDM", contexts: ["page"] });
-    chrome.contextMenus.create({ id: "dl-sel", title: "Download selected link with ProxyDM", contexts: ["selection"] });
+    chrome.contextMenus.create({ id: "dl-link", title: t("menuLink"), contexts: ["link", "video", "audio"] });
+    chrome.contextMenus.create({ id: "dl-page", title: t("menuPage"), contexts: ["page"] });
+    chrome.contextMenus.create({ id: "dl-sel", title: t("menuSel"), contexts: ["selection"] });
   });
 }
 
@@ -288,8 +289,11 @@ function shouldIgnore(url, item, settings) {
 }
 
 async function activeTab() {
-  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-  return tabs[0];
+  const focused = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  const usable = focused.find((t) => t.id >= 0 && t.url && !t.url.startsWith("chrome-extension:") && !t.url.startsWith("moz-extension:"));
+  if (usable) return usable;
+  const all = await chrome.tabs.query({ active: true });
+  return all.find((t) => t.url && !String(t.url).startsWith("chrome-extension:") && !String(t.url).startsWith("moz-extension:")) || all[0];
 }
 
 async function buildFromTab(url, tab) {
@@ -350,49 +354,52 @@ function filenameFromUrl(url) {
   }
 }
 
+function onHeadersReceived(details) {
+  const headers = {};
+  for (const h of details.responseHeaders || []) {
+    if (h.name && h.value) headers[h.name] = h.value;
+  }
+  const type = (headers["content-type"] || headers["Content-Type"] || "").split(";")[0].trim();
+  const length = Number(headers["content-length"] || headers["Content-Length"] || 0);
+  requestCtx.set(details.url, {
+    headers: filterHeaders(headers),
+    contentType: type,
+    contentLength: length,
+    referrer: details.initiator || "",
+  });
+  if (shouldSkipMediaUrl(details.url)) return;
+  const isMedia =
+    type.startsWith("video/") ||
+    type.startsWith("audio/") ||
+    type === "application/vnd.apple.mpegurl" ||
+    type === "application/x-mpegURL" ||
+    /\.m3u8(\?|$)/i.test(details.url);
+  if (!isMedia) return;
+  const tabId = details.tabId;
+  if (tabId < 0) return;
+  const list = mediaByTab.get(tabId) || [];
+  const key = mediaDedupKey(details.url, type);
+  if (list.some((m) => m.key === key)) return;
+  list.unshift({
+    key,
+    url: details.url,
+    contentType: type,
+    size: length,
+    tabId,
+    referrer: details.initiator || "",
+    capturedAt: Date.now(),
+  });
+  mediaByTab.set(tabId, list.slice(0, 50));
+  broadcastStatus();
+}
+
 if (chrome.webRequest?.onHeadersReceived) {
-  chrome.webRequest.onHeadersReceived.addListener(
-    (details) => {
-      const headers = {};
-      for (const h of details.responseHeaders || []) {
-        if (h.name && h.value) headers[h.name] = h.value;
-      }
-      const type = (headers["content-type"] || headers["Content-Type"] || "").split(";")[0].trim();
-      const length = Number(headers["content-length"] || headers["Content-Length"] || 0);
-      requestCtx.set(details.url, {
-        headers: filterHeaders(headers),
-        contentType: type,
-        contentLength: length,
-        referrer: details.initiator || "",
-      });
-      if (shouldSkipMediaUrl(details.url)) return;
-      const isMedia =
-        type.startsWith("video/") ||
-        type.startsWith("audio/") ||
-        type === "application/vnd.apple.mpegurl" ||
-        type === "application/x-mpegURL" ||
-        /\.m3u8(\?|$)/i.test(details.url);
-      if (!isMedia) return;
-      const tabId = details.tabId;
-      if (tabId < 0) return;
-      const list = mediaByTab.get(tabId) || [];
-      const key = mediaDedupKey(details.url, type);
-      if (list.some((m) => m.key === key)) return;
-      list.unshift({
-        key,
-        url: details.url,
-        contentType: type,
-        size: length,
-        tabId,
-        referrer: details.initiator || "",
-        capturedAt: Date.now(),
-      });
-      mediaByTab.set(tabId, list.slice(0, 50));
-      broadcastStatus();
-    },
-    { urls: ["<all_urls>"] },
-    ["responseHeaders", "extraHeaders"]
-  );
+  const filter = { urls: ["<all_urls>"] };
+  try {
+    chrome.webRequest.onHeadersReceived.addListener(onHeadersReceived, filter, ["responseHeaders", "extraHeaders"]);
+  } catch {
+    chrome.webRequest.onHeadersReceived.addListener(onHeadersReceived, filter, ["responseHeaders"]);
+  }
 }
 
 chrome.tabs?.onRemoved?.addListener((tabId) => {
@@ -412,7 +419,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     (async () => {
       const enabled = await isEnabled();
       const tab = await activeTab();
-      const media = mediaByTab.get(tab?.id ?? -1) || [];
+      let media = mediaByTab.get(tab?.id ?? -1) || [];
+      if (media.length === 0) {
+        for (const list of mediaByTab.values()) {
+          if (list.length) { media = list; break; }
+        }
+      }
       const settings = await getSettings();
       sendResponse({ enabled, connected, mediaCount: media.length, media, settings });
     })();
@@ -433,10 +445,31 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
   if (request.action === "download-media") {
     (async () => {
-      const tab = await activeTab();
-      const req = await buildFromTab(request.url, tab);
-      req.content_type = request.contentType || req.content_type;
+      const tab = request.tabId != null
+        ? await chrome.tabs.get(request.tabId).catch(() => null)
+        : await activeTab();
+      const list = mediaByTab.get(tab?.id ?? request.tabId ?? -1) || [];
+      const hit = list.find((m) => m.url === request.url) || {};
+      const cookies = await cookiesFor(request.url);
+      const referrer = request.referrer || hit.referrer || tab?.url || "";
+      const req = buildDownloadRequest({
+        url: request.url,
+        finalUrl: request.url,
+        filename: filenameFromUrl(request.url),
+        referrer,
+        tabUrl: tab?.url || "",
+        cookies,
+        userAgent: navigator.userAgent,
+        headers: {
+          Cookie: cookies,
+          Referer: referrer,
+          "User-Agent": navigator.userAgent,
+        },
+        contentType: request.contentType || hit.contentType || "",
+        contentLength: request.size || hit.size || 0,
+      });
       const ok = await sendReliable(req);
+      if (!ok) notifyNotRunning();
       sendResponse({ ok });
     })();
     return true;
@@ -480,7 +513,7 @@ function notifyNotRunning({ allowStartupGrace = false } = {}) {
   const inStartupGrace = allowStartupGrace && now - startedAt < STARTUP_GRACE_MS;
   const inCooldown = now - lastNotRunningNotificationAt < NOT_RUNNING_NOTIFICATION_COOLDOWN_MS;
   if (!inStartupGrace && !inCooldown) {
-    notify("ProxyDM is not running", "Using the browser download instead. Start ProxyDM to capture downloads.");
+    notify(t("notifyOfflineTitle"), t("notifyOfflineBody"));
     lastNotRunningNotificationAt = now;
   }
   isEnabled().then(updateIcon);

@@ -1,12 +1,48 @@
+import { t } from "./i18n.js";
+
 const $ = (id) => document.getElementById(id);
+
+$("lbl-capture").textContent = t("capture");
+$("lbl-skip").textContent = t("skipNext");
+$("skip-hint").textContent = t("skipHint");
+$("lbl-media").textContent = t("media");
+$("lbl-filters").textContent = t("filters");
+$("lbl-minsize").textContent = t("minSize");
+$("lbl-domains").textContent = t("ignoredDomains");
+$("lbl-exts").textContent = t("ignoredExtensions");
+$("bypass").textContent = t("once");
+$("save").textContent = t("save");
+$("ignoredDomains").placeholder = "cdn.example, static.foo";
+$("ignoredExtensions").placeholder = "ico, svg, json";
+
+async function downloadMedia(item) {
+  $("error").hidden = true;
+  try {
+    const resp = await chrome.runtime.sendMessage({
+      action: "download-media",
+      url: item.url,
+      contentType: item.contentType,
+      tabId: item.tabId,
+      referrer: item.referrer,
+      size: item.size,
+    });
+    if (!resp?.ok) {
+      $("error").hidden = false;
+      $("error").textContent = t("downloadFailed");
+    }
+  } catch {
+    $("error").hidden = false;
+    $("error").textContent = t("downloadFailed");
+  }
+}
 
 async function refresh() {
   const status = await chrome.runtime.sendMessage({ action: "popup-status" });
   const conn = $("conn");
   conn.innerHTML = status.connected
-    ? '<span class="dot on"></span><span>Connected</span>'
-    : '<span class="dot off"></span><span>Disconnected</span>';
-  $("toggle").textContent = status.enabled ? "On" : "Off";
+    ? `<span class="dot on"></span><span>${t("connected")}</span>`
+    : `<span class="dot off"></span><span>${t("disconnected")}</span>`;
+  $("toggle").textContent = status.enabled ? t("on") : t("off");
   $("count").textContent = String(status.mediaCount || 0);
   const list = $("media");
   list.innerHTML = "";
@@ -14,18 +50,23 @@ async function refresh() {
     const li = document.createElement("li");
     const span = document.createElement("span");
     span.textContent = m.url;
-    span.title = m.contentType || "";
+    span.title = m.contentType || m.url;
     const btn = document.createElement("button");
-    btn.textContent = "Download";
-    btn.onclick = async () => {
-      await chrome.runtime.sendMessage({ action: "download-media", url: m.url, contentType: m.contentType });
+    btn.textContent = t("download");
+    const go = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      downloadMedia(m);
     };
+    btn.addEventListener("click", go);
+    li.addEventListener("click", go);
     li.append(span, btn);
     list.append(li);
   });
   if ((status.media || []).length === 0) {
     const li = document.createElement("li");
-    li.innerHTML = '<span class="muted">No media captured on this tab.</span>';
+    li.style.cursor = "default";
+    li.innerHTML = `<span class="muted">${t("noMedia")}</span>`;
     list.append(li);
   }
   const s = status.settings || {};
@@ -42,7 +83,7 @@ $("toggle").onclick = async () => {
 
 $("bypass").onclick = async () => {
   await chrome.runtime.sendMessage({ action: "bypass-next" });
-  $("bypass").textContent = "Armed";
+  $("bypass").textContent = t("armed");
 };
 
 $("save").onclick = async () => {
@@ -54,8 +95,8 @@ $("save").onclick = async () => {
       ignoredExtensions: $("ignoredExtensions").value,
     },
   });
-  $("save").textContent = "Saved";
-  setTimeout(() => { $("save").textContent = "Save filters"; }, 1200);
+  $("save").textContent = t("saved");
+  setTimeout(() => { $("save").textContent = t("save"); }, 1200);
 };
 
 chrome.runtime.onMessage.addListener((msg) => {
