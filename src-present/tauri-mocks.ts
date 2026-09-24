@@ -301,7 +301,11 @@ export class WebviewWindow {
   setAlwaysOnTop = async () => {};
   setFocus = async () => {};
   requestUserAttention = async () => {};
-  close = async () => {};
+  // The real app closes its own OS window here. In the showcase that window is
+  // a panel inside the demo frame, so hand the request to DemoWindow instead.
+  close = async () => {
+    window.dispatchEvent(new CustomEvent("demo-window-close"));
+  };
 }
 
 export function getCurrentWindow() {

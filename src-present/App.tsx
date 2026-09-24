@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { setLanguage } from "../src/i18n";
+import { setLanguage, t } from "../src/i18n";
 import {
   usePauseDownload,
   useResumeDownload,
@@ -10,8 +10,10 @@ import {
 } from "../src/query/downloadQueries";
 import Layout from "../src/components/Layout";
 import DialogRenderer from "../src/components/DialogRenderer";
-import NewDownloadDialog from "../src/components/dialogs/NewDownloadDialog";
-import PropertiesDialog from "../src/components/dialogs/PropertiesDialog";
+import NewDownloadWindow from "../src/NewDownloadWindow";
+import DownloadDetailsWindow from "../src/DownloadDetailsWindow";
+import DemoWindow from "./DemoWindow";
+import { emitToListeners } from "./tauri-mocks";
 import { AppProvider, useAppContext, type AppActions } from "../src/contexts/AppContext";
 import { useDialog } from "../src/hooks/useDialog";
 import { useSelection } from "../src/hooks/useSelection";
@@ -53,13 +55,42 @@ function DemoInner({ extra, setExtra }: { extra: ExtraDialog; setExtra: (d: Extr
         onDownloadUpdate={() => {}}
       />
       {extra?.type === "newDownload" && (
-        <NewDownloadDialog onClose={() => setExtra(null)} />
+        <DemoWindow
+          title={t("newDownload.title")}
+          width={640}
+          height={560}
+          onClose={() => setExtra(null)}
+        >
+          <NewDownloadWindow />
+        </DemoWindow>
       )}
       {extra?.type === "properties" && (
-        <PropertiesDialog id={extra.id} onClose={() => setExtra(null)} />
+        <DemoWindow
+          title={t("properties.title")}
+          width={460}
+          height={520}
+          onClose={() => setExtra(null)}
+        >
+          <DetailsWindowHost id={extra.id} />
+        </DemoWindow>
       )}
     </div>
   );
+}
+
+/**
+ * DownloadDetailsWindow resolves its id from the query string, or from the
+ * `details-id` event the desktop app emits when it reuses an open window.
+ * The demo has no query string, so replay that event once the window's own
+ * listener has attached (a macrotask later — the listener registers after an
+ * async module import).
+ */
+function DetailsWindowHost({ id }: { id: number }) {
+  useEffect(() => {
+    const handle = window.setTimeout(() => { emitToListeners("details-id", id); }, 0);
+    return () => window.clearTimeout(handle);
+  }, [id]);
+  return <DownloadDetailsWindow />;
 }
 
 function DemoApp() {

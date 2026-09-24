@@ -12,6 +12,7 @@
 ### Fixed
 
 - 展示页内嵌的主窗口丢失全部 Tailwind 工具类（工具栏竖排、表格挤到右侧），在 `src/index.css` 显式声明 `@source "../src"` 让扫描覆盖 `src/`
+- 展示页的「新建下载」「详情」不再用产品里不存在的简化弹窗，改为真机的 `NewDownloadWindow` / `DownloadDetailsWindow`，以第二个窗口的形式盖在主窗口上（演示框加高到能容纳 560px 的新建窗）
 
 ## [0.13.2] - 2026-09-24
 
