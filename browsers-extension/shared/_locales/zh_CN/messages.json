@@ -1,0 +1,10 @@
+{
+  "extensionName": {
+    "message": "Proxy Download Manager",
+    "description": "扩展名称，显示在浏览器工具栏与商店列表中。"
+  },
+  "extensionDescription": {
+    "message": "把浏览器下载交给 ProxyDM 桌面端：每个任务独立选代理，多线程加速、断点续传。",
+    "description": "商店列表中的简短说明（不超过 132 个字符）。"
+  }
+}

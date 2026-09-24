@@ -1,0 +1,10 @@
+{
+  "extensionName": {
+    "message": "Proxy Download Manager",
+    "description": "Extension name shown in the browser toolbar and in the store listing."
+  },
+  "extensionDescription": {
+    "message": "Send downloads to the ProxyDM desktop app, with per-task proxy selection and multi-threaded acceleration.",
+    "description": "Short description shown in the store listing (max 132 characters)."
+  }
+}
