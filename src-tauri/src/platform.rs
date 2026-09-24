@@ -52,6 +52,39 @@ pub fn sync_autostart(
     }
 }
 
+const EXTENSION_BROWSERS: &[&str] = &["chrome", "edge", "firefox"];
+const DEPLOY_STAMP: &str = ".deployed-version";
+
+/// Copy bundled chrome/edge/firefox folders into `target_dir` whenever
+/// the app version stamp is missing or stale. Unpacked extensions on macOS
+/// are loaded from Application Support, so a first-run-only copy would
+/// leave users on old files after every upgrade.
+pub fn sync_extension_dirs(
+    src_dir: &std::path::Path,
+    target_dir: &std::path::Path,
+    version: &str,
+) -> Result<bool, String> {
+    let stamp_path = target_dir.join(DEPLOY_STAMP);
+    let current = std::fs::read_to_string(&stamp_path).unwrap_or_default();
+    let browsers_present = EXTENSION_BROWSERS.iter().all(|name| target_dir.join(name).is_dir());
+    if current.trim() == version && browsers_present {
+        return Ok(false);
+    }
+
+    std::fs::create_dir_all(target_dir).map_err(|e| e.to_string())?;
+    for name in EXTENSION_BROWSERS {
+        let src = src_dir.join(name);
+        if !src.is_dir() {
+            continue;
+        }
+        let dst = target_dir.join(name);
+        let _ = std::fs::remove_dir_all(&dst);
+        copy_dir_recursive(&src, &dst)?;
+    }
+    std::fs::write(&stamp_path, version).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
 pub(crate) fn deploy_extensions(app: &tauri::AppHandle) -> Result<String, String> {
     let src_dir = if let Ok(resource_dir) = app.path().resource_dir() {
         let ext_dir = resource_dir.join("extensions");
@@ -74,25 +107,12 @@ pub(crate) fn deploy_extensions(app: &tauri::AppHandle) -> Result<String, String
     {
         let app_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
         let target_dir = app_dir.join("extensions");
-
-        if !target_dir.exists() {
-            std::fs::create_dir_all(&target_dir).map_err(|e| e.to_string())?;
-
-            for entry in std::fs::read_dir(&src_dir).map_err(|e| e.to_string())? {
-                let entry = entry.map_err(|e| e.to_string())?;
-                let name = entry.file_name();
-                let src = entry.path();
-                let dst = target_dir.join(&name);
-
-                if src.is_dir() {
-                    let _ = std::fs::remove_dir_all(&dst);
-                    copy_dir_recursive(&src, &dst)?;
-                } else {
-                    let _ = std::fs::copy(&src, &dst);
-                }
-            }
+        let version = app.package_info().version.to_string();
+        match sync_extension_dirs(&src_dir, &target_dir, &version) {
+            Ok(true) => log::info!("[ProxyDM] refreshed browser extensions to v{}", version),
+            Ok(false) => log::info!("[ProxyDM] browser extensions already at v{}", version),
+            Err(e) => log::error!("[ProxyDM] extension sync failed: {}", e),
         }
-
         return Ok(target_dir.to_string_lossy().to_string());
     }
 
@@ -150,5 +170,37 @@ pub fn resolve_extensions_dir(app: &tauri::AppHandle) -> Result<String, String> 
         }
 
         Err("Extensions directory not found. The browser extensions may not have been bundled. Try reinstalling the application.".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn write_ext(dir: &std::path::Path, browser: &str, body: &str) {
+        let p = dir.join(browser);
+        fs::create_dir_all(&p).unwrap();
+        fs::write(p.join("manifest.json"), body).unwrap();
+    }
+
+    #[test]
+    fn sync_copies_on_first_run_and_skips_same_version() {
+        let tmp = std::env::temp_dir().join(format!("pdm_ext_sync_{}", std::process::id()));
+        let src = tmp.join("src");
+        let dst = tmp.join("dst");
+        let _ = fs::remove_dir_all(&tmp);
+        write_ext(&src, "chrome", r#"{"version":"1"}"#);
+        write_ext(&src, "edge", r#"{"version":"1"}"#);
+        write_ext(&src, "firefox", r#"{"version":"1"}"#);
+
+        assert!(sync_extension_dirs(&src, &dst, "0.13.2").unwrap());
+        assert_eq!(fs::read_to_string(dst.join("chrome/manifest.json")).unwrap(), r#"{"version":"1"}"#);
+        assert!(!sync_extension_dirs(&src, &dst, "0.13.2").unwrap());
+
+        write_ext(&src, "chrome", r#"{"version":"2"}"#);
+        assert!(sync_extension_dirs(&src, &dst, "0.13.3").unwrap());
+        assert_eq!(fs::read_to_string(dst.join("chrome/manifest.json")).unwrap(), r#"{"version":"2"}"#);
+        let _ = fs::remove_dir_all(&tmp);
     }
 }

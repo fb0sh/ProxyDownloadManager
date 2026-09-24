@@ -5,6 +5,12 @@
 
 ## [Unreleased]
 
+## [0.13.2] - 2026-09-24
+
+### Fixed
+
+- macOS 升级后不再沿用第一次拷贝到 Application Support 的旧扩展；启动时按应用版本同步 chrome/edge/firefox
+
 ## [0.13.1] - 2026-09-23
 
 ### Fixed

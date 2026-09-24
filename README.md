@@ -52,7 +52,7 @@ ProxyDownloadManager 附带浏览器扩展，Chrome / Edge / Firefox 均可使�
 
 ### macOS — 安装步骤
 
-> 扩展文件位于 `~/Library/Application Support/com.fb0sh.proxydownloadmanager/extensions/`，需先显示 `~/Library` 文件夹。
+> 扩展文件位于 `~/Library/Application Support/com.fb0sh.proxydownloadmanager/extensions/`，需先显示 `~/Library` 文件夹。每次升级应用并启动后，该目录会同步为当前版本；Chrome / Edge 需在扩展页点击「重新加载」。
 
 1. 打开 **Finder** → 菜单栏 **前往**
 2. 按住 <kbd>Option</kbd> 键 → **资源库** 出现，点击进入
