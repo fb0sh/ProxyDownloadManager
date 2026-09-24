@@ -5,8 +5,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- 浏览器扩展上架物料：双语 `_locales`、Edge 商店文案、权限理由、认证说明与提交作业单（`browsers-extension/store/`）
+- 隐私政策页 `public/privacy.html`，随现有 Pages 工作流发布
+
 ### Changed
 
+- 扩展 manifest 的 `name` / `description` 改用 `__MSG_` 占位符并补 `default_locale`（chrome / edge / firefox），使商店能识别 en 与 zh_CN 两种语言
 - 在线演示站重做：与当前 shadcn 界面一致，内嵌可操作主窗口，去掉剪贴板宣传
 
 ### Fixed

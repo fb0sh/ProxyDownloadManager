@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Proxy Download Manager — Privacy Policy</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body {
+        margin: 0 auto;
+        max-width: 46rem;
+        padding: 2.5rem 1.25rem 5rem;
+        font: 16px/1.7 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      h1 { font-size: 1.7rem; margin: 0 0 .25rem; }
+      h2 { font-size: 1.15rem; margin: 2.25rem 0 .5rem; }
+      .meta { color: #6b7280; font-size: .9rem; margin: 0 0 2rem; }
+      code { font-size: .92em; padding: .1em .35em; border-radius: .3em; background: rgba(127,127,127,.16); }
+      table { border-collapse: collapse; width: 100%; margin: .75rem 0; font-size: .95rem; }
+      th, td { border: 1px solid rgba(127,127,127,.35); padding: .5rem .6rem; text-align: left; vertical-align: top; }
+      th { background: rgba(127,127,127,.12); font-weight: 600; }
+      ul { padding-left: 1.25rem; }
+      footer { margin-top: 3rem; color: #6b7280; font-size: .9rem; }
+      a { color: inherit; }
+    </style>
+  </head>
+  <body>
+    <h1>Privacy Policy — Proxy Download Manager</h1>
+    <p class="meta">
+      Applies to the <strong>Proxy Download Manager</strong> browser extension (Chrome, Edge, Firefox)
+      and the ProxyDM desktop application. Last updated: 24 September 2026.
+    </p>
+
+    <p>
+      Proxy Download Manager is free and open source. This policy explains exactly what the extension
+      and the desktop app do with data. Every statement below can be checked against the source code at
+      <a href="https://github.com/fb0sh/ProxyDownloadManager">github.com/fb0sh/ProxyDownloadManager</a>.
+    </p>
+
+    <h2>Summary</h2>
+    <ul>
+      <li>The extension communicates only with the ProxyDM desktop app running on <strong>the same
+        computer</strong>, over <code>ws://127.0.0.1:18999</code> (loopback).</li>
+      <li><strong>No data is sent to the developer or to any third party.</strong> There is no analytics,
+        no telemetry, no advertising and no user account.</li>
+      <li>The extension works with the machine offline.</li>
+      <li>Settings and per-tab state are stored locally in your browser profile and are removed when you
+        uninstall the extension.</li>
+    </ul>
+
+    <h2>What the extension accesses, and why</h2>
+    <table>
+      <thead>
+        <tr><th>Data</th><th>How it is obtained</th><th>What it is used for</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>The URL, file name, MIME type and originating tab address of a download you start</td>
+          <td>Browser <code>downloads</code> API</td>
+          <td>To hand the download to the desktop app, then cancel and clear the browser's own copy so the
+            file is not fetched twice.</td>
+        </tr>
+        <tr>
+          <td>Cookies for the download URL</td>
+          <td>Browser <code>cookies</code> API, queried for that single URL</td>
+          <td>So the desktop app can make the same request the browser would have made (for example, for a
+            file behind a login). Cookies are passed to the local app in memory for that request only.</td>
+        </tr>
+        <tr>
+          <td>A fixed allow-list of eight request headers — <code>cookie</code>, <code>referer</code>,
+            <code>origin</code>, <code>user-agent</code>, <code>authorization</code>,
+            <code>accept</code>, <code>accept-language</code>, <code>accept-encoding</code></td>
+          <td>Browser <code>webRequest</code> API (read-only) and the download event</td>
+          <td>To reproduce the user's request faithfully. Every other header is discarded by the extension
+            and never leaves the browser.</td>
+        </tr>
+        <tr>
+          <td>Response <code>Content-Type</code> and <code>Content-Length</code></td>
+          <td>Browser <code>webRequest</code> API, read-only</td>
+          <td>To tell a downloadable file apart from a streaming response, show the correct size, and build
+            the media list in the popup.</td>
+        </tr>
+        <tr>
+          <td>Media elements (video, audio, archive and installer links) found on the page you are viewing</td>
+          <td>Content script reading the page's own DOM</td>
+          <td>To list them in the popup so you can send one to the desktop app. Content is read, never
+            modified.</td>
+        </tr>
+        <tr>
+          <td>Your settings: capture on/off, minimum file size, ignored domains, ignored extensions</td>
+          <td>Entered by you in the popup</td>
+          <td>Stored locally with <code>chrome.storage.local</code> so your preferences survive restarts.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>Where data goes</h2>
+    <ul>
+      <li>The data listed above is sent over a loopback WebSocket to the ProxyDM desktop app on the same
+        machine, and nowhere else. The desktop app only listens on <code>127.0.0.1</code>; it exposes no
+        inbound port to your network or the internet.</li>
+      <li>The desktop app uses those details to perform the download you asked for, through the proxy you
+        configured. It redacts the values of <code>Cookie</code>, <code>Authorization</code>,
+        <code>Proxy-Authorization</code> and <code>Set-Cookie</code> in its own log output.</li>
+      <li>The developer operates no server that receives extension or app data, and has no way to read your
+        downloads, browsing history or settings.</li>
+      <li>Data is not sold, rented or shared with anyone, and is not used for advertising, profiling or
+        creditworthiness.</li>
+      <li>Data is not used for any purpose unrelated to the single purpose of sending your downloads to
+        your own desktop app.</li>
+    </ul>
+
+    <h2>Retention and deletion</h2>
+    <ul>
+      <li>Extension settings live in your browser profile until you change them or uninstall the
+        extension; uninstalling removes them.</li>
+      <li>Per-tab media state is held in session storage and disappears with the session.</li>
+      <li>Download records and files on disk are managed by the desktop app under your control; delete
+        them from the app, or delete the files from your file system.</li>
+      <li>Because the developer receives nothing, there is no server-side copy to request or delete.</li>
+    </ul>
+
+    <h2>Children</h2>
+    <p>
+      The extension is not directed at children and does not knowingly collect personal information from
+      anyone, including children.
+    </p>
+
+    <h2>Changes to this policy</h2>
+    <p>
+      If this policy changes, the updated version will be published at this URL with a new "last updated"
+      date. Material changes will also be noted in the project's release notes.
+    </p>
+
+    <h2>Contact</h2>
+    <p>
+      Questions or concerns:
+      <a href="https://github.com/fb0sh/ProxyDownloadManager/issues">github.com/fb0sh/ProxyDownloadManager/issues</a>.
+    </p>
+
+    <footer>
+      Proxy Download Manager is released under the MIT licence.
+    </footer>
+  </body>
+</html>
