@@ -1,5 +1,9 @@
 @import "tailwindcss";
 
+/* 展示页 (src-present) 的 Vite root 是 src-present/，自动扫描扫不到 src/，
+   会让组件类名全部丢失。显式声明一次，主程序与展示页共用。 */
+@source "../src";
+
 :root {
   --radius: 0.625rem;
   --background: oklch(1 0 0);
