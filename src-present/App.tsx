@@ -45,8 +45,8 @@ function DemoInner({ extra, setExtra }: { extra: ExtraDialog; setExtra: (d: Extr
     : undefined;
 
   return (
-    <div className="demo-app relative">
-      <Layout onRedownloadItem={selectedForRedownload} />
+    <div className="demo-app h-full">
+      <Layout className="h-full" onRedownloadItem={selectedForRedownload} />
       <DialogRenderer
         dialog={dialog}
         onClose={() => dialogActions.closeDialog()}
@@ -171,14 +171,16 @@ function Page() {
             </div>
             <p className="site-mono text-[12px] text-[#737373]">演示数据 · 不会真的下载</p>
           </div>
-          <div className="demo-frame mx-auto shadow-[0_24px_60px_-28px_rgba(0,0,0,0.35)]">
-            <div className="flex h-9 items-center gap-2 border-b border-[#e5e5e5] bg-[#f5f5f5] px-3">
+          <div className="demo-frame shadow-[0_24px_60px_-28px_rgba(0,0,0,0.35)]">
+            <div className="demo-chrome flex items-center gap-2 border-b border-[#e5e5e5] bg-[#f5f5f5] px-3">
               <span className="size-2.5 rounded-full bg-[#d4d4d4]" />
               <span className="size-2.5 rounded-full bg-[#d4d4d4]" />
               <span className="size-2.5 rounded-full bg-[#d4d4d4]" />
               <span className="site-mono mx-auto text-[11px] text-[#737373]">ProxyDownloadManager {VERSION}</span>
             </div>
-            <DemoApp />
+            <div className="demo-body">
+              <DemoApp />
+            </div>
           </div>
         </div>
       </section>

@@ -8,12 +8,14 @@ import { useAppContext } from "../contexts/AppContext";
 import { Input } from "./ui/input";
 import { Select } from "./ui/select";
 import type { TypeFilter } from "../utils/url";
+import { cn } from "../lib/utils";
 
 interface LayoutProps {
   onRedownloadItem?: import("../types").DownloadItem;
+  className?: string;
 }
 
-export default function Layout({ onRedownloadItem }: LayoutProps) {
+export default function Layout({ onRedownloadItem, className }: LayoutProps) {
   const { selectedIds, filter, setFilter } = useAppContext();
   const { data: downloads = [] } = useDownloads();
   const [query, setQuery] = useState("");
@@ -42,7 +44,7 @@ export default function Layout({ onRedownloadItem }: LayoutProps) {
   ];
 
   return (
-    <div className="flex h-screen flex-col">
+    <div className={cn("flex h-screen flex-col", className)}>
       <Toolbar
         hasDownloadingSelected={hasDownloadingSelected}
         hasPausedSelected={hasPausedSelected}

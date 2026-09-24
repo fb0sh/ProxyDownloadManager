@@ -31,20 +31,30 @@ body,
 }
 
 .demo-frame {
+  display: flex;
+  flex-direction: column;
   border: 1px solid #e5e5e5;
   background: #fff;
   overflow: hidden;
-  height: 560px;
-  width: min(1020px, 100%);
+  width: 100%;
+  height: min(72vh, 680px);
+  min-height: 480px;
 }
 
-.demo-frame > .demo-app {
-  height: calc(100% - 36px);
+.demo-chrome {
+  flex: 0 0 36px;
+}
+
+.demo-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
   overflow: hidden;
+  position: relative;
 }
 
-.demo-app .h-screen {
-  height: 100% !important;
+.demo-body .demo-app {
+  height: 100%;
 }
 
 @media (prefers-reduced-motion: reduce) {

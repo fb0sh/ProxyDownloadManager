@@ -44,7 +44,7 @@ export default function Toolbar({
   };
 
   return (
-    <div className="flex items-center gap-1.5 border-b border-border bg-muted px-2 py-1.5">
+    <div className="flex items-center gap-1.5 overflow-x-auto border-b border-border bg-muted px-2 py-1.5 whitespace-nowrap">
       <Button variant="default" onClick={onNewDownload}>
         <Plus className="h-4 w-4" /> {t("toolbar.new")}
       </Button>
