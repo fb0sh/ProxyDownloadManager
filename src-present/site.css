@@ -1,0 +1,55 @@
+html,
+body,
+#root {
+  height: auto;
+  min-height: 100%;
+  overflow: auto;
+  background: #fafafa;
+  color: #171717;
+}
+
+.site {
+  font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+}
+
+.site-display {
+  font-family: Sora, "IBM Plex Sans", sans-serif;
+}
+
+.site-mono {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+.ledger {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent 26px,
+    #e5e5e5 26px,
+    #e5e5e5 27px
+  );
+}
+
+.demo-frame {
+  border: 1px solid #e5e5e5;
+  background: #fff;
+  overflow: hidden;
+  height: 560px;
+  width: min(1020px, 100%);
+}
+
+.demo-frame > .demo-app {
+  height: calc(100% - 36px);
+  overflow: hidden;
+}
+
+.demo-app .h-screen {
+  height: 100% !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .site * {
+    animation: none !important;
+    transition: none !important;
+  }
+}

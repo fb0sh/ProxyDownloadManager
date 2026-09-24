@@ -11,6 +11,7 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   root: __dirname,
   base: "./",
+  publicDir: resolve(rootDir, "public"),
 
   resolve: {
     alias: {

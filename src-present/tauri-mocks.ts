@@ -1,83 +1,118 @@
-/* =========================================================================
- * Tauri API Mocks — makes src/ components work in the browser
- *
- * Each mock returns data that looks exactly like the real Tauri backend.
- * The invoke handler dispatches by command name, matching the real cmd.rs.
- * ========================================================================= */
-
 import type { DownloadItem, Settings, DownloadStatus, DownloadPart, PartStatus } from "../../src/types";
-
-/* ─── Types ──────────────────────────────────────────────────────────── */
 
 type Listener = (...args: any[]) => void;
 const listeners = new Map<string, Set<Listener>>();
 
-/* ─── Mock data ──────────────────────────────────────────────────────── */
-
 const now = Math.floor(Date.now() / 1000);
 let nextId = 42;
 
-function mockParts(count: number): DownloadPart[] {
+function mockParts(count: number, total: number, downloaded: number): DownloadPart[] {
   const parts: DownloadPart[] = [];
+  const slice = Math.floor(total / Math.max(1, count));
   for (let i = 0; i < count; i++) {
-    parts.push({
-      index: i, start: 0, end: 0, downloaded: 0,
-      temp_path: "", status: "pending" as PartStatus, retries: 0,
-    });
+    const start = i * slice;
+    const end = i === count - 1 ? total : start + slice;
+    const len = end - start;
+    const d = Math.min(len, Math.max(0, downloaded - start));
+    const status: PartStatus = d >= len && len > 0 ? "completed" : d > 0 ? "downloading" : "pending";
+    parts.push({ index: i, start, end, downloaded: d, temp_path: "", status, retries: 0 });
   }
   return parts;
 }
 
 const mockDownloads: DownloadItem[] = [
   {
-    id: 1, url: "https://releases.ubuntu.com/24.04/ubuntu-24.04-desktop-amd64.iso",
-    file_name: "ubuntu-24.04-desktop-amd64.iso",
-    save_path: "/Downloads/ubuntu-24.04-desktop-amd64.iso",
-    total_size: 5872025600, downloaded: 3937402880,
-    status: "downloading" as DownloadStatus,
-    parts: mockParts(8), proxy_name: "", connections: 8,
-    resumable: true, merge_progress: 0,
-    created_at: String(now - 120), last_try: String(now - 120),
+    id: 1,
+    url: "https://releases.ubuntu.com/24.04/ubuntu-24.04.2-desktop-amd64.iso",
+    file_name: "ubuntu-24.04.2-desktop-amd64.iso",
+    save_path: "/Downloads/ubuntu-24.04.2-desktop-amd64.iso",
+    total_size: 5872025600,
+    downloaded: 3937402880,
+    status: "downloading",
+    parts: mockParts(8, 5872025600, 3937402880),
+    proxy_name: "clash",
+    connections: 8,
+    resumable: true,
+    created_at: String(now - 120),
+    last_try: String(now - 120),
   },
   {
-    id: 2, url: "https://nodejs.org/dist/v22.0.0/node-v22.0.0.pkg",
-    file_name: "node-v22.0.0.pkg",
-    save_path: "/Downloads/node-v22.0.0.pkg",
-    total_size: 88080384, downloaded: 88080384,
-    status: "completed" as DownloadStatus,
-    parts: mockParts(4), proxy_name: "", connections: 4,
-    resumable: true, merge_progress: 1,
-    created_at: String(now - 600), last_try: String(now - 600),
+    id: 2,
+    url: "https://nodejs.org/dist/v22.14.0/node-v22.14.0.pkg",
+    file_name: "node-v22.14.0.pkg",
+    save_path: "/Downloads/node-v22.14.0.pkg",
+    total_size: 88080384,
+    downloaded: 88080384,
+    status: "completed",
+    parts: mockParts(4, 88080384, 88080384),
+    proxy_name: "",
+    connections: 4,
+    resumable: true,
+    created_at: String(now - 600),
+    last_try: String(now - 600),
   },
   {
-    id: 3, url: "https://code.visualstudio.com/sha/download?build=stable&os=linux-deb-x64",
-    file_name: "vscode_amd64.deb",
-    save_path: "/Downloads/vscode_amd64.deb",
-    total_size: 117440512, downloaded: 50331648,
-    status: "downloading" as DownloadStatus,
-    parts: mockParts(4), proxy_name: "clash", connections: 4,
-    resumable: true, merge_progress: 0,
-    created_at: String(now - 300), last_try: String(now - 300),
+    id: 3,
+    url: "https://code.visualstudio.com/sha/download?build=stable&os=darwin-arm64",
+    file_name: "VSCode-darwin-arm64.zip",
+    save_path: "/Downloads/VSCode-darwin-arm64.zip",
+    total_size: 217440512,
+    downloaded: 90331648,
+    status: "downloading",
+    parts: mockParts(16, 217440512, 90331648),
+    proxy_name: "v2ray",
+    connections: 16,
+    resumable: true,
+    created_at: String(now - 300),
+    last_try: String(now - 300),
   },
   {
-    id: 4, url: "https://desktop.docker.com/mac/main/amd64/Docker.dmg",
+    id: 4,
+    url: "https://desktop.docker.com/mac/main/arm64/Docker.dmg",
     file_name: "Docker.dmg",
     save_path: "/Downloads/Docker.dmg",
-    total_size: 293601280, downloaded: 228589568,
-    status: "paused" as DownloadStatus,
-    parts: mockParts(4), proxy_name: "", connections: 4,
-    resumable: true, merge_progress: 0,
-    created_at: String(now - 900), last_try: String(now - 300),
+    total_size: 593601280,
+    downloaded: 228589568,
+    status: "paused",
+    parts: mockParts(8, 593601280, 228589568),
+    proxy_name: "",
+    connections: 8,
+    resumable: true,
+    created_at: String(now - 900),
+    last_try: String(now - 300),
   },
   {
-    id: 5, url: "https://github.com/fb0sh/ProxyDownloadManager/releases/download/v0.5.0/proxydm-0.5.0-x86_64.AppImage",
-    file_name: "proxydm-0.5.0-x86_64.AppImage",
-    save_path: "/Downloads/proxydm-0.5.0-x86_64.AppImage",
-    total_size: 12582912, downloaded: 12582912,
-    status: "completed" as DownloadStatus,
-    parts: mockParts(2), proxy_name: "", connections: 2,
-    resumable: true, merge_progress: 1,
-    created_at: String(now - 1800), last_try: String(now - 1800),
+    id: 5,
+    url: "https://github.com/fb0sh/ProxyDownloadManager/releases/download/v0.13.2/ProxyDownloadManager_0.13.2_aarch64.dmg",
+    file_name: "ProxyDownloadManager_0.13.2_aarch64.dmg",
+    save_path: "/Downloads/ProxyDownloadManager_0.13.2_aarch64.dmg",
+    total_size: 18582912,
+    downloaded: 18582912,
+    status: "completed",
+    parts: mockParts(4, 18582912, 18582912),
+    proxy_name: "clash",
+    connections: 4,
+    resumable: true,
+    created_at: String(now - 1800),
+    last_try: String(now - 1800),
+  },
+  {
+    id: 6,
+    url: "https://cdn.example/private/build.tgz",
+    file_name: "build.tgz",
+    save_path: "/Downloads/build.tgz",
+    total_size: 44040192,
+    downloaded: 12000000,
+    status: { failed: "HTTP 403" },
+    parts: mockParts(4, 44040192, 12000000),
+    proxy_name: "",
+    connections: 4,
+    resumable: true,
+    error_code: "auth",
+    error_message: "HTTP 403",
+    http_status: 403,
+    created_at: String(now - 2400),
+    last_try: String(now - 200),
   },
 ];
 
@@ -89,66 +124,55 @@ const defaultSettings: Settings = {
   launch_at_startup: false,
   silent_startup: true,
   proxies: {
-    clash: { protocol: "socks5" as any, host: "127.0.0.1", port: 7890 },
-    "v2ray": { protocol: "http" as any, host: "127.0.0.1", port: 10809 },
+    clash: { protocol: "socks5", host: "127.0.0.1", port: 7890 },
+    v2ray: { protocol: "http", host: "127.0.0.1", port: 10809 },
   },
   global_rate_limit: 0,
-  default_proxy: "",
+  default_proxy: "clash",
   home_dir: "/Users/user/.ProxyDM",
   language: "zh",
   danger_accept_invalid_certs: true,
+  global_shortcut: "Ctrl+Super+J",
+  file_conflict: "rename",
 };
 
-/* ─── Progress simulation ───────────────────────────────────────────── */
-
-let progressTimers: ReturnType<typeof setInterval>[] = [];
-
 function startProgressSimulation() {
-  // Update "downloading" items progress every 2s
-  const timer = setInterval(() => {
+  setInterval(() => {
     for (const item of mockDownloads) {
       if (item.status === "downloading" && item.downloaded < item.total_size) {
-        const increment = Math.floor(Math.random() * 500000) + 100000;
+        const increment = Math.floor(Math.random() * 8_000_000) + 400_000;
         item.downloaded = Math.min(item.downloaded + increment, item.total_size);
+        item.parts = mockParts(item.connections || 4, item.total_size, item.downloaded);
         if (item.downloaded >= item.total_size) {
           item.status = "completed" as DownloadStatus;
-          item.merge_progress = 1;
-          emit("download-completed", item.id);
+          emit("download-completed", { id: item.id, file_name: item.file_name });
         }
       }
     }
-  }, 2000);
-  progressTimers.push(timer);
+  }, 1200);
 }
 
-/* ─── Event system ──────────────────────────────────────────────────── */
-
-function emit(event: string, payload?: any) {
+function emit(event: string, payload?: unknown) {
   const set = listeners.get(event);
-  if (set) set.forEach(fn => fn({ payload, event }));
+  if (set) set.forEach((fn) => fn({ payload, event }));
 }
-
-/* ─── Mock invoke — matches cmd.rs command signatures ──────────────── */
 
 async function invoke(command: string, args?: Record<string, any>): Promise<any> {
-  // Simulate a tiny delay
-  await new Promise(r => setTimeout(r, 10 + Math.random() * 40));
+  await new Promise((r) => setTimeout(r, 12));
 
   switch (command) {
     case "list_downloads":
-      return [...mockDownloads];
-
+      return mockDownloads.map((d) => ({ ...d, parts: d.parts.map((p) => ({ ...p })) }));
     case "get_settings":
-      return { ...defaultSettings };
-
+      return { ...defaultSettings, proxies: { ...defaultSettings.proxies } };
     case "save_settings":
       Object.assign(defaultSettings, args?.settings);
       return;
-
     case "start_download": {
       const id = nextId++;
-      const size = Math.floor(Math.random() * 500000000) + 5000000;
+      const size = Math.floor(Math.random() * 500_000_000) + 5_000_000;
       const name = args?.filename || args?.url?.split("/").pop() || `download-${id}`;
+      const connections = args?.connections || 8;
       mockDownloads.unshift({
         id,
         url: args?.url || "",
@@ -156,111 +180,121 @@ async function invoke(command: string, args?: Record<string, any>): Promise<any>
         save_path: `${defaultSettings.download_dir}/${name}`,
         total_size: size,
         downloaded: 0,
-        status: "downloading" as DownloadStatus,
-        parts: mockParts(4),
-        proxy_name: args?.proxyName || "",
-        connections: args?.connections || 4,
+        status: "downloading",
+        parts: mockParts(connections, size, 0),
+        proxy_name: args?.proxyName || defaultSettings.default_proxy,
+        connections,
         resumable: true,
-        merge_progress: 0,
         created_at: String(Math.floor(Date.now() / 1000)),
         last_try: "",
       });
       return id;
     }
-
+    case "probe_url":
+      return {
+        url: args?.url,
+        final_url: args?.url,
+        file_name: args?.url?.split("/").pop() || "download.bin",
+        file_size: 104857600,
+        content_type: "application/octet-stream",
+        supports_range: true,
+        etag: "",
+        last_modified: "",
+        suggested_connections: 8,
+        is_hls: false,
+        hls_variants: [],
+      };
     case "pause_download": {
-      const item = mockDownloads.find(d => d.id === args?.id);
-      if (item && item.status === "downloading") {
-        item.status = "paused" as DownloadStatus;
-      }
+      const item = mockDownloads.find((d) => d.id === args?.id);
+      if (item && item.status === "downloading") item.status = "paused";
       return;
     }
-
     case "resume_download": {
-      const item = mockDownloads.find(d => d.id === args?.id);
-      if (item && item.status === "paused") {
-        item.status = "downloading" as DownloadStatus;
-      }
+      const item = mockDownloads.find((d) => d.id === args?.id);
+      if (item && (item.status === "paused" || item.status === "queued")) item.status = "downloading";
       return;
     }
-
     case "delete_download": {
-      const idx = mockDownloads.findIndex(d => d.id === args?.id);
+      const idx = mockDownloads.findIndex((d) => d.id === args?.id);
       if (idx >= 0) mockDownloads.splice(idx, 1);
       return;
     }
-
     case "redownload_download": {
-      const item = mockDownloads.find(d => d.id === args?.id);
+      const item = mockDownloads.find((d) => d.id === args?.id);
       if (item) {
-        item.status = "downloading" as DownloadStatus;
+        item.status = "downloading";
         item.downloaded = 0;
-        item.merge_progress = 0;
+        item.parts = mockParts(item.connections || 4, item.total_size, 0);
       }
       return args?.id;
     }
-
-    case "cancel_download": {
-      const item = mockDownloads.find(d => d.id === args?.id);
-      if (item) item.status = "paused" as DownloadStatus;
+    case "set_global_rate_limit":
+      defaultSettings.global_rate_limit = args?.rateLimitBps ?? 0;
+      return;
+    case "set_download_connections": {
+      const item = mockDownloads.find((d) => d.id === args?.id);
+      if (item) {
+        item.connections = args?.connections ?? item.connections;
+        item.parts = mockParts(item.connections, item.total_size, item.downloaded);
+      }
       return;
     }
-
+    case "set_download_rate_limit": {
+      const item = mockDownloads.find((d) => d.id === args?.id);
+      if (item) item.rate_limit_bps = args?.rateLimitBps ?? 0;
+      return;
+    }
+    case "test_proxy":
+      return { ok: true, latency_ms: 42 };
+    case "check_update":
+      return {
+        latest_version: "0.13.2",
+        current_version: "0.13.2",
+        has_update: false,
+        release_url: "https://github.com/fb0sh/ProxyDownloadManager/releases",
+        release_notes: "",
+        assets: [],
+      };
     case "read_logs":
-      return ["[INFO] ProxyDM started", "[INFO] Download manager initialized"];
-
+      return ["[INFO] ProxyDM started", "[INFO] Extensions synced", "[INFO] Download manager ready"];
     case "file_exists":
       return true;
-
     case "get_extensions_dir":
-      return "/Applications/ProxyDM/extensions";
-
+      return "~/Library/Application Support/com.fb0sh.proxydownloadmanager/extensions";
+    case "open_extensions_folder":
+      return;
     case "get_file_icon":
-      return { icon: "", rank: 0 };
-
+      return { rgba: "", width: 32, height: 32 };
     case "exit_app":
       return;
-
     default:
       console.warn("[Mock] Unhandled invoke:", command, args);
       return;
   }
 }
 
-/* ─── Exports matching @tauri-apps/api/core ─────────────────────────── */
-
 export { invoke };
-export type { Listener };
 
-/* ─── Exports matching @tauri-apps/api/event ────────────────────────── */
-
-export async function listen<T = any>(event: string, handler: (event: { payload: T }) => void): Promise<() => void> {
+export async function listen<T = unknown>(event: string, handler: (event: { payload: T }) => void): Promise<() => void> {
   if (!listeners.has(event)) listeners.set(event, new Set());
   listeners.get(event)!.add(handler as Listener);
-
-  // Auto-emit initial events for demo feel
-  if (event === "download-started") {
-    setTimeout(() => handler({ payload: 999 } as any), 100);
-  }
-
   return () => {
     listeners.get(event)?.delete(handler as Listener);
   };
 }
 
-export async function emitToListeners(event: string, payload?: any): Promise<void> {
-  const set = listeners.get(event);
-  if (set) set.forEach(fn => fn({ payload, event }));
+export async function emitToListeners(event: string, payload?: unknown): Promise<void> {
+  emit(event, payload);
 }
-
-/* ─── Exports matching @tauri-apps/api/webviewWindow ────────────────── */
 
 export class WebviewWindow {
   static getByLabel = async () => null;
   label: string;
-  constructor(label: string, _options?: any) { this.label = label; }
-  once = async (_e: string, _cb?: any) => {};
-  emit = async (event: string, payload?: any) => emitToListeners(event, payload);
+  constructor(label: string, _options?: unknown) {
+    this.label = label;
+  }
+  once = async (_e: string, _cb?: unknown) => {};
+  emit = async (event: string, payload?: unknown) => emitToListeners(event, payload);
   show = async () => {};
   unminimize = async () => {};
   center = async () => {};
@@ -270,61 +304,32 @@ export class WebviewWindow {
   close = async () => {};
 }
 
-/* ─── Exports matching @tauri-apps/api/window ───────────────────────── */
-
 export function getCurrentWindow() {
   return {
-    onFocusChanged: async (_handler: any) => {
-      const noop = () => {};
-      return noop;
-    },
-    onResized: async () => {},
-    onMoved: async () => {},
-    onCloseRequested: async () => {},
+    onFocusChanged: async () => () => {},
     show: async () => {},
     hide: async () => {},
     close: async () => {},
-    setTitle: async () => {},
-    setSize: async () => {},
-    setPosition: async () => {},
-    center: async () => {},
-    minimize: async () => {},
-    unminimize: async () => {},
-    maximize: async () => {},
-    unmaximize: async () => {},
-    isMinimized: async () => false,
-    isMaximized: async () => false,
-    isVisible: async () => true,
   };
 }
 
-/* ─── Plugin mocks ──────────────────────────────────────────────────── */
-
-export async function isPermissionGranted() { return true; }
-export async function requestPermission() { return "granted"; }
-export function sendNotification(_opts: any) {
-  // no-op in browser
-  console.log("[Mock] Notification:", _opts.title, _opts.body);
+export function getCurrentWebviewWindow() {
+  return new WebviewWindow("present");
 }
-export function onAction(_cb: any) { return async () => {}; }
 
-export async function readText() { return ""; }
+export async function isPermissionGranted() {
+  return true;
+}
+export async function requestPermission() {
+  return "granted";
+}
+export function sendNotification(_opts: unknown) {}
+export async function readText() {
+  return "";
+}
 export async function writeText(_text: string) {}
-
-export async function isEnabled() { return false; }
-export async function enable() {}
-export async function disable() {}
-
-export async function open(_opts: any) {}
-export async function save(_opts: any) {}
-export async function ask(_msg: string) { return true; }
-export async function confirm(_msg: string) { return true; }
-export async function message(_msg: string) {}
-
+export async function open(_opts: unknown) {}
 export async function revealItemInDir(_path: string) {}
-
 export const UserAttentionType = { Critical: 1, Informational: 2 };
-
-/* ─── Start simulation on import ────────────────────────────────────── */
 
 startProgressSimulation();
