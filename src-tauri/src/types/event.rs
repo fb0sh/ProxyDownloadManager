@@ -15,6 +15,25 @@ pub enum EventKind {
     DownloadErrored,
 }
 
+/// What an engine is doing when the byte count alone does not say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase {
+    Downloading,
+    Retrying,
+    Merging,
+}
+
+impl Phase {
+    /// The status word the frontend and the downloads table use.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Downloading => "downloading",
+            Self::Retrying => "retrying",
+            Self::Merging => "merging",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

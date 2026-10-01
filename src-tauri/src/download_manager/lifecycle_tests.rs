@@ -4,12 +4,12 @@
 
 use super::*;
 use crate::engine::file_io;
-use crate::engine::range_http::{assert_file, spawn_server, BodyMode, Srv};
+use crate::engine::range_http::{assert_file, spawn_server, BodyMode};
 use crate::state::db::Db;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 /// One event as the frontend would get it, plus the ledger status of that
@@ -69,6 +69,8 @@ impl Rig {
         let pool = WorkerPool::new(max_active, event_tx, false, first_id, 0);
         let settings = Arc::new(SettingsService::with_settings(Settings {
             download_dir: dir.to_string_lossy().into_owned(),
+            // One retry: enough to see it happen, short enough to wait out.
+            max_retries: 1,
             ..Settings::default()
         }));
         let dm = Arc::new(DownloadManager::new(
@@ -174,16 +176,6 @@ impl Drop for Rig {
     }
 }
 
-/// A stalled body is only noticed by its worker when bytes move again, so a
-/// pause or delete of a stalled download needs the origin to let go.
-fn release_soon(srv: &Arc<Srv>) {
-    let srv = srv.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(250)).await;
-        srv.release.store(true, Ordering::Relaxed);
-    });
-}
-
 #[tokio::test]
 async fn a_started_download_completes_and_the_ledger_knows_first() {
     let rig = Rig::new(0);
@@ -223,8 +215,14 @@ async fn pause_keeps_the_bytes_and_resume_finishes_the_same_download() {
     rig.wait_for(id, "its first bytes", |item| item.downloaded > 0)
         .await;
 
-    release_soon(&srv);
+    // The origin has gone silent mid-body and stays that way.
+    let asked = Instant::now();
     rig.dm.pause_download(id).await.unwrap();
+    assert!(
+        asked.elapsed() < Duration::from_secs(2),
+        "pause waited {:?} on a silent origin",
+        asked.elapsed()
+    );
 
     let paused = rig.item(id);
     assert!(matches!(paused.status, DownloadStatus::Paused));
@@ -309,18 +307,17 @@ async fn pausing_a_queued_download_takes_it_out_of_the_line() {
 #[tokio::test]
 async fn the_same_source_cannot_be_started_twice_while_active() {
     let rig = Rig::new(0);
-    let (url, srv) = spawn_server(256 * 1024, BodyMode::Exact, true).await;
+    let (url, _srv) = spawn_server(256 * 1024, BodyMode::Exact, true).await;
 
     let first = rig.start(&url, "once.bin", false).await.unwrap();
     let again = rig.start(&url, "twice.bin", false).await;
     assert_eq!(again, Err(PdmError::DuplicateDownload(first)));
 
-    release_soon(&srv);
     rig.dm.delete_download(first, true).await.unwrap();
 }
 
 #[tokio::test]
-async fn an_unreachable_source_fails_in_the_ledger_before_the_frontend_hears() {
+async fn an_unreachable_source_retries_then_fails_in_the_ledger_before_the_frontend_hears() {
     let rig = Rig::new(0);
     let url = "http://127.0.0.1:1/gone.bin";
 
@@ -334,6 +331,13 @@ async fn an_unreachable_source_fails_in_the_ledger_before_the_frontend_hears() {
         .position(id, FrontendEvent::DownloadError)
         .expect("the failure was never announced");
     let seen = rig.seen.lock().unwrap();
+    let retrying = seen.iter().position(|event| {
+        event_id(&event.payload) == Some(id) && event.payload["status"] == "retrying"
+    });
+    assert!(
+        retrying.is_some_and(|retrying| retrying < at),
+        "the frontend never heard about the retry"
+    );
     assert!(matches!(seen[at].status, Some(DownloadStatus::Failed(_))));
     assert_eq!(seen[at].payload["url"], url);
     assert!(!seen[at].payload["message"].as_str().unwrap().is_empty());
@@ -342,15 +346,21 @@ async fn an_unreachable_source_fails_in_the_ledger_before_the_frontend_hears() {
 #[tokio::test]
 async fn delete_stops_the_worker_and_leaves_nothing_behind() {
     let rig = Rig::new(0);
-    let (url, srv) = spawn_server(256 * 1024, BodyMode::Exact, true).await;
+    let (url, _srv) = spawn_server(256 * 1024, BodyMode::Exact, true).await;
 
     let id = rig.start(&url, "doomed.bin", false).await.unwrap();
     let running = rig
         .wait_for(id, "its first bytes", |item| item.downloaded > 0)
         .await;
 
-    release_soon(&srv);
+    // The origin is silent mid-body; delete must not wait for it.
+    let asked = Instant::now();
     rig.dm.delete_download(id, true).await.unwrap();
+    assert!(
+        asked.elapsed() < Duration::from_secs(2),
+        "delete waited {:?} on a silent origin",
+        asked.elapsed()
+    );
 
     assert!(rig.ledger.get_item(id).unwrap().is_none());
     assert!(!Path::new(&file_io::temp_path(id)).exists());

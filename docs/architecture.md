@@ -19,6 +19,8 @@ One Tauri 2 app. The React UI talks to Rust only through Tauri commands (`src-ta
 4. A ranged transfer that loses `Range` (`RangeLost` or `Incomplete`) is truncated and retried once with `SingleDownloader`. A download that was already single or HLS is not degraded.
 5. A task is `Completed` only after the temp file is flushed, synced, and `finalize_file` renames it. The engine emits `DownloadCompleted` after that rename.
 
+Every engine reads response bodies through `engine/transfer.rs`. One `attempt` is one request: the status rules, the Content-Range check, the limiter, the 30s stall rule, buffered writes, and what is left when it stops early. `fetch` adds the retry budget and backoff. `ConcurrentDownloader` schedules ranges with `attempt` and re-queues what is left; `SingleDownloader` and HLS segments call `fetch`. A stop (pause, delete, abort) is seen within 100ms even while the server is silent.
+
 ## Files
 
 Partial bytes live at `{home}/temp/{id}.pdm`. HLS parts live at `{home}/temp/hls-{id}/`. Two tasks with the same filename do not share a temp file. `home` defaults to `~/.ProxyDM` and can be changed in Settings.

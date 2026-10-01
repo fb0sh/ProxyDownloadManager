@@ -30,7 +30,7 @@ pub(crate) struct Srv {
     hits: Mutex<Vec<Hit>>,
     short_left: AtomicUsize,
     progressed: AtomicBool,
-    pub(crate) release: AtomicBool,
+    release: AtomicBool,
     pub(crate) stall: AtomicBool,
 }
 
