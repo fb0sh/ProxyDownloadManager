@@ -106,17 +106,6 @@ pub fn part_percent(downloaded: u64, start: u64, end: u64) -> u32 {
     pct.min(100) as u32
 }
 
-/// Encode progress event payload (total + per-part downloaded).
-/// `reset_to_single`: degrade to Single — one part covering the whole file.
-pub fn encode_progress_data(downloaded: u64, parts: &[u64], reset_to_single: bool) -> String {
-    serde_json::json!({
-        "downloaded": downloaded,
-        "parts": parts,
-        "reset_to_single": reset_to_single,
-    })
-    .to_string()
-}
-
 /// Rebuild remaining Range tasks from fixed parts (for resume when gob tasks missing).
 /// Each incomplete part becomes `Task { offset: start + done, length: remaining }`.
 pub fn remaining_tasks_from_parts(

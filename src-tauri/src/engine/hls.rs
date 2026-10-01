@@ -264,16 +264,12 @@ impl HlsDownloader {
             }
             next = end;
             let _ = self.event_tx.send(Event {
-                kind: EventKind::DownloadProgress,
+                kind: EventKind::SegmentProgress {
+                    done: next as u64,
+                    total,
+                    phase: Phase::Downloading,
+                },
                 download_id: cfg.id,
-                data: Some(
-                    serde_json::json!({
-                        "downloaded": next as u64,
-                        "total": total,
-                        "phase": Phase::Downloading.as_str(),
-                    })
-                    .to_string(),
-                ),
             });
         }
 
@@ -282,16 +278,12 @@ impl HlsDownloader {
         }
 
         let _ = self.event_tx.send(Event {
-            kind: EventKind::DownloadProgress,
+            kind: EventKind::SegmentProgress {
+                done: total,
+                total,
+                phase: Phase::Merging,
+            },
             download_id: cfg.id,
-            data: Some(
-                serde_json::json!({
-                    "downloaded": total,
-                    "total": total,
-                    "phase": Phase::Merging.as_str(),
-                })
-                .to_string(),
-            ),
         });
 
         crate::engine::file_io::migrate_legacy_temp(cfg.id, &cfg.save_path);
@@ -319,7 +311,6 @@ impl HlsDownloader {
         let _ = self.event_tx.send(Event {
             kind: EventKind::DownloadCompleted,
             download_id: cfg.id,
-            data: None,
         });
         Ok(())
     }

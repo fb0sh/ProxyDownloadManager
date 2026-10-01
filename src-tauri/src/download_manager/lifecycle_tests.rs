@@ -404,3 +404,80 @@ async fn resuming_a_fully_downloaded_file_only_finalizes_it() {
     assert!(rig.position(id, FrontendEvent::DownloadStarted).is_none());
     assert!(rig.position(id, FrontendEvent::DownloadCompleted).is_some());
 }
+
+#[tokio::test]
+async fn engine_reports_reach_the_frontend_in_their_wire_shape() {
+    let rig = Rig::new(0);
+    let id = rig.dm.worker_pool.next_id();
+    rig.ledger
+        .insert_item(&DownloadItem {
+            id,
+            url: "http://127.0.0.1:1/shape.bin".to_string(),
+            file_name: "shape.bin".to_string(),
+            status: DownloadStatus::Downloading,
+            created_at: now_str(),
+            ..Default::default()
+        })
+        .unwrap();
+
+    for kind in [
+        EventKind::DownloadStarted,
+        EventKind::DownloadProgress {
+            downloaded: 300,
+            parts: vec![100, 200],
+            reset_to_single: false,
+        },
+        EventKind::DownloadProgress {
+            downloaded: 0,
+            parts: vec![0],
+            reset_to_single: true,
+        },
+        EventKind::SegmentProgress {
+            done: 2,
+            total: 5,
+            phase: Phase::Merging,
+        },
+        EventKind::PhaseChanged(Phase::Retrying),
+        EventKind::DownloadErrored(PdmError::Http(403)),
+    ] {
+        rig.dm.handle_event(Event {
+            kind,
+            download_id: id,
+        });
+    }
+
+    let seen = rig.seen.lock().unwrap();
+    let sent: Vec<_> = seen.iter().map(|e| (e.name, e.payload.clone())).collect();
+    let progress = FrontendEvent::DownloadProgress.name();
+    assert_eq!(
+        sent,
+        vec![
+            (FrontendEvent::DownloadStarted.name(), serde_json::json!(id)),
+            (
+                progress,
+                serde_json::json!({ "id": id, "downloaded": 300, "parts": [100, 200] })
+            ),
+            (
+                progress,
+                serde_json::json!({ "id": id, "downloaded": 0, "parts": [0], "reset_to_single": true })
+            ),
+            (
+                progress,
+                serde_json::json!({ "id": id, "downloaded": 2, "total_size": 5, "status": "merging" })
+            ),
+            // A phase alone carries no byte count for the frontend to reset.
+            (
+                progress,
+                serde_json::json!({ "id": id, "status": "retrying" })
+            ),
+            (
+                FrontendEvent::DownloadError.name(),
+                serde_json::json!({
+                    "id": id,
+                    "url": "http://127.0.0.1:1/shape.bin",
+                    "message": "HTTP 403",
+                })
+            ),
+        ]
+    );
+}

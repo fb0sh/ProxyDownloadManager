@@ -277,15 +277,8 @@ fn quiet_hooks() -> EngineHooks {
 fn max_downloaded(rx: &mut mpsc::UnboundedReceiver<Event>) -> u64 {
     let mut max_dl = 0u64;
     while let Ok(ev) = rx.try_recv() {
-        if !matches!(ev.kind, EventKind::DownloadProgress) {
-            continue;
-        }
-        let Some(data) = ev.data else { continue };
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) else {
-            continue;
-        };
-        if let Some(n) = v.get("downloaded").and_then(|x| x.as_u64()) {
-            max_dl = max_dl.max(n);
+        if let EventKind::DownloadProgress { downloaded, .. } = ev.kind {
+            max_dl = max_dl.max(downloaded);
         }
     }
     max_dl

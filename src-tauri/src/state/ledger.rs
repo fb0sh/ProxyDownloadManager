@@ -112,6 +112,17 @@ fn reconcile(item: &DownloadItem, saved: Option<&DownloadState>) -> ProgressBasi
     }
 }
 
+/// The coarse class of a failure, stored with the row.
+fn failure_code(error: &PdmError) -> &'static str {
+    match error {
+        PdmError::RetriesExhausted(cause) => failure_code(cause),
+        PdmError::Timeout(_) => "timeout",
+        PdmError::Http(401 | 403) => "auth",
+        PdmError::Http(code) if crate::retry::is_retryable_status(*code) => "http",
+        _ => "failed",
+    }
+}
+
 /// Write a basis back onto the item: total, per-part bytes and part statuses.
 /// Creates the single part row when none were planned, so the DB row is
 /// self-describing afterwards.
@@ -197,6 +208,29 @@ impl ProgressLedger {
         self.db.insert_download(item)
     }
 
+    // ── Engine reports ──
+
+    /// Record one engine report. Reports reach the progress records here and
+    /// nowhere else.
+    pub fn apply(&self, id: u64, report: &EventKind) {
+        match report {
+            EventKind::DownloadStarted => self.on_started(id),
+            EventKind::DownloadProgress {
+                downloaded,
+                parts,
+                reset_to_single,
+            } => self.record_progress(id, *downloaded, Some(parts.clone()), *reset_to_single),
+            EventKind::SegmentProgress { done, total, phase } => {
+                self.set_total_if_unknown(id, *total);
+                self.note_phase(id, *phase);
+                self.record_progress(id, *done, None, false);
+            }
+            EventKind::PhaseChanged(phase) => self.note_phase(id, *phase),
+            EventKind::DownloadCompleted => self.on_completed(id),
+            EventKind::DownloadErrored(error) => self.on_error(id, error),
+        }
+    }
+
     // ── Lifecycle transitions ──
 
     /// Admission outcome: no slot was free — the row waits as Queued and
@@ -217,7 +251,7 @@ impl ProgressLedger {
     /// basis so the Progress Map doesn't flash 0 after pause→resume before the
     /// first engine event. A Queued row becomes Downloading here — the engine
     /// actually starting IS the Queued → Downloading transition.
-    pub fn on_started(&self, id: u64) {
+    fn on_started(&self, id: u64) {
         self.runtime.register(id);
         if let Ok(Some(mut item)) = self.db.get_by_id(id) {
             if matches!(
@@ -237,11 +271,11 @@ impl ProgressLedger {
         }
     }
 
-    /// Record real-time progress (called on every DownloadProgress event).
+    /// Record real-time progress (on every progress report).
     /// Memory first; the 1s flush loop writes `downloaded` + `parts` into
     /// SQLite in one statement. Degrading to Single restructures the DB parts
     /// once, then flows through the same memory-first path.
-    pub fn record_progress(
+    fn record_progress(
         &self,
         id: u64,
         downloaded: u64,
@@ -268,7 +302,7 @@ impl ProgressLedger {
     }
 
     /// Fill in an unknown total (HLS segment count) without touching a known size.
-    pub fn set_total_if_unknown(&self, id: u64, total: u64) {
+    fn set_total_if_unknown(&self, id: u64, total: u64) {
         if total == 0 {
             return;
         }
@@ -282,13 +316,11 @@ impl ProgressLedger {
 
     /// Reflect retrying / merging / downloading on a live row. Ignores a
     /// worker that lost the race with pause, complete, or failure.
-    pub fn note_phase(&self, id: u64, phase: &str) {
+    fn note_phase(&self, id: u64, phase: Phase) {
         let next = match phase {
-            "retrying" => DownloadStatus::Retrying,
-            "merging" => DownloadStatus::Merging,
-            "connecting" => DownloadStatus::Connecting,
-            "downloading" => DownloadStatus::Downloading,
-            _ => return,
+            Phase::Retrying => DownloadStatus::Retrying,
+            Phase::Merging => DownloadStatus::Merging,
+            Phase::Downloading => DownloadStatus::Downloading,
         };
         if let Ok(Some(mut item)) = self.db.get_by_id(id) {
             if matches!(
@@ -324,36 +356,19 @@ impl ProgressLedger {
     /// Mark download as failed: clean up runtime, update DB status.
     /// Skips if the download is paused (paused downloads emit errors
     /// during cancel which should not overwrite the paused status).
-    pub fn on_error(&self, id: u64, error_msg: String) {
+    fn on_error(&self, id: u64, error: &PdmError) {
         self.runtime.remove(id);
         if let Ok(Some(mut item)) = self.db.get_by_id(id) {
             if matches!(item.status, DownloadStatus::Paused) {
                 return;
             }
-            item.status = DownloadStatus::Failed(error_msg.clone());
-            item.error_message = error_msg.clone();
+            let message = error.to_string();
+            item.status = DownloadStatus::Failed(message.clone());
+            item.error_message = message;
             item.last_error_at = now_str();
             item.retry_count = item.retry_count.saturating_add(1);
-            if let Some(code) = error_msg.split_whitespace().find_map(|t| {
-                t.strip_prefix("HTTP")
-                    .and_then(|s| s.parse::<u16>().ok())
-                    .or_else(|| t.parse::<u16>().ok())
-            }) {
-                item.http_status = Some(code);
-            }
-            if error_msg.to_ascii_lowercase().contains("timeout") {
-                item.error_code = "timeout".into();
-            } else if item.http_status == Some(401) || item.http_status == Some(403) {
-                item.error_code = "auth".into();
-            } else if item
-                .http_status
-                .map(|c| crate::retry::is_retryable_status(c))
-                .unwrap_or(false)
-            {
-                item.error_code = "http".into();
-            } else {
-                item.error_code = "failed".into();
-            }
+            item.http_status = error.http_status();
+            item.error_code = failure_code(error).into();
             for part in item.parts.iter_mut() {
                 if matches!(part.status, PartStatus::Pending | PartStatus::Downloading) {
                     part.status = PartStatus::Failed("download failed".to_string());
@@ -853,10 +868,105 @@ mod tests {
         ledger.insert_item(&item).unwrap();
         ledger.runtime.register(3);
 
-        ledger.on_error(3, "timeout".to_string());
+        ledger.on_error(3, &PdmError::Network("connection reset".into()));
 
         let got = ledger.get_item(3).unwrap().unwrap();
-        assert!(matches!(got.status, DownloadStatus::Failed(ref msg) if msg == "timeout"));
+        assert!(matches!(
+            got.status,
+            DownloadStatus::Failed(ref msg) if msg == "Network error: connection reset"
+        ));
+        assert_eq!(got.error_message, "Network error: connection reset");
+        assert_eq!(got.retry_count, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failure_is_classified_by_its_type() {
+        let (ledger, dir) = test_ledger("error_class");
+        let mut item = sample_item(4);
+        item.status = DownloadStatus::Downloading;
+        ledger.insert_item(&item).unwrap();
+        let fail = |error: PdmError| {
+            ledger.on_error(4, &error);
+            let got = ledger.get_item(4).unwrap().unwrap();
+            (got.http_status, got.error_code)
+        };
+
+        assert_eq!(fail(PdmError::Http(403)), (Some(403), "auth".into()));
+        assert_eq!(fail(PdmError::Http(404)), (Some(404), "failed".into()));
+        // What a retry gave up on still decides the class.
+        let spent = |cause| PdmError::RetriesExhausted(Box::new(cause));
+        assert_eq!(fail(spent(PdmError::Http(503))), (Some(503), "http".into()));
+        assert_eq!(
+            fail(spent(PdmError::Timeout("no data for 30s".into()))),
+            (None, "timeout".into())
+        );
+        // No status in this failure: the previous one must not linger.
+        assert_eq!(
+            fail(PdmError::Incomplete("0/100 bytes".into())),
+            (None, "failed".into())
+        );
+
+        let got = ledger.get_item(4).unwrap().unwrap();
+        assert!(
+            matches!(got.status, DownloadStatus::Failed(ref msg) if msg == "Download incomplete: 0/100 bytes")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_segment_report_fills_the_total_and_the_phase() {
+        let (ledger, dir) = test_ledger("segments");
+        let mut item = sample_item(6);
+        item.status = DownloadStatus::Downloading;
+        item.total_size = 0;
+        ledger.insert_item(&item).unwrap();
+        ledger.apply(6, &EventKind::DownloadStarted);
+
+        ledger.apply(
+            6,
+            &EventKind::SegmentProgress {
+                done: 3,
+                total: 10,
+                phase: Phase::Merging,
+            },
+        );
+
+        let got = ledger.get_item(6).unwrap().unwrap();
+        assert_eq!(got.total_size, 10);
+        assert!(matches!(got.status, DownloadStatus::Merging));
+        assert_eq!(ledger.runtime.get_downloaded(6), Some(3));
+        ledger.on_deleted(6).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_phase_report_changes_the_status_and_leaves_the_bytes() {
+        let (ledger, dir) = test_ledger("phase");
+        let mut item = sample_item(8);
+        item.status = DownloadStatus::Downloading;
+        ledger.insert_item(&item).unwrap();
+        ledger.apply(8, &EventKind::DownloadStarted);
+        ledger.apply(
+            8,
+            &EventKind::DownloadProgress {
+                downloaded: 500,
+                parts: vec![500],
+                reset_to_single: false,
+            },
+        );
+
+        ledger.apply(8, &EventKind::PhaseChanged(Phase::Retrying));
+        let got = ledger.get_item(8).unwrap().unwrap();
+        assert!(matches!(got.status, DownloadStatus::Retrying));
+        assert_eq!(ledger.runtime.get_downloaded(8), Some(500));
+
+        // A worker that lost the race with pause must not revive the row.
+        ledger.on_paused(8).unwrap();
+        ledger.apply(8, &EventKind::PhaseChanged(Phase::Downloading));
+        let got = ledger.get_item(8).unwrap().unwrap();
+        assert!(matches!(got.status, DownloadStatus::Paused));
+        ledger.on_deleted(8).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -868,7 +978,7 @@ mod tests {
         ledger.insert_item(&item).unwrap();
         ledger.runtime.register(5);
 
-        ledger.on_error(5, "cancelled".to_string());
+        ledger.on_error(5, &PdmError::Cancelled);
 
         let got = ledger.get_item(5).unwrap().unwrap();
         assert!(matches!(got.status, DownloadStatus::Paused)); // unchanged

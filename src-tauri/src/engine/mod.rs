@@ -12,8 +12,7 @@ pub mod transfer;
 
 use crate::network::limiter::MultiLimiter;
 use crate::network::pool::NetworkPool;
-use crate::types::Event;
-use crate::types::{DownloadState, EngineConfig, PdmError, PdmResult};
+use crate::types::{DownloadState, EngineConfig, Event, EventKind, PdmError, PdmResult};
 use async_trait::async_trait;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -131,9 +130,8 @@ pub async fn run_download(
     );
 
     let _ = event_tx.send(Event {
-        kind: crate::types::EventKind::DownloadStarted,
+        kind: EventKind::DownloadStarted,
         download_id: cfg.id,
-        data: None,
     });
 
     let engine = create_engine(&cfg, pool.clone(), &event_tx);
@@ -181,9 +179,12 @@ pub async fn run_download(
                 .open(&pdm_path);
             // Progress Map: Concurrent → Single becomes one cell; reset progress.
             let _ = event_tx.send(Event {
-                kind: crate::types::EventKind::DownloadProgress,
+                kind: EventKind::DownloadProgress {
+                    downloaded: 0,
+                    parts: vec![0],
+                    reset_to_single: true,
+                },
                 download_id: cfg.id,
-                data: Some(part_progress::encode_progress_data(0, &[0], true)),
             });
             let fallback: Box<dyn DownloadEngine> =
                 Box::new(single::SingleDownloader::new(pool, event_tx.clone()));
@@ -213,7 +214,7 @@ pub async fn run_download(
 mod tests {
     use super::*;
     use crate::network::pool::NetworkPool;
-    use crate::types::EventKind;
+    use crate::types::Phase;
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -495,7 +496,7 @@ mod tests {
             .any(|e| matches!(e.kind, EventKind::DownloadCompleted));
         let has_progress = events
             .iter()
-            .any(|e| matches!(e.kind, EventKind::DownloadProgress));
+            .any(|e| matches!(e.kind, EventKind::DownloadProgress { .. }));
 
         assert!(has_started, "Missing DownloadStarted event");
         assert!(
@@ -804,13 +805,13 @@ mod tests {
         let _ = std::fs::remove_file(file_io::temp_path(id));
     }
 
-    /// Everything the event channel carried, as text.
-    fn drain_data(rx: &mut mpsc::UnboundedReceiver<Event>) -> Vec<String> {
-        let mut data = Vec::new();
+    /// Every report the engine sent.
+    fn drain(rx: &mut mpsc::UnboundedReceiver<Event>) -> Vec<EventKind> {
+        let mut reports = Vec::new();
         while let Ok(event) = rx.try_recv() {
-            data.extend(event.data);
+            reports.push(event.kind);
         }
-        data
+        reports
     }
 
     #[tokio::test]
@@ -852,10 +853,10 @@ mod tests {
 
         assert!(result.is_ok(), "single did not retry: {:?}", result.err());
         assert_eq!(std::fs::read(&save_path).unwrap(), file_data);
-        let data = drain_data(&mut rx);
+        let reports = drain(&mut rx);
         assert!(
-            data.iter().any(|d| d.contains("retrying")),
-            "the retry was never reported: {data:?}"
+            reports.contains(&EventKind::PhaseChanged(Phase::Retrying)),
+            "the retry was never reported: {reports:?}"
         );
         let _ = std::fs::remove_file(&save_path);
     }
@@ -931,10 +932,14 @@ mod tests {
         assert_eq!(std::fs::read(&save_path).unwrap(), segments.concat());
         assert!(!file_io::hls_part_dir(id).exists());
         assert!(!std::path::Path::new(&file_io::temp_path(id)).exists());
-        let data = drain_data(&mut rx);
+        let reports = drain(&mut rx);
         assert!(
-            data.iter().any(|d| d.contains("merging")),
-            "merging was never reported: {data:?}"
+            reports.contains(&EventKind::SegmentProgress {
+                done: 5,
+                total: 5,
+                phase: Phase::Merging,
+            }),
+            "merging was never reported: {reports:?}"
         );
         let _ = std::fs::remove_file(&save_path);
     }
