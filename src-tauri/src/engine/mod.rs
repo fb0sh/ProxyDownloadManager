@@ -6,7 +6,7 @@ pub mod file_io;
 pub mod hls;
 pub mod part_progress;
 #[cfg(test)]
-mod range_http;
+pub(crate) mod range_http;
 pub mod single;
 pub mod task_download;
 

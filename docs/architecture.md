@@ -6,6 +6,8 @@ Current layout of Proxy Download Manager. Historical notes live in `docs/archive
 
 One Tauri 2 app. The React UI talks to Rust only through Tauri commands (`src-tauri/src/cmd.rs`) and the event bus (`event_bus.rs`). List and settings screens read through TanStack Query (`src/query/`).
 
+`EventBus` hands every event to a sink: Tauri's emitter in the app, a recorder in `download_manager/lifecycle_tests.rs`. Those tests drive start, pause, resume, queueing, failure and delete through `DownloadManager` against a local origin, and assert on ledger rows and emitted events.
+
 ## Download path
 
 1. `DownloadManager::execute_download` probes the URL, applies the filename conflict policy, and inserts a row.
