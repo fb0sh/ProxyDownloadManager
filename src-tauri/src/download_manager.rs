@@ -1,6 +1,5 @@
 use crate::engine::EngineHooks;
 use crate::event_bus::{EventBus, FrontendEvent};
-use crate::event_handler::{transform_event, EventAction};
 use crate::logger::Logger;
 use crate::services::settings_service::SettingsService;
 use crate::state::ledger::ProgressLedger;
@@ -66,95 +65,69 @@ impl DownloadManager {
         self.worker_pool.clear_clients();
     }
 
-    /// Handle an event from the download engine. Uses EventTransformer
-    /// to map engine events → structured actions, then applies them.
+    /// Handle one engine report: the ledger records it, then the frontend is
+    /// told. State first: the frontend refetches on these events, and the
+    /// refetch must see what the report changed.
     pub fn handle_event(&self, event: Event) {
         let id = event.download_id;
-
-        let url_info = self
-            .ledger
-            .get_item(id)
-            .ok()
-            .flatten()
+        let item = self.ledger.get_item(id).ok().flatten();
+        let url_info = item
+            .as_ref()
             .map(|item| format!(" url={}", item.url))
             .unwrap_or_default();
+        self.log_info(&format!(
+            "Event: {} id={}{}",
+            event.kind.name(),
+            id,
+            url_info
+        ));
 
-        self.log_info(&format!("Event: {:?} id={}{}", event.kind, id, url_info));
+        self.ledger.apply(id, &event.kind);
 
-        let action = transform_event(&event);
-
-        match action {
-            EventAction::DownloadStarted(dl_id) => {
-                self.ledger.on_started(dl_id);
-                self.bus
-                    .emit(FrontendEvent::DownloadStarted, serde_json::json!(dl_id));
-            }
-            EventAction::DownloadCompleted(dl_id) => {
-                let file_name = self
-                    .ledger
-                    .get_item(dl_id)
-                    .ok()
-                    .flatten()
-                    .map(|item| item.file_name)
-                    .unwrap_or_default();
-                self.ledger.on_completed(dl_id);
-                self.bus.emit(
+        let (name, payload) = match event.kind {
+            EventKind::DownloadStarted => (FrontendEvent::DownloadStarted, serde_json::json!(id)),
+            EventKind::DownloadCompleted => {
+                let file_name = item.map(|item| item.file_name).unwrap_or_default();
+                (
                     FrontendEvent::DownloadCompleted,
-                    serde_json::json!({ "id": dl_id, "file_name": file_name }),
-                );
+                    serde_json::json!({ "id": id, "file_name": file_name }),
+                )
             }
-            EventAction::DownloadErrored(dl_id, msg) => {
-                // State first, then the event: the frontend invalidates its
-                // cache on DownloadError, and the refetch must see Failed.
-                self.ledger.on_error(dl_id, msg.clone());
-                let url = url_info.trim_start_matches(" url=").to_string();
-                self.bus.emit(
+            EventKind::DownloadErrored(error) => {
+                let url = item.map(|item| item.url).unwrap_or_default();
+                (
                     FrontendEvent::DownloadError,
-                    serde_json::json!({ "id": dl_id, "url": url, "message": msg }),
-                );
+                    serde_json::json!({ "id": id, "url": url, "message": error.to_string() }),
+                )
             }
-            EventAction::UpdateProgress {
-                id: dl_id,
+            EventKind::DownloadProgress {
                 downloaded,
-                part_downloaded,
+                parts,
                 reset_to_single,
-                total,
-                phase,
             } => {
-                if let Some(total) = total {
-                    self.ledger.set_total_if_unknown(dl_id, total);
-                }
-                if let Some(phase) = phase.as_deref() {
-                    self.ledger.note_phase(dl_id, phase);
-                }
-                if let Some(downloaded) = downloaded {
-                    self.ledger.record_progress(
-                        dl_id,
-                        downloaded,
-                        part_downloaded.clone(),
-                        reset_to_single,
-                    );
-                }
-                let mut payload = serde_json::json!({ "id": dl_id });
-                if let Some(downloaded) = downloaded {
-                    payload["downloaded"] = serde_json::json!(downloaded);
-                }
-                if let Some(parts) = part_downloaded {
-                    payload["parts"] = serde_json::json!(parts);
-                }
+                let mut payload =
+                    serde_json::json!({ "id": id, "downloaded": downloaded, "parts": parts });
                 if reset_to_single {
                     payload["reset_to_single"] = serde_json::json!(true);
                 }
-                if let Some(total) = total {
-                    payload["total_size"] = serde_json::json!(total);
-                }
-                if let Some(phase) = phase {
-                    payload["status"] = serde_json::json!(phase);
-                }
-                self.bus.emit(FrontendEvent::DownloadProgress, payload);
+                (FrontendEvent::DownloadProgress, payload)
             }
-            EventAction::Noop => {}
-        }
+            EventKind::SegmentProgress { done, total, phase } => (
+                FrontendEvent::DownloadProgress,
+                serde_json::json!({
+                    "id": id,
+                    "downloaded": done,
+                    "total_size": total,
+                    "status": phase.as_str(),
+                }),
+            ),
+            // No byte count: the frontend keeps the one it has.
+            EventKind::PhaseChanged(phase) => (
+                FrontendEvent::DownloadProgress,
+                serde_json::json!({ "id": id, "status": phase.as_str() }),
+            ),
+        };
+        self.bus.emit(name, payload);
     }
 
     /// Start a new download.

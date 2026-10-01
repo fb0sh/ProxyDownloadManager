@@ -106,14 +106,8 @@ pub(crate) async fn run_budget(
     while let Ok(ev) = rx.try_recv() {
         match ev.kind {
             EventKind::DownloadCompleted => completed = true,
-            EventKind::DownloadProgress => {
-                if let Some(data) = ev.data {
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) {
-                        if let Some(n) = v.get("downloaded").and_then(|x| x.as_u64()) {
-                            max_downloaded = max_downloaded.max(n);
-                        }
-                    }
-                }
+            EventKind::DownloadProgress { downloaded, .. } => {
+                max_downloaded = max_downloaded.max(downloaded);
             }
             _ => {}
         }

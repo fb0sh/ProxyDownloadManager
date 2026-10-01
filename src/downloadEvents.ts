@@ -7,7 +7,7 @@ import { EVENTS } from "./constants/events";
 import type { DownloadItem, PendingDownloadRequest } from "./types";
 import { applyPartDownloaded } from "./utils/progressMap";
 
-/** Wire payloads (field names are Rust snake_case, mirrored by event_handler.rs tests). */
+/** Wire payloads (field names are Rust snake_case), built in download_manager.rs `handle_event` and pinned by its lifecycle tests. */
 export interface ProgressPayload {
   id: number;
   /** Omitted on phase-only events (retrying / merging). Must not be treated as zero. */

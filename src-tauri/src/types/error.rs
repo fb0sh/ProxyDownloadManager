@@ -49,6 +49,17 @@ pub enum PdmError {
     Other(String),
 }
 
+impl PdmError {
+    /// The HTTP status behind this failure, also when retries wrapped it.
+    pub fn http_status(&self) -> Option<u16> {
+        match self {
+            Self::Http(code) => Some(*code),
+            Self::RetriesExhausted(cause) => cause.http_status(),
+            _ => None,
+        }
+    }
+}
+
 impl fmt::Display for PdmError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

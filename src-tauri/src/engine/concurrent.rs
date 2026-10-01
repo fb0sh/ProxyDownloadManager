@@ -1,14 +1,12 @@
 use crate::engine::adaptive::{self, AdaptiveConfig, AdaptiveController};
 use crate::engine::chunk::{self, ChunkQueue};
 use crate::engine::file_io::{create_output_file, finalize_file};
-use crate::engine::part_progress::{
-    encode_progress_data, remaining_tasks_from_parts, PartProgressTracker, PartRange,
-};
+use crate::engine::part_progress::{remaining_tasks_from_parts, PartProgressTracker, PartRange};
 use crate::engine::transfer::{Attempt, Transfer, Want};
 use crate::network::limiter::MultiLimiter;
 use crate::network::pool::NetworkPool;
 use crate::network::protocol::PerfStats;
-use crate::types::{EngineConfig, Event, EventKind, PdmError, PdmResult, Task};
+use crate::types::{EngineConfig, Event, EventKind, PdmError, PdmResult, Phase, Task};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -191,9 +189,12 @@ impl ConcurrentDownloader {
                     last_bytes = size;
                     last_parts = parts_hash;
                     let _ = progress_tx.send(Event {
-                        kind: EventKind::DownloadProgress,
+                        kind: EventKind::DownloadProgress {
+                            downloaded: size,
+                            parts: part_snap,
+                            reset_to_single: false,
+                        },
                         download_id,
-                        data: Some(encode_progress_data(size, &part_snap, false)),
                     });
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -350,9 +351,12 @@ impl ConcurrentDownloader {
             let size = bytes_written.load(Ordering::Relaxed);
             let part_snap = parts_tracker.snapshot();
             let _ = self.event_tx.send(Event {
-                kind: EventKind::DownloadProgress,
+                kind: EventKind::DownloadProgress {
+                    downloaded: size,
+                    parts: part_snap,
+                    reset_to_single: false,
+                },
                 download_id,
-                data: Some(encode_progress_data(size, &part_snap, false)),
             });
         }
 
@@ -402,7 +406,6 @@ impl ConcurrentDownloader {
         let _ = self.event_tx.send(Event {
             kind: EventKind::DownloadCompleted,
             download_id: cfg.id,
-            data: None,
         });
 
         Ok(())
@@ -427,49 +430,33 @@ struct ChunkWorker {
     phase: Arc<PhaseCounts>,
 }
 
+#[derive(Default)]
 struct PhaseCounts {
     working: AtomicU32,
     retrying: AtomicU32,
-    last: std::sync::Mutex<String>,
+    last: std::sync::Mutex<Option<Phase>>,
 }
 
-impl Default for PhaseCounts {
-    fn default() -> Self {
-        Self {
-            working: AtomicU32::new(0),
-            retrying: AtomicU32::new(0),
-            last: std::sync::Mutex::new(String::new()),
-        }
-    }
-}
-
+/// The download is Downloading while any worker is, and Retrying only when
+/// every worker that is not idle waits out a backoff. Reported on change.
 fn publish_phase(counts: &PhaseCounts, tx: &mpsc::UnboundedSender<Event>, id: u64) {
-    let working = counts.working.load(Ordering::Relaxed);
-    let retrying = counts.retrying.load(Ordering::Relaxed);
-    let phase = if working > 0 {
-        "downloading"
-    } else if retrying > 0 {
-        "retrying"
+    let phase = if counts.working.load(Ordering::Relaxed) > 0 {
+        Phase::Downloading
+    } else if counts.retrying.load(Ordering::Relaxed) > 0 {
+        Phase::Retrying
     } else {
         return;
     };
-    let mut last = match counts.last.lock() {
-        Ok(guard) => guard,
-        Err(_) => return,
+    let Ok(mut last) = counts.last.lock() else {
+        return;
     };
-    if last.as_str() == phase {
+    if *last == Some(phase) {
         return;
     }
-    last.clear();
-    last.push_str(phase);
-    emit_phase(tx, id, phase);
-}
-
-fn emit_phase(tx: &mpsc::UnboundedSender<Event>, id: u64, phase: &str) {
+    *last = Some(phase);
     let _ = tx.send(Event {
-        kind: EventKind::DownloadProgress,
+        kind: EventKind::PhaseChanged(phase),
         download_id: id,
-        data: Some(serde_json::json!({ "phase": phase }).to_string()),
     });
 }
 
@@ -625,14 +612,18 @@ mod tests {
         counts.working.store(1, Ordering::Relaxed);
         counts.retrying.store(1, Ordering::Relaxed);
         publish_phase(&counts, &tx, 7);
-        let data = rx.try_recv().unwrap().data.unwrap();
-        assert!(data.contains("downloading"), "{data}");
+        assert_eq!(
+            rx.try_recv().unwrap().kind,
+            EventKind::PhaseChanged(Phase::Downloading)
+        );
         publish_phase(&counts, &tx, 7);
         assert!(rx.try_recv().is_err(), "unchanged phase was emitted again");
 
         counts.working.store(0, Ordering::Relaxed);
         publish_phase(&counts, &tx, 7);
-        let data = rx.try_recv().unwrap().data.unwrap();
-        assert!(data.contains("retrying"), "{data}");
+        assert_eq!(
+            rx.try_recv().unwrap().kind,
+            EventKind::PhaseChanged(Phase::Retrying)
+        );
     }
 }

@@ -1,5 +1,4 @@
 use crate::engine::file_io::{self, length_shortfall};
-use crate::engine::part_progress::encode_progress_data;
 use crate::engine::transfer::{Fetched, Transfer, Want};
 use crate::network::limiter::MultiLimiter;
 use crate::network::pool::NetworkPool;
@@ -74,9 +73,12 @@ impl SingleDownloader {
         });
         let report = |total: u64| {
             let _ = self.event_tx.send(Event {
-                kind: EventKind::DownloadProgress,
+                kind: EventKind::DownloadProgress {
+                    downloaded: total,
+                    parts: vec![total],
+                    reset_to_single: true,
+                },
                 download_id: cfg.id,
-                data: Some(encode_progress_data(total, &[total], true)),
             });
         };
         let on_write = |offset: u64, len: u64| {
@@ -88,9 +90,8 @@ impl SingleDownloader {
         };
         let on_phase = |phase: Phase| {
             let _ = self.event_tx.send(Event {
-                kind: EventKind::DownloadProgress,
+                kind: EventKind::PhaseChanged(phase),
                 download_id: cfg.id,
-                data: Some(serde_json::json!({ "phase": phase.as_str() }).to_string()),
             });
         };
 
@@ -166,7 +167,6 @@ impl SingleDownloader {
         let _ = self.event_tx.send(Event {
             kind: EventKind::DownloadCompleted,
             download_id: cfg.id,
-            data: None,
         });
 
         Ok(())
