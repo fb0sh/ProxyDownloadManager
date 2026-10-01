@@ -4,11 +4,11 @@ use crate::engine::file_io::{create_output_file, finalize_file};
 use crate::engine::part_progress::{
     encode_progress_data, remaining_tasks_from_parts, PartProgressTracker, PartRange,
 };
-use crate::engine::task_download::{download_task, TaskResult};
+use crate::engine::transfer::{Attempt, Transfer, Want};
 use crate::network::limiter::MultiLimiter;
 use crate::network::pool::NetworkPool;
 use crate::network::protocol::PerfStats;
-use crate::types::{EngineConfig, Event, EventKind, PdmError, PdmResult};
+use crate::types::{EngineConfig, Event, EventKind, PdmError, PdmResult, Task};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -200,7 +200,13 @@ impl ConcurrentDownloader {
             }
         });
 
-        let headers = std::sync::Arc::new(cfg.headers.clone());
+        let transfer = Arc::new(Transfer::new(
+            client,
+            cfg,
+            limiter,
+            stop.clone(),
+            perf.clone(),
+        ));
         let desired = cfg
             .desired_connections
             .clone()
@@ -211,23 +217,17 @@ impl ConcurrentDownloader {
         let make_worker = || ChunkWorker {
             queue: queue.clone(),
             file: file.clone(),
-            client: client.clone(),
-            stop: stop.clone(),
+            transfer: transfer.clone(),
             abort_reason: abort_reason.clone(),
-            limiter: limiter.clone(),
             url: cfg.url.clone(),
-            max_retries: cfg.max_retries,
-            user_agent: cfg.user_agent.clone(),
             bytes_written: bytes_written.clone(),
             parts: parts_tracker.clone(),
-            headers: headers.clone(),
             desired: desired.clone(),
             live_workers: live_workers.clone(),
             event_tx: self.event_tx.clone(),
             download_id,
             expected_total: cfg.total_size,
             phase: phase.clone(),
-            perf: perf.clone(),
         };
 
         for _worker_id in 0..num_workers {
@@ -409,52 +409,22 @@ impl ConcurrentDownloader {
     }
 }
 
+#[derive(Clone)]
 struct ChunkWorker {
     queue: Arc<ChunkQueue>,
     file: Arc<std::fs::File>,
-    client: reqwest::Client,
-    stop: Arc<AtomicBool>,
+    /// Its stop flag is this engine's: a user pause or an internal abort.
+    transfer: Arc<Transfer>,
     abort_reason: Arc<std::sync::Mutex<Option<PdmError>>>,
-    limiter: Arc<MultiLimiter>,
     url: String,
-    max_retries: u32,
-    user_agent: String,
     bytes_written: Arc<AtomicU64>,
     parts: Arc<PartProgressTracker>,
-    headers: Arc<std::collections::HashMap<String, String>>,
     desired: Arc<AtomicU32>,
     live_workers: Arc<AtomicU32>,
     event_tx: mpsc::UnboundedSender<Event>,
     download_id: u64,
     expected_total: u64,
     phase: Arc<PhaseCounts>,
-    perf: Arc<PerfStats>,
-}
-
-impl Clone for ChunkWorker {
-    fn clone(&self) -> Self {
-        Self {
-            queue: self.queue.clone(),
-            file: self.file.clone(),
-            client: self.client.clone(),
-            stop: self.stop.clone(),
-            abort_reason: self.abort_reason.clone(),
-            limiter: self.limiter.clone(),
-            url: self.url.clone(),
-            max_retries: self.max_retries,
-            user_agent: self.user_agent.clone(),
-            bytes_written: self.bytes_written.clone(),
-            parts: self.parts.clone(),
-            headers: self.headers.clone(),
-            desired: self.desired.clone(),
-            live_workers: self.live_workers.clone(),
-            event_tx: self.event_tx.clone(),
-            download_id: self.download_id,
-            expected_total: self.expected_total,
-            phase: self.phase.clone(),
-            perf: self.perf.clone(),
-        }
-    }
 }
 
 struct PhaseCounts {
@@ -509,22 +479,30 @@ fn emit_phase(tx: &mpsc::UnboundedSender<Event>, id: u64, phase: &str) {
 fn spawn_chunk_worker(env: ChunkWorker) -> tokio::task::JoinHandle<()> {
     env.live_workers.fetch_add(1, Ordering::Relaxed);
     tokio::spawn(async move {
-        let mut retries_left = env.max_retries;
+        let stop = &env.transfer.stop;
+        let perf = &env.transfer.perf;
+        let mut budget = env.transfer.retry_budget();
         let mut budget_key: Option<(u64, u64)> = None;
         let stop_worker = |live: &AtomicU32| {
             live.fetch_sub(1, Ordering::Relaxed);
         };
-        let abort = |task: crate::types::Task, reason: PdmError| {
+        let abort = |task: Task, reason: PdmError| {
             env.queue.push(task);
             if let Ok(mut guard) = env.abort_reason.lock() {
                 if guard.is_none() {
                     *guard = Some(reason);
                 }
             }
-            env.stop.store(true, Ordering::Relaxed);
+            stop.store(true, Ordering::Relaxed);
+        };
+        let on_write = |offset: u64, len: u64| {
+            if env.bytes_written.fetch_add(len, Ordering::Relaxed) == 0 {
+                perf.note_progress();
+            }
+            env.parts.record_write(offset, len);
         };
         loop {
-            if env.stop.load(Ordering::Relaxed) {
+            if stop.load(Ordering::Relaxed) {
                 stop_worker(&env.live_workers);
                 return;
             }
@@ -554,140 +532,84 @@ fn spawn_chunk_worker(env: ChunkWorker) -> tokio::task::JoinHandle<()> {
             );
             let key = (task.offset, task.length);
             if budget_key != Some(key) {
-                retries_left = env.max_retries;
+                budget.reset();
                 budget_key = Some(key);
             }
 
             env.phase.working.fetch_add(1, Ordering::Relaxed);
             publish_phase(&env.phase, &env.event_tx, env.download_id);
-            let result = download_task(
-                &env.url,
-                &env.client,
-                &env.file,
-                &task,
-                &env.stop,
-                &env.limiter,
-                &env.user_agent,
-                &env.bytes_written,
-                Some(env.parts.clone()),
-                env.headers.as_ref(),
-                env.expected_total,
-                crate::engine::task_download::BODY_IDLE,
-                Some(env.perf.as_ref()),
-            )
-            .await;
+            let result = env
+                .transfer
+                .attempt(
+                    &env.url,
+                    &env.file,
+                    &Want::Range(task.clone()),
+                    env.expected_total,
+                    &on_write,
+                )
+                .await;
             env.phase.working.fetch_sub(1, Ordering::Relaxed);
 
-            match result {
-                TaskResult::Complete => {
-                    retries_left = env.max_retries;
+            let failure = match result {
+                Attempt::Complete => {
+                    budget.reset();
+                    continue;
                 }
-                TaskResult::Partial { remaining } => {
-                    let zero_progress =
-                        remaining.offset == task.offset && remaining.length == task.length;
-                    let pausing = env.stop.load(Ordering::Relaxed);
-                    if pausing || !zero_progress {
-                        log::debug!(
-                            "[ProxyDM] task offset={} partial, re-queueing {} bytes",
-                            task.offset,
-                            remaining.length
-                        );
-                        if !zero_progress && !pausing {
-                            // A transfer that stopped mid-range (body idle or a
-                            // dropped stream) is a stall, not a clean pause.
-                            env.perf.note_stall();
-                        }
-                        env.queue.push(remaining);
-                        if !zero_progress {
-                            retries_left = env.max_retries;
-                        }
-                    } else if retries_left == 0 {
-                        log::error!(
-                            "[ProxyDM] chunk offset={} made no progress, retries exhausted",
-                            task.offset
-                        );
-                        env.perf.note_stall();
-                        abort(
-                            task,
-                            PdmError::RetriesExhausted("chunk made no progress".into()),
-                        );
-                        stop_worker(&env.live_workers);
-                        return;
-                    } else {
-                        retries_left -= 1;
-                        env.perf.note_retry();
-                        log::warn!(
-                            "[ProxyDM] chunk offset={} made no progress, retries left={}",
-                            task.offset,
-                            retries_left
-                        );
-                        env.queue.push(task);
-                        env.phase.retrying.fetch_add(1, Ordering::Relaxed);
-                        publish_phase(&env.phase, &env.event_tx, env.download_id);
-                        let attempt = env.max_retries - retries_left;
-                        let delay = crate::retry::backoff_delay(attempt);
-                        let deadline = std::time::Instant::now() + delay;
-                        while std::time::Instant::now() < deadline {
-                            if env.stop.load(Ordering::Relaxed) {
-                                env.phase.retrying.fetch_sub(1, Ordering::Relaxed);
-                                stop_worker(&env.live_workers);
-                                return;
-                            }
-                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                        }
-                        env.phase.retrying.fetch_sub(1, Ordering::Relaxed);
-                        publish_phase(&env.phase, &env.event_tx, env.download_id);
+                Attempt::Partial { remaining } => {
+                    log::debug!(
+                        "[ProxyDM] task offset={} partial, re-queueing {} bytes",
+                        task.offset,
+                        remaining.length
+                    );
+                    if !stop.load(Ordering::Relaxed) {
+                        // A transfer that stopped mid-range (body idle or a
+                        // dropped stream) is a stall, not a clean pause.
+                        perf.note_stall();
+                        budget.reset();
                     }
+                    env.queue.push(remaining);
+                    continue;
                 }
-                TaskResult::Cancelled => {
-                    // download_task returns Cancelled only after the popped
-                    // range is fully on disk. A partial cancel comes back as
-                    // Partial and was re-queued above.
-                    stop_worker(&env.live_workers);
-                    return;
-                }
-                TaskResult::RangeNotSupported | TaskResult::InvalidRangeResponse => {
+                Attempt::RangeLost => {
                     abort(task, PdmError::RangeLost);
                     stop_worker(&env.live_workers);
                     return;
                 }
-                TaskResult::FatalNoRetry(msg) => {
-                    let code = msg
-                        .split_whitespace()
-                        .nth(1)
-                        .and_then(|s| s.parse().ok())
-                        .unwrap_or(403);
+                Attempt::Refused(code) => {
                     abort(task, PdmError::Http(code));
                     stop_worker(&env.live_workers);
                     return;
                 }
-                TaskResult::Fatal(msg) => {
-                    if retries_left == 0 {
-                        log::error!("retries exhausted for offset={}, stopping", task.offset);
-                        abort(task, PdmError::RetriesExhausted(msg));
-                        stop_worker(&env.live_workers);
-                        return;
-                    }
-                    retries_left -= 1;
-                    env.perf.note_retry();
-                    env.queue.push(task);
-                    env.phase.retrying.fetch_add(1, Ordering::Relaxed);
-                    publish_phase(&env.phase, &env.event_tx, env.download_id);
-                    let attempt = env.max_retries - retries_left;
-                    let delay = crate::retry::backoff_delay(attempt);
-                    let deadline = std::time::Instant::now() + delay;
-                    while std::time::Instant::now() < deadline {
-                        if env.stop.load(Ordering::Relaxed) {
-                            env.phase.retrying.fetch_sub(1, Ordering::Relaxed);
-                            stop_worker(&env.live_workers);
-                            return;
-                        }
-                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                    }
-                    env.phase.retrying.fetch_sub(1, Ordering::Relaxed);
-                    publish_phase(&env.phase, &env.event_tx, env.download_id);
-                }
+                Attempt::Failed(error) => error,
+            };
+
+            let Some(delay) = budget.take() else {
+                log::error!(
+                    "[ProxyDM] retries exhausted for offset={}, stopping: {}",
+                    task.offset,
+                    failure
+                );
+                abort(task, PdmError::RetriesExhausted(Box::new(failure)));
+                stop_worker(&env.live_workers);
+                return;
+            };
+            log::warn!(
+                "[ProxyDM] chunk offset={} failed, retrying in {:?}: {}",
+                task.offset,
+                delay,
+                failure
+            );
+            perf.note_retry();
+            env.queue.push(task);
+            env.phase.retrying.fetch_add(1, Ordering::Relaxed);
+            publish_phase(&env.phase, &env.event_tx, env.download_id);
+            let go_on = env.transfer.wait(delay).await;
+            env.phase.retrying.fetch_sub(1, Ordering::Relaxed);
+            if !go_on {
+                stop_worker(&env.live_workers);
+                return;
             }
+            publish_phase(&env.phase, &env.event_tx, env.download_id);
         }
     })
 }

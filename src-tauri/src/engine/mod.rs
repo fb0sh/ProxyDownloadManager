@@ -8,7 +8,7 @@ pub mod part_progress;
 #[cfg(test)]
 pub(crate) mod range_http;
 pub mod single;
-pub mod task_download;
+pub mod transfer;
 
 use crate::network::limiter::MultiLimiter;
 use crate::network::pool::NetworkPool;
@@ -802,5 +802,140 @@ mod tests {
             ".pdm must be kept"
         );
         let _ = std::fs::remove_file(file_io::temp_path(id));
+    }
+
+    /// Everything the event channel carried, as text.
+    fn drain_data(rx: &mut mpsc::UnboundedReceiver<Event>) -> Vec<String> {
+        let mut data = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            data.extend(event.data);
+        }
+        data
+    }
+
+    #[tokio::test]
+    async fn test_single_retries_a_dropped_connection_and_completes() {
+        let file_data: Vec<u8> = (0..64 * 1024u32).map(|i| (i % 251) as u8).collect();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let body = file_data.clone();
+        tokio::spawn(async move {
+            // The first connection is closed without an answer.
+            if let Ok((stream, _)) = listener.accept().await {
+                drop(stream);
+            }
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let _ = read_http_headers(&mut stream).await;
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(head.as_bytes()).await;
+                let _ = stream.write_all(&body).await;
+            }
+        });
+        let url = format!("http://127.0.0.1:{}/flaky.bin", addr.port());
+
+        let mut cfg = test_config_at("single_retry", &url, false, file_data.len() as u64);
+        cfg.max_retries = 2;
+        let save_path = cfg.save_path.clone();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let result = run_download(
+            cfg,
+            Arc::new(NetworkPool::new(false)),
+            tx,
+            Arc::new(MultiLimiter::new(0, 0)),
+            Arc::new(AtomicBool::new(false)),
+            test_hooks(),
+        )
+        .await;
+
+        assert!(result.is_ok(), "single did not retry: {:?}", result.err());
+        assert_eq!(std::fs::read(&save_path).unwrap(), file_data);
+        let data = drain_data(&mut rx);
+        assert!(
+            data.iter().any(|d| d.contains("retrying")),
+            "the retry was never reported: {data:?}"
+        );
+        let _ = std::fs::remove_file(&save_path);
+    }
+
+    /// One media playlist and its segments on one port. The segment at
+    /// `flaky` answers 503 the first time it is asked for.
+    async fn spawn_hls_server(segments: Vec<Vec<u8>>, flaky: usize) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let failed_once = Arc::new(AtomicBool::new(false));
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let segments = segments.clone();
+                let failed_once = failed_once.clone();
+                tokio::spawn(async move {
+                    let Some(req) = read_http_headers(&mut stream).await else {
+                        return;
+                    };
+                    let path = req.split_whitespace().nth(1).unwrap_or("");
+                    let (status, body) = if path == "/media.m3u8" {
+                        let mut list = String::from("#EXTM3U\n#EXT-X-TARGETDURATION:4\n");
+                        for i in 0..segments.len() {
+                            list.push_str(&format!("#EXTINF:4.0,\nseg{i}.ts\n"));
+                        }
+                        list.push_str("#EXT-X-ENDLIST\n");
+                        ("200 OK", list.into_bytes())
+                    } else {
+                        let index: usize = path
+                            .trim_start_matches("/seg")
+                            .trim_end_matches(".ts")
+                            .parse()
+                            .unwrap();
+                        if index == flaky && !failed_once.swap(true, Ordering::Relaxed) {
+                            ("503 Service Unavailable", Vec::new())
+                        } else {
+                            ("200 OK", segments[index].clone())
+                        }
+                    };
+                    let head = format!(
+                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(head.as_bytes()).await;
+                    let _ = stream.write_all(&body).await;
+                });
+            }
+        });
+        format!("http://127.0.0.1:{}/media.m3u8", addr.port())
+    }
+
+    #[tokio::test]
+    async fn test_hls_retries_a_segment_and_merges_them_in_order() {
+        let segments: Vec<Vec<u8>> = (0..5u8).map(|i| vec![i; 1000 + i as usize]).collect();
+        let url = spawn_hls_server(segments.clone(), 2).await;
+
+        let mut cfg = test_config_at("hls", &url, false, 0);
+        cfg.is_hls = true;
+        cfg.max_retries = 2;
+        let save_path = cfg.save_path.clone();
+        let id = cfg.id;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let result = run_download(
+            cfg,
+            Arc::new(NetworkPool::new(false)),
+            tx,
+            Arc::new(MultiLimiter::new(0, 0)),
+            Arc::new(AtomicBool::new(false)),
+            test_hooks(),
+        )
+        .await;
+
+        assert!(result.is_ok(), "hls failed: {:?}", result.err());
+        assert_eq!(std::fs::read(&save_path).unwrap(), segments.concat());
+        assert!(!file_io::hls_part_dir(id).exists());
+        assert!(!std::path::Path::new(&file_io::temp_path(id)).exists());
+        let data = drain_data(&mut rx);
+        assert!(
+            data.iter().any(|d| d.contains("merging")),
+            "merging was never reported: {data:?}"
+        );
+        let _ = std::fs::remove_file(&save_path);
     }
 }

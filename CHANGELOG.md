@@ -3,6 +3,17 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+## [Unreleased]
+
+### Fixed
+
+- 源站中途不再发数据时，暂停和删除立即生效，不再等到 30 秒无数据超时
+
+### Changed
+
+- 单连接下载和 HLS 分片现在与多连接下载一样，遇到网络错误、超时或 408/429/5xx 会按退避自动重试（次数用设置里的重试次数）；单连接下载重试期间状态显示「重试中」，401/403/404 等仍然直接失败
+- HLS 分片也按 30 秒无数据判定卡住，并和其他下载一样缓冲写入
+
 ## [0.17.0] - 2026-09-30
 
 ### Added
