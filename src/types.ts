@@ -144,7 +144,8 @@ export type PdmError =
   | { kind: "config"; value: string }
   | { kind: "io"; value: string }
   | { kind: "network"; value: string }
-  | { kind: "retries_exhausted"; value: string }
+  | { kind: "retries_exhausted"; value: PdmError }
+  | { kind: "timeout"; value: string }
   | { kind: "range_lost" }
   | { kind: "other"; value: string }
   | { kind: "file_exists"; value: string }

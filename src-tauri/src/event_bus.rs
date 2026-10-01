@@ -35,16 +35,29 @@ impl FrontendEvent {
 }
 
 /// Centralized event emission. All frontend-bound events MUST go through this.
+/// The bus only knows a sink: Tauri's emitter in the app, a recorder in tests.
 pub struct EventBus {
-    app_handle: AppHandle,
+    sink: Box<dyn Fn(&'static str, serde_json::Value) + Send + Sync>,
 }
 
 impl EventBus {
     pub fn new(app_handle: AppHandle) -> Self {
-        Self { app_handle }
+        Self::with_sink(move |name, payload| {
+            let _ = app_handle.emit(name, payload);
+        })
     }
 
-    pub fn emit(&self, event: FrontendEvent, payload: impl Serialize + Clone) {
-        let _ = self.app_handle.emit(event.name(), payload);
+    pub fn with_sink(
+        sink: impl Fn(&'static str, serde_json::Value) + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            sink: Box::new(sink),
+        }
+    }
+
+    pub fn emit(&self, event: FrontendEvent, payload: impl Serialize) {
+        if let Ok(payload) = serde_json::to_value(payload) {
+            (self.sink)(event.name(), payload);
+        }
     }
 }

@@ -247,9 +247,8 @@ impl WorkerPool {
                     log::error!("[ProxyDM] id={} ERROR: {}", id, e);
                     if still_ours && !matches!(e, crate::types::PdmError::Cancelled) {
                         let _ = ctx.event_tx.send(Event {
-                            kind: crate::types::EventKind::DownloadErrored,
+                            kind: crate::types::EventKind::DownloadErrored(e.clone()),
                             download_id: id,
-                            data: Some(e.to_string()),
                         });
                     }
                 }

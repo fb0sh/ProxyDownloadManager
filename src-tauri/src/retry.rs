@@ -8,10 +8,10 @@ pub fn is_retryable(err: &PdmError) -> bool {
     match err {
         PdmError::Cancelled | PdmError::RangeLost => false,
         PdmError::Http(code) => is_retryable_status(*code),
-        PdmError::Network(msg)
-        | PdmError::Io(msg)
-        | PdmError::Other(msg)
-        | PdmError::RetriesExhausted(msg) => is_retryable_message(msg),
+        PdmError::Network(msg) | PdmError::Io(msg) | PdmError::Other(msg) => {
+            is_retryable_message(msg)
+        }
+        PdmError::RetriesExhausted(cause) => is_retryable(cause),
         PdmError::Incomplete(_) => true,
         PdmError::Probe(msg) => is_retryable_message(msg),
         _ => false,

@@ -1,7 +1,8 @@
+use crate::engine::transfer::{send_headers, Fetched, Transfer, Want};
 use crate::network::limiter::MultiLimiter;
 use crate::network::pool::NetworkPool;
-use crate::types::{EngineConfig, Event, EventKind, HlsVariantInfo, PdmError, PdmResult};
-use futures_util::StreamExt;
+use crate::network::protocol::PerfStats;
+use crate::types::{EngineConfig, Event, EventKind, HlsVariantInfo, PdmError, PdmResult, Phase};
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -119,7 +120,7 @@ pub async fn fetch_text(
 ) -> PdmResult<String> {
     let client = pool.get_client(proxy)?;
     let req = crate::headers::prepare_request(client.get(url), headers, user_agent, None);
-    let resp = crate::engine::task_download::send_headers(req, None)
+    let resp = send_headers(req, None)
         .await
         .map_err(|e| PdmError::Network(e.to_string()))?;
     if !resp.status().is_success() {
@@ -215,7 +216,13 @@ impl HlsDownloader {
 
         let part_dir = crate::engine::file_io::hls_part_dir(cfg.id);
         std::fs::create_dir_all(&part_dir)?;
-        let client = self.pool.get_client(proxy)?;
+        let transfer = Arc::new(Transfer::new(
+            self.pool.get_client(proxy)?,
+            cfg,
+            limiter,
+            cancel.clone(),
+            Arc::new(PerfStats::new(cfg.id)),
+        ));
         let conns = (if cfg.connections == 0 {
             crate::engine::chunk::auto_connections(cfg.total_size)
         } else {
@@ -231,65 +238,38 @@ impl HlsDownloader {
             let mut joins = Vec::new();
             for i in next..end {
                 let uri = media.segments[i].uri.clone();
-                let client = client.clone();
-                let headers = cfg.headers.clone();
-                let ua = cfg.user_agent.clone();
                 let path = part_dir.join(format!("{i:06}.part"));
-                let limiter = limiter.clone();
-                let cancel = cancel.clone();
+                let transfer = transfer.clone();
                 joins.push(tokio::spawn(async move {
-                    if cancel.load(Ordering::Relaxed) {
-                        return Err("cancelled".to_string());
-                    }
-                    let req =
-                        crate::headers::prepare_request(client.get(&uri), &headers, &ua, None);
-                    let resp = match crate::engine::task_download::send_headers(req, Some(&cancel))
+                    let file = std::fs::File::create(&path)?;
+                    match transfer
+                        .fetch(&uri, &file, Want::Whole, 0, &|_, _| {}, &|_| {})
                         .await
                     {
-                        Ok(resp) => resp,
-                        Err(crate::engine::task_download::HeaderWait::Cancelled) => {
-                            return Err("cancelled".to_string());
-                        }
-                        Err(e) => return Err(e.to_string()),
-                    };
-                    if !resp.status().is_success() {
-                        return Err(format!("HTTP {}", resp.status().as_u16()));
+                        Fetched::Complete => Ok(()),
+                        Fetched::Stopped => Err(PdmError::Cancelled),
+                        Fetched::RangeLost => Err(PdmError::RangeLost),
+                        Fetched::Failed(error) => Err(error),
                     }
-                    let mut stream = resp.bytes_stream();
-                    let mut file = std::fs::File::create(&path).map_err(|e| e.to_string())?;
-                    while let Some(chunk) = stream.next().await {
-                        if cancel.load(Ordering::Relaxed) {
-                            return Err("cancelled".to_string());
-                        }
-                        let chunk = chunk.map_err(|e| e.to_string())?;
-                        limiter.wait_n(chunk.len() as u64).await;
-                        file.write_all(&chunk).map_err(|e| e.to_string())?;
-                    }
-                    file.flush().map_err(|e| e.to_string())?;
-                    Ok(())
                 }));
             }
             for join in joins {
-                let result = join.await.map_err(|e| PdmError::Hls(e.to_string()))?;
-                if let Err(e) = result {
-                    if e == "cancelled" || cancel.load(Ordering::Relaxed) {
+                let result: PdmResult<()> = join.await.map_err(|e| PdmError::Hls(e.to_string()))?;
+                if let Err(error) = result {
+                    if cancel.load(Ordering::Relaxed) {
                         return Err(PdmError::Cancelled);
                     }
-                    return Err(PdmError::Hls(e));
+                    return Err(error);
                 }
             }
             next = end;
             let _ = self.event_tx.send(Event {
-                kind: EventKind::DownloadProgress,
+                kind: EventKind::SegmentProgress {
+                    done: next as u64,
+                    total,
+                    phase: Phase::Downloading,
+                },
                 download_id: cfg.id,
-                data: Some(
-                    serde_json::json!({
-                        "downloaded": next as u64,
-                        "total": total,
-                        "phase": "downloading",
-                    })
-                    .to_string(),
-                ),
             });
         }
 
@@ -298,16 +278,12 @@ impl HlsDownloader {
         }
 
         let _ = self.event_tx.send(Event {
-            kind: EventKind::DownloadProgress,
+            kind: EventKind::SegmentProgress {
+                done: total,
+                total,
+                phase: Phase::Merging,
+            },
             download_id: cfg.id,
-            data: Some(
-                serde_json::json!({
-                    "downloaded": total,
-                    "total": total,
-                    "phase": "merging",
-                })
-                .to_string(),
-            ),
         });
 
         crate::engine::file_io::migrate_legacy_temp(cfg.id, &cfg.save_path);
@@ -335,7 +311,6 @@ impl HlsDownloader {
         let _ = self.event_tx.send(Event {
             kind: EventKind::DownloadCompleted,
             download_id: cfg.id,
-            data: None,
         });
         Ok(())
     }

@@ -23,9 +23,12 @@ pub enum PdmError {
     Io(String),
     /// WebSocket / network error.
     Network(String),
-    /// All retries burned on a task — progress is saved; the download is
-    /// resumable, so the engine must NOT degrade (that would truncate it).
-    RetriesExhausted(String),
+    /// All retries burned on a fetch; carries the last failure. Progress is
+    /// saved and the download is resumable, so the engine must NOT degrade
+    /// (that would truncate it).
+    RetriesExhausted(Box<PdmError>),
+    /// No response headers, or no body bytes, within the allowed wait.
+    Timeout(String),
     /// The server stopped honoring Range requests mid-download — concurrent
     /// can never finish; the engine degrades to a sequential restart.
     RangeLost,
@@ -46,6 +49,17 @@ pub enum PdmError {
     Other(String),
 }
 
+impl PdmError {
+    /// The HTTP status behind this failure, also when retries wrapped it.
+    pub fn http_status(&self) -> Option<u16> {
+        match self {
+            Self::Http(code) => Some(*code),
+            Self::RetriesExhausted(cause) => cause.http_status(),
+            _ => None,
+        }
+    }
+}
+
 impl fmt::Display for PdmError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -58,7 +72,8 @@ impl fmt::Display for PdmError {
             Self::Config(msg) => write!(f, "Config error: {}", msg),
             Self::Io(msg) => write!(f, "I/O error: {}", msg),
             Self::Network(msg) => write!(f, "Network error: {}", msg),
-            Self::RetriesExhausted(msg) => write!(f, "Retries exhausted: {}", msg),
+            Self::RetriesExhausted(cause) => write!(f, "Retries exhausted: {}", cause),
+            Self::Timeout(msg) => write!(f, "{}", msg),
             Self::RangeLost => write!(f, "Server stopped honoring Range requests"),
             Self::Incomplete(msg) => write!(f, "Download incomplete: {}", msg),
             Self::FileExists(path) => write!(f, "File exists: {}", path),

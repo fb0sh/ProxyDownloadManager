@@ -24,6 +24,14 @@ impl SettingsService {
         }
     }
 
+    /// Start from the given settings without touching the config file.
+    #[cfg(test)]
+    pub fn with_settings(settings: Settings) -> Self {
+        Self {
+            settings: Mutex::new(settings),
+        }
+    }
+
     pub fn get(&self) -> Settings {
         self.settings.lock().map(|s| s.clone()).unwrap_or_default()
     }

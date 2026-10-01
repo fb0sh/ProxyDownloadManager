@@ -3,7 +3,6 @@ mod config;
 mod download_manager;
 mod engine;
 mod event_bus;
-mod event_handler;
 mod file_icon;
 mod filename;
 mod headers;

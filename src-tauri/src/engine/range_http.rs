@@ -13,7 +13,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
 #[derive(Clone, Copy)]
-enum BodyMode {
+pub(crate) enum BodyMode {
     Exact,
     IgnoreRange,
     BadContentRange,
@@ -26,12 +26,12 @@ struct Hit {
     if_ranges: Vec<String>,
 }
 
-struct Srv {
+pub(crate) struct Srv {
     hits: Mutex<Vec<Hit>>,
     short_left: AtomicUsize,
     progressed: AtomicBool,
     release: AtomicBool,
-    stall: AtomicBool,
+    pub(crate) stall: AtomicBool,
 }
 
 fn header_values<'a>(req: &'a str, name: &str) -> Vec<&'a str> {
@@ -105,7 +105,7 @@ async fn write_full(stream: &mut tokio::net::TcpStream, size: u64) {
     write_generated(stream, 0, size).await;
 }
 
-async fn spawn_server(size: u64, mode: BodyMode, stall: bool) -> (String, Arc<Srv>) {
+pub(crate) async fn spawn_server(size: u64, mode: BodyMode, stall: bool) -> (String, Arc<Srv>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let srv = Arc::new(Srv {
@@ -277,21 +277,14 @@ fn quiet_hooks() -> EngineHooks {
 fn max_downloaded(rx: &mut mpsc::UnboundedReceiver<Event>) -> u64 {
     let mut max_dl = 0u64;
     while let Ok(ev) = rx.try_recv() {
-        if !matches!(ev.kind, EventKind::DownloadProgress) {
-            continue;
-        }
-        let Some(data) = ev.data else { continue };
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) else {
-            continue;
-        };
-        if let Some(n) = v.get("downloaded").and_then(|x| x.as_u64()) {
-            max_dl = max_dl.max(n);
+        if let EventKind::DownloadProgress { downloaded, .. } = ev.kind {
+            max_dl = max_dl.max(downloaded);
         }
     }
     max_dl
 }
 
-fn assert_file(path: &str, size: u64) {
+pub(crate) fn assert_file(path: &str, size: u64) {
     let file = std::fs::File::open(path).unwrap_or_else(|e| panic!("open {path}: {e}"));
     assert_eq!(file.metadata().unwrap().len(), size, "{path}");
     let mut reader = std::io::BufReader::new(file);
