@@ -861,6 +861,86 @@ mod tests {
         let _ = std::fs::remove_file(&save_path);
     }
 
+    /// A resume whose Range the server ignores (a 200) is truncated and
+    /// rewritten from byte 0. Pausing before a byte arrives must not persist
+    /// the offset that was asked for: those bytes are no longer on disk.
+    #[tokio::test]
+    async fn a_paused_restart_does_not_claim_the_truncated_bytes() {
+        let total = 4000u64;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let _ = read_http_headers(&mut stream).await;
+                    // 200 to a Range request, then silence: no byte is ever sent.
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {total}\r\nConnection: close\r\n\r\n"
+                    );
+                    let _ = stream.write_all(head.as_bytes()).await;
+                    let _ = stream.flush().await;
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                });
+            }
+        });
+        let url = format!("http://127.0.0.1:{}/resume.bin", addr.port());
+
+        let mut cfg = test_config_at("restart_pause", &url, false, total);
+        cfg.is_resume = true;
+        cfg.downloaded = 2000;
+        let id = cfg.id;
+        // What a previous run left on disk, at the resume offset.
+        let pdm_path = file_io::temp_path(id);
+        std::fs::create_dir_all(std::path::Path::new(&pdm_path).parent().unwrap()).unwrap();
+        std::fs::write(&pdm_path, vec![7u8; 2000]).unwrap();
+
+        let saved: Arc<std::sync::Mutex<Option<DownloadState>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let recorder = saved.clone();
+        let hooks = EngineHooks {
+            save_resume_state: Box::new(move |_, state: &DownloadState| {
+                *recorder.lock().unwrap() = Some(state.clone());
+            }),
+            invalidate_for_restart: Box::new(|_| {}),
+        };
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let stopper = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            stopper.store(true, Ordering::Relaxed);
+        });
+
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let result = run_download(
+            cfg,
+            Arc::new(NetworkPool::new(false)),
+            tx,
+            Arc::new(MultiLimiter::new(0, 0)),
+            cancel,
+            hooks,
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(PdmError::Cancelled)),
+            "pause was not reported: {result:?}"
+        );
+        assert_eq!(
+            std::fs::metadata(&pdm_path).unwrap().len(),
+            0,
+            "the restart did not truncate"
+        );
+        let claimed = saved
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|state| state.downloaded)
+            .unwrap_or(0);
+        assert_eq!(claimed, 0, "a restart that wrote nothing is not progress");
+        let _ = std::fs::remove_file(&pdm_path);
+    }
+
     /// One media playlist and its segments on one port. The segment at
     /// `flaky` answers 503 the first time it is asked for.
     async fn spawn_hls_server(segments: Vec<Vec<u8>>, flaky: usize) -> String {

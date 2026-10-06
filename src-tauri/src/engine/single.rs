@@ -98,7 +98,13 @@ impl SingleDownloader {
         let outcome = transfer
             .fetch(&cfg.url, &file, want, cfg.total_size, &on_write, &on_phase)
             .await;
-        let total = written.load(Ordering::Relaxed);
+        // A 200 answer to a resume Range makes the transfer rewrite the file
+        // from byte 0. Bytes the file no longer holds are not progress, so what
+        // is left after a stop is what is on disk, not the offset that was
+        // asked for.
+        let total = written
+            .load(Ordering::Relaxed)
+            .min(file.metadata().map(|m| m.len()).unwrap_or(0));
 
         let save_progress = |written: u64| {
             let remaining = cfg.total_size.saturating_sub(written);
