@@ -3,6 +3,17 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+## [Unreleased]
+
+### Fixed
+
+- 修复媒体浮窗在刷新或重新进入页面后不出现：嗅探列表此前从不在页面导航时清空，新页面的第一个媒体请求会被去重掉、于是不再推送；现在导航即清空，页面也会在加载完成、重新可见时主动追问一次
+- 修复媒体浮窗拖拽：改用 Pointer Capture，指针移到播放器 / iframe 上方时不再丢失移动事件（此前用 mousemove，正是视频站必踩的坑）
+
+### Changed
+
+- 媒体浮窗位置改为贴住媒体元素上方并带指向箭头（与 NeatDownloadManager 一致），跟随滚动与缩放；找不到媒体元素（MSE/blob 播放器、XHR 拉的 m3u8）时回退到右下角，手动拖拽后不再自动吸附；为放得进播放器上方改用紧凑密度（22px 行高、操作按钮移入标题栏）
+
 ## [0.19.0] - 2026-10-07
 
 ### Added

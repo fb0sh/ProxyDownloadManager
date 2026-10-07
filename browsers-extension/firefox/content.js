@@ -85,6 +85,17 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   return false;
 });
 
-// Ask what was sniffed before this document started; the panel is created by
-// the answer or by the first push, so an empty page shows nothing at all.
-chrome.runtime.sendMessage({ action: "media-for-tab" }).catch(() => {});
+// The panel is created by the answer or by the first push from the service
+// worker, so an empty page shows nothing at all. A push can be missed (it
+// arrived while this document was loading, or the tab's list was cleared by a
+// navigation), so ask again as the page settles and whenever it comes back.
+function askForMedia() {
+  chrome.runtime.sendMessage({ action: "media-for-tab" }).catch(() => {});
+}
+
+askForMedia();
+document.addEventListener("DOMContentLoaded", askForMedia, { once: true });
+window.addEventListener("pageshow", askForMedia);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") askForMedia();
+});
