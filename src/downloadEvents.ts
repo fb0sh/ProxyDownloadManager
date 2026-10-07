@@ -17,7 +17,7 @@ export interface ProgressPayload {
   /** Concurrent → Single degrade: the Progress Map collapses to one cell. */
   reset_to_single?: boolean;
   total_size?: number;
-  /** Engine phase: connecting | retrying | merging | downloading. */
+  /** Engine phase: downloading | retrying | merging. Not every status: `connecting` is set by the command layer, not reported by an engine. */
   status?: string;
 }
 

@@ -108,8 +108,16 @@ When bumping the version for a release, update ALL of these to match:
 | File | Field |
 |------|-------|
 | `src-tauri/Cargo.toml` | `version` |
+| `src-tauri/Cargo.lock` | the `proxydownloadmanager` package's `version` — CI runs `cargo check --locked`, so a stale lock file fails the build |
 | `src-tauri/tauri.conf.json` | `version` |
 | `package.json` | `version` |
+| `browsers-extension/chrome/manifest.json` | `version` |
+| `browsers-extension/edge/manifest.json` | `version` |
+| `browsers-extension/firefox/manifest.json` | `version` |
+| `src-present/App.tsx` | `VERSION` |
+| `src-present/tauri-mocks.ts` | `latest_version`, `current_version` |
+
+`pnpm-lock.yaml` also contains `0.17.x`-shaped strings for unrelated packages (`react-refresh`): never blanket-replace the version.
 
 Without a release PR, the version should only change when the user explicitly asks.
 

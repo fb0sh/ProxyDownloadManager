@@ -65,7 +65,7 @@ Verified (do not re-solve):
 - `src-tauri/src/retry.rs` *(new)* — retry class, jittered backoff, proxy stats
 - `src-tauri/src/ws/server.rs`
 - `src-tauri/src/probe.rs`
-- `src-tauri/src/engine/{chunk,concurrent,single,task_download}.rs`
+- `src-tauri/src/engine/{chunk,concurrent,single,transfer}.rs`
 - `src-tauri/src/engine/hls.rs` *(new)*
 - `src-tauri/src/network/{limiter,pool}.rs`
 - `src-tauri/src/worker.rs`
