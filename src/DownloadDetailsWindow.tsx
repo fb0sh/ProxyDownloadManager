@@ -135,6 +135,12 @@ export default function DownloadDetailsWindow() {
     }
   }, [item?.file_name]);
 
+  useEffect(() => {
+    if (!item || seededFor.current === item.id) return;
+    seededFor.current = item.id;
+    setHeaderRows(headersToRows(item.headers));
+  }, [item]);
+
   if (!idParam && liveId == null) {
     return <div className="grid h-full place-items-center text-[13px]">No download ID provided</div>;
   }
@@ -269,12 +275,6 @@ export default function DownloadDetailsWindow() {
       setExtraBusy(false);
     }
   };
-  useEffect(() => {
-    if (!item || seededFor.current === item.id) return;
-    seededFor.current = item.id;
-    setHeaderRows(headersToRows(item.headers));
-  }, [item]);
-
   /**
    * Save the edited headers and retry: refresh re-probes the URL with them (so a
    * bad header surfaces here rather than as a failed resume), then resume keeps

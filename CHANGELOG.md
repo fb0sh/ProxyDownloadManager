@@ -3,6 +3,12 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+## [Unreleased]
+
+### Fixed
+
+- 修复 0.20.0 引入的详情窗口空白：播种请求头编辑器的 `useEffect` 被放在了组件的提前 return 之后，下载项从「未加载」变为「已加载」时 hook 数量变化，React 抛 `Rendered more hooks than during the previous render` 导致整个详情窗口白屏；现已移到提前 return 之前，并补了一条能复现该崩溃的 jsdom 渲染测试（项目没有 eslint，tsc 也看不见这类问题）
+
 ## [0.20.0] - 2026-10-07
 
 ### Added
