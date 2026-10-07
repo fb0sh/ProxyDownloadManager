@@ -16,7 +16,7 @@ import {
 import "../../browsers-extension/shared/panel.js";
 
 describe("extension protocol", () => {
-  it("keeps download headers and drops hop-by-hop / sec-", () => {
+  it("keeps what the browser sent and drops only the unsafe", () => {
     const out = filterHeaders({
       Cookie: "sid=1",
       Referer: "https://example.com/",
@@ -24,13 +24,21 @@ describe("extension protocol", () => {
       Connection: "keep-alive",
       "Sec-Fetch-Mode": "navigate",
       Authorization: "Bearer x",
+      "X-Playback-Session-Id": "deadbeef",
+      Range: "bytes=0-0",
+      ":authority": "cdn.example",
     });
     const headers = out as Record<string, string>;
     expect(headers.Cookie).toBe("sid=1");
     expect(headers.Referer).toBe("https://example.com/");
     expect(headers.Authorization).toBe("Bearer x");
-    expect(headers.Host).toBeUndefined();
-    expect(headers["Sec-Fetch-Mode"]).toBeUndefined();
+    // Dropped by the old allow-list, which is how an origin that keys on it
+    // answered a request that had worked in the tab with 403.
+    expect(headers["X-Playback-Session-Id"]).toBe("deadbeef");
+    expect(headers["Sec-Fetch-Mode"]).toBe("navigate");
+    for (const name of ["Host", "Connection", "Range", ":authority"]) {
+      expect(headers[name]).toBeUndefined();
+    }
   });
 
   it("accepts structured ACK", () => {
@@ -157,7 +165,7 @@ describe("media request headers", () => {
     expect(mediaHeaders({ url: cdn, pageUrl: "" }).Referer).toBeUndefined();
   });
 
-  it("never replays hop-by-hop, sec-* or sniffed x-* headers", () => {
+  it("replays sniffed x-* headers but never hop-by-hop or engine-owned ones", () => {
     const headers = mediaHeaders({
       captured: {
         Host: "cdn.other.example",
@@ -165,13 +173,16 @@ describe("media request headers", () => {
         "Sec-Fetch-Mode": "cors",
         "Content-Length": "10",
         "X-Playback-Session-Id": "deadbeef",
+        "If-Range": "\"etag\"",
         Accept: "*/*",
       },
       url: cdn,
       pageUrl: page,
     });
     expect(headers.Accept).toBe("*/*");
-    for (const name of ["Host", "Connection", "Sec-Fetch-Mode", "Content-Length", "X-Playback-Session-Id"]) {
+    expect(headers["X-Playback-Session-Id"]).toBe("deadbeef");
+    expect(headers["Sec-Fetch-Mode"]).toBe("cors");
+    for (const name of ["Host", "Connection", "Content-Length", "If-Range"]) {
       expect(headers[name]).toBeUndefined();
     }
   });

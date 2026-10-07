@@ -1,16 +1,12 @@
 export const PROTOCOL_VERSION = 1;
 
-const ALLOWED = new Set([
-  "cookie",
-  "referer",
-  "origin",
-  "user-agent",
-  "authorization",
-  "accept",
-  "accept-language",
-  "accept-encoding",
-]);
-
+/**
+ * What must never be replayed: hop-by-hop and framing headers would corrupt the
+ * request, pseudo-headers are HTTP/2 internals, and Range / If-Range belong to
+ * the engine. Everything else the browser sent is kept — a media CDN can key on
+ * any of it, and `x-*` playback session ids in particular are how an origin
+ * tells a legitimate player from a stranger.
+ */
 function blocked(name) {
   const n = String(name || "").toLowerCase();
   return (
@@ -18,13 +14,17 @@ function blocked(name) {
     n === "connection" ||
     n === "keep-alive" ||
     n === "proxy-connection" ||
+    n === "proxy-authenticate" ||
+    n === "proxy-authorization" ||
     n === "te" ||
     n === "trailer" ||
     n === "transfer-encoding" ||
     n === "upgrade" ||
     n === "content-length" ||
     n === "content-encoding" ||
-    n.startsWith("sec-") ||
+    n === "expect" ||
+    n === "range" ||
+    n === "if-range" ||
     n.startsWith(":")
   );
 }
@@ -53,7 +53,6 @@ export function filterHeaders(input) {
   for (const [k, v] of entries) {
     if (!k || v == null || v === "") continue;
     if (blocked(k)) continue;
-    if (!ALLOWED.has(String(k).toLowerCase())) continue;
     out[canonical(k)] = String(v);
   }
   return out;
