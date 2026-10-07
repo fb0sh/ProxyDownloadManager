@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useStartDownload, useSettings } from "./query/downloadQueries";
@@ -11,6 +11,7 @@ import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { Label } from "./components/ui/label";
 import { Select } from "./components/ui/select";
+import { HeadersEditor, headersToRows, newHeaderRow, rowsToHeaders, type HeaderRow } from "./components/HeadersEditor";
 
 export default function NewDownloadWindow() {
   const { settings: loadedSettings } = useSettings();
@@ -24,7 +25,12 @@ export default function NewDownloadWindow() {
   const [manualConnections, setManualConnections] = useState(8);
   const [suggested, setSuggested] = useState(0);
   const [savePath, setSavePath] = useState(loadedSettings?.download_dir ?? "");
-  const [headers, setHeaders] = useState<Record<string, string>>({});
+  const [headerRows, setHeaderRows] = useState<HeaderRow[]>(() => [newHeaderRow()]);
+  const [showHeaders, setShowHeaders] = useState(false);
+  // One source of truth: the editor's rows. The probe and the download both use
+  // the map derived from them, so editing a header re-probes the URL before you
+  // commit to the download — which is how a Referer gets fixed before a 403.
+  const headers = useMemo(() => rowsToHeaders(headerRows), [headerRows]);
   const [probe, setProbe] = useState<ProbeInfo | null>(null);
   const [probeError, setProbeError] = useState<string | null>(null);
   const [probing, setProbing] = useState(false);
@@ -74,7 +80,7 @@ export default function NewDownloadWindow() {
     if (req.cookies && !nextHeaders.Cookie) nextHeaders.Cookie = req.cookies;
     if (req.referrer && !nextHeaders.Referer) nextHeaders.Referer = req.referrer;
     if (req.user_agent && !nextHeaders["User-Agent"]) nextHeaders["User-Agent"] = req.user_agent;
-    setHeaders(nextHeaders);
+    setHeaderRows(headersToRows(nextHeaders));
   };
 
   useEffect(() => {
@@ -258,6 +264,24 @@ export default function NewDownloadWindow() {
           </Select>
         </div>
       </div>
+      <div>
+        <div className="flex items-center gap-2">
+          <Label>{t("headers.title")}</Label>
+          <Button className="h-7 px-2 text-[12px]" onClick={() => setShowHeaders((v) => !v)}>
+            {showHeaders ? t("headers.hide") : t("headers.show")}
+          </Button>
+          {!showHeaders && Object.keys(headers).length > 0 && (
+            <span className="text-[11px] text-muted-foreground">
+              {t("headers.sentNote").replace("{n}", String(Object.keys(headers).length))}
+            </span>
+          )}
+        </div>
+        {showHeaders && (
+          <div className="mt-1 flex max-h-56 flex-col rounded-md border border-border p-2">
+            <HeadersEditor rows={headerRows} onChange={setHeaderRows} disabled={startDownload.isPending} />
+          </div>
+        )}
+      </div>
       <div className="rounded-md border border-border bg-muted p-2 text-[12px]">
         {!url.startsWith("http") && !probeError && <div className="text-muted-foreground">{t("newDownload.probeIdle")}</div>}
         {probing && <div>{t("newDownload.probing")}</div>}
@@ -275,9 +299,6 @@ export default function NewDownloadWindow() {
             <div className="text-destructive">{probeError}</div>
             <div className="text-muted-foreground">{t("newDownload.probeFailedHint")}</div>
           </div>
-        )}
-        {Object.keys(headers).length > 0 && (
-          <p className="mt-1 text-muted-foreground">{t("properties.authHidden")}</p>
         )}
       </div>
       <div className="mt-auto flex justify-end gap-2">

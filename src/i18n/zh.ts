@@ -269,7 +269,9 @@ const zh: Translations = {
     saveAndRetry: "保存并重试",
     show: "高级",
     hide: "收起高级",
+    sentNote: "将随请求发送 {n} 个请求头（含 Cookie 等凭据）",
   },
+
 
 };
 

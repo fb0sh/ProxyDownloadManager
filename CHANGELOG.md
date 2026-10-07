@@ -3,6 +3,12 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+## [Unreleased]
+
+### Added
+
+- 新建下载窗口（扩展发来下载时弹出的那个）新增**可编辑**的请求头区：点「高级」即可查看并修改随下载一起发送的请求头，支持直接粘贴 DevTools / `curl -H` 文本；折叠时只提示「将随请求发送 N 个请求头」，不直接把 Cookie 等凭据摊在界面上。该窗口的探测以请求头为 key，所以**改完会自动重新探测——点下载之前就能看到是 200/206 还是 403**
+
 ## [0.20.2] - 2026-10-07
 
 ### Fixed
