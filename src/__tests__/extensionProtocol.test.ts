@@ -6,6 +6,10 @@ import {
   shouldSkipMediaUrl,
   mediaDedupKey,
   mediaHeaders,
+  hostMatches,
+  panelVisible,
+  addHiddenHost,
+  removeHiddenHost,
   interceptDecision,
   ignoreReason,
 } from "../../browsers-extension/shared/protocol.js";
@@ -172,3 +176,46 @@ describe("media request headers", () => {
   });
 });
 
+
+describe("panel visibility", () => {
+  const host = "video.example.com";
+
+  it("needs media, the switch on, and no site hide", () => {
+    expect(panelVisible({ sniff: true, panel: true, hostname: host, mediaCount: 1 })).toBe(true);
+    // Nothing sniffed yet: no panel on an empty page.
+    expect(panelVisible({ sniff: true, panel: true, hostname: host, mediaCount: 0 })).toBe(false);
+    expect(panelVisible({ sniff: true, panel: false, hostname: host, mediaCount: 3 })).toBe(false);
+    expect(panelVisible({ sniff: false, panel: true, hostname: host, mediaCount: 3 })).toBe(false);
+    // Defaults are on: an older stored profile has neither key.
+    expect(panelVisible({ hostname: host, mediaCount: 1 })).toBe(true);
+  });
+
+  it("honours a hidden site, subdomains included", () => {
+    const hiddenHosts = ["example.com"];
+    expect(panelVisible({ hostname: host, mediaCount: 1, hiddenHosts })).toBe(false);
+    expect(panelVisible({ hostname: "example.com", mediaCount: 1, hiddenHosts })).toBe(false);
+    expect(panelVisible({ hostname: "notexample.com", mediaCount: 1, hiddenHosts })).toBe(true);
+    // The settings inputs hold a comma separated string, not an array.
+    expect(panelVisible({ hostname: host, mediaCount: 1, hiddenHosts: "a.com, example.com" })).toBe(false);
+  });
+
+  it("matches hosts exactly or as a subdomain, never as a suffix of another label", () => {
+    expect(hostMatches("a.example.com", "example.com")).toBe(true);
+    expect(hostMatches("example.com", "example.com")).toBe(true);
+    expect(hostMatches("badexample.com", "example.com")).toBe(false);
+    expect(hostMatches("", "example.com")).toBe(false);
+    expect(hostMatches("example.com", "")).toBe(false);
+  });
+
+  it("adds and removes hidden hosts without duplicates or case noise", () => {
+    let list = addHiddenHost([], "Example.COM");
+    expect(list).toEqual(["example.com"]);
+    list = addHiddenHost(list, "example.com");
+    list = addHiddenHost(list, "  example.com  ");
+    expect(list).toEqual(["example.com"]);
+    list = addHiddenHost(list, "other.test");
+    expect(list).toEqual(["example.com", "other.test"]);
+    expect(removeHiddenHost(list, "EXAMPLE.com")).toEqual(["other.test"]);
+    expect(removeHiddenHost(undefined, "x")).toEqual([]);
+  });
+});

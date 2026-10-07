@@ -6,5 +6,37 @@
   "extensionDescription": {
     "message": "把浏览器下载交给 ProxyDM 桌面端：每个任务独立选代理，多线程加速、断点续传。",
     "description": "商店列表中的简短说明（不超过 132 个字符）。"
+  },
+  "panelDrag": {
+    "message": "拖动",
+    "description": "浮窗拖拽把手的提示。"
+  },
+  "panelCollapse": {
+    "message": "折叠",
+    "description": "浮窗折叠按钮的提示。"
+  },
+  "panelClose": {
+    "message": "关闭",
+    "description": "浮窗关闭按钮的提示。"
+  },
+  "panelHideSite": {
+    "message": "此站不再显示",
+    "description": "在站点上永久隐藏浮窗的按钮。"
+  },
+  "panelHint": {
+    "message": "拖 ⠿ 移动",
+    "description": "浮窗页脚中，隐藏按钮旁的提示。"
+  },
+  "panelDownload": {
+    "message": "下载",
+    "description": "媒体浮窗中的行操作。"
+  },
+  "panelSent": {
+    "message": "已交给 ProxyDM",
+    "description": "桌面端已接受下载后的行状态。"
+  },
+  "panelFailed": {
+    "message": "失败：ProxyDM 未接收",
+    "description": "下载未被接受时的行状态。"
   }
 }

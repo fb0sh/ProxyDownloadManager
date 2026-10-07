@@ -18,6 +18,7 @@ for browser in "${BROWSERS[@]}"; do
   cp "$SHARED/background.js" "$target/background.js"
   cp "$SHARED/protocol.js" "$target/protocol.js"
   cp "$SHARED/i18n.js" "$target/i18n.js"
+  cp "$SHARED/panel.js" "$target/panel.js"
   cp "$SHARED/content.js" "$target/content.js"
   cp "$SHARED/popup.html" "$target/popup.html"
   cp "$SHARED/popup.js" "$target/popup.js"

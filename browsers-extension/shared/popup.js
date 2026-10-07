@@ -11,6 +11,10 @@ $("lbl-minsize").textContent = t("minSize");
 $("lbl-domains").textContent = t("ignoredDomains");
 $("lbl-exts").textContent = t("ignoredExtensions");
 $("bypass").textContent = t("once");
+$("lbl-sniff").textContent = t("sniff");
+$("lbl-panel").textContent = t("panel");
+$("panel-note").textContent = t("panelNote");
+$("lbl-hidden").textContent = t("hiddenSites");
 $("save").textContent = t("save");
 $("ignoredDomains").placeholder = "cdn.example, static.foo";
 $("ignoredExtensions").placeholder = "ico, svg, json";
@@ -80,6 +84,33 @@ async function refresh() {
     li.innerHTML = `<span class="muted">${t("noMedia")}</span>`;
     list.append(li);
   }
+  $("sniff").textContent = status.sniff ? t("on") : t("off");
+  $("panel").textContent = status.panel ? t("on") : t("off");
+  const hidden = status.hiddenHosts || [];
+  $("hidden-count").textContent = String(hidden.length);
+  const hiddenList = $("hidden");
+  hiddenList.innerHTML = "";
+  if (hidden.length === 0) {
+    const li = document.createElement("li");
+    li.style.cursor = "default";
+    li.innerHTML = `<span class="muted">${t("noHidden")}</span>`;
+    hiddenList.append(li);
+  }
+  hidden.forEach((host) => {
+    const li = document.createElement("li");
+    const span = document.createElement("span");
+    span.textContent = host;
+    const btn = document.createElement("button");
+    btn.textContent = t("showSite");
+    btn.onclick = async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      await chrome.runtime.sendMessage({ action: "unhide-panel-site", host });
+      refresh();
+    };
+    li.append(span, btn);
+    hiddenList.append(li);
+  });
   const s = status.settings || {};
   $("minSize").value = s.minSize || 0;
   $("ignoredDomains").value = s.ignoredDomains || "";
@@ -89,6 +120,18 @@ async function refresh() {
 $("toggle").onclick = async () => {
   const status = await chrome.runtime.sendMessage({ action: "popup-status" });
   await chrome.runtime.sendMessage({ action: "set-enabled", enabled: !status.enabled });
+  refresh();
+};
+
+$("sniff").onclick = async () => {
+  const status = await chrome.runtime.sendMessage({ action: "popup-status" });
+  await chrome.runtime.sendMessage({ action: "set-sniff", sniff: !status.sniff });
+  refresh();
+};
+
+$("panel").onclick = async () => {
+  const status = await chrome.runtime.sendMessage({ action: "popup-status" });
+  await chrome.runtime.sendMessage({ action: "set-panel", panel: !status.panel });
   refresh();
 };
 
