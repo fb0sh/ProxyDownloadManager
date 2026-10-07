@@ -27,6 +27,10 @@ dist-present
 # Codegraph
 .codegraph/
 
+# Agent session state (session-reliability runtime store): kept out of git so
+# a stray `git add -A` cannot commit task logs.
+.agents/store/
+
 # Rust
 src-tauri/target/
 src-tauri/src/generated_events.rs
