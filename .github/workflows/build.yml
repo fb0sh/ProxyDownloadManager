@@ -232,6 +232,14 @@ jobs:
             found && /^## / { exit }
             found { print }
           ' CHANGELOG.md > /tmp/release_body.md
+      - name: Package the browser extension
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          for browser in chrome edge firefox; do
+            # manifest.json has to sit at the zip root for both stores.
+            ( cd "browsers-extension/$browser" && zip -qr "$GITHUB_WORKSPACE/proxydm-extension-$browser-$version.zip" . )
+          done
+          ls -l proxydm-extension-*.zip
       - name: Upload to Release
         uses: softprops/action-gh-release@v2
         with:
@@ -242,3 +250,4 @@ jobs:
             *.deb
             *.AppImage
             *.rpm
+            proxydm-extension-*.zip
