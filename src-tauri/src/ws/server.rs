@@ -415,11 +415,11 @@ mod tests {
         assert!(req.headers.contains_key("Cookie"));
         assert!(req.headers.contains_key("Referer"));
         assert!(req.headers.contains_key("Authorization"));
+        // Framing headers are dropped; a browser-managed one is replayed, since
+        // an origin can key on it and dropping it is how a request that worked
+        // in the tab comes back 403.
         assert!(!req.headers.keys().any(|k| k.eq_ignore_ascii_case("host")));
-        assert!(!req
-            .headers
-            .keys()
-            .any(|k| k.to_ascii_lowercase().starts_with("sec-")));
+        assert!(req.headers.contains_key("Sec-Fetch-Mode"));
     }
 
     #[test]
