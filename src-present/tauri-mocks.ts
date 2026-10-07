@@ -387,8 +387,8 @@ async function invoke(command: string, args?: Record<string, any>): Promise<any>
       return { ok: true, latency_ms: 42 };
     case "check_update":
       return {
-        latest_version: "0.20.1",
-        current_version: "0.20.1",
+        latest_version: "0.20.2",
+        current_version: "0.20.2",
         has_update: false,
         release_url: "https://github.com/fb0sh/ProxyDownloadManager/releases",
         release_notes: "",
