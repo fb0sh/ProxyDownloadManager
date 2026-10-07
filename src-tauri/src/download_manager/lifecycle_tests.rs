@@ -438,6 +438,9 @@ async fn engine_reports_reach_the_frontend_in_their_wire_shape() {
             phase: Phase::Merging,
         },
         EventKind::PhaseChanged(Phase::Retrying),
+        // Every phase word the frontend acts on, including the one a retry
+        // returns to: `phase.as_str()` is the only place it is spelled.
+        EventKind::PhaseChanged(Phase::Downloading),
         EventKind::DownloadErrored(PdmError::Http(403)),
     ] {
         rig.dm.handle_event(Event {
@@ -469,6 +472,10 @@ async fn engine_reports_reach_the_frontend_in_their_wire_shape() {
             (
                 progress,
                 serde_json::json!({ "id": id, "status": "retrying" })
+            ),
+            (
+                progress,
+                serde_json::json!({ "id": id, "status": "downloading" })
             ),
             (
                 FrontendEvent::DownloadError.name(),
