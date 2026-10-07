@@ -3,6 +3,13 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+## [Unreleased]
+
+### Fixed
+
+- 浏览器扩展现在会捕获浏览器真实发送的请求头并原样重放（`Origin`、`Referer`、`Accept`、`Authorization` 等）：此前从不发 `Origin`，嗅探到的媒体的 `Referer` 还只带域名（`details.initiator` 只有 origin），校验来源或防盗链的源站会返回 403
+- 扩展拦截普通下载时捕获的请求上下文，此前错误地存的是响应头、还被请求头白名单过滤成空集合，实际等于没有重放任何请求头；现在改为在 `webRequest.onBeforeSendHeaders` 捕获真实请求头
+
 ## [0.18.0] - 2026-10-07
 
 ### Fixed

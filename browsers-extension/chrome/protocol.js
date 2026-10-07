@@ -125,6 +125,67 @@ export function shouldSkipMediaUrl(url) {
   return false;
 }
 
+/**
+ * Origin of a URL (`scheme://host[:port]`), or "" when it cannot be parsed.
+ * @param {string} url
+ * @returns {string}
+ */
+export function originOf(url) {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * A URL fit to replay as Referer: the whole thing, minus its fragment.
+ * @param {string} url
+ * @returns {string}
+ */
+export function refererFor(url) {
+  if (!url) return "";
+  try {
+    const u = new URL(url);
+    u.hash = "";
+    return u.href;
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * The headers to hand the desktop for one media download.
+ *
+ * `captured` is what the browser itself sent for that request, straight from
+ * `webRequest.onBeforeSendHeaders`. It wins wherever it exists: a site's own
+ * Origin / Referer / Accept / Authorization is ground truth, and replaying
+ * something else is how a sniffed download turns into a 403.
+ *
+ * What the browser did *not* send gets derived from the page: a plain
+ * `<video>` load is not a CORS request, so there is no Origin to capture while
+ * the CDN checking it still expects one, and `details.initiator` only ever
+ * carries the origin — never the page path a hotlink check compares against.
+ *
+ * @param {{captured?: Record<string, string>, url?: string, pageUrl?: string, cookies?: string, userAgent?: string}} input
+ * @returns {Record<string, string>}
+ */
+export function mediaHeaders({ captured, url, pageUrl, cookies, userAgent }) {
+  const headers = { ...(captured || {}) };
+  if (!headers.Origin) {
+    const origin = originOf(pageUrl) || originOf(headers.Referer) || originOf(url);
+    if (origin) headers.Origin = origin;
+  }
+  if (!headers.Referer) {
+    const referer = refererFor(pageUrl);
+    if (referer) headers.Referer = referer;
+  }
+  // The cookie jar is fresher than a header captured minutes ago.
+  if (cookies) headers.Cookie = cookies;
+  if (userAgent) headers["User-Agent"] = userAgent;
+  return filterHeaders(headers);
+}
+
 function extensionOf(filename, url) {
   let path = filename || "";
   if (!path) {

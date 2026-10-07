@@ -5,6 +5,7 @@ import {
   buildDownloadRequest,
   shouldSkipMediaUrl,
   mediaDedupKey,
+  mediaHeaders,
   interceptDecision,
   ignoreReason,
 } from "../../browsers-extension/shared/protocol.js";
@@ -105,3 +106,69 @@ describe("extension protocol", () => {
     expect(mediaDedupKey("https://a/x.mp4?t=1", "video/mp4")).toBe(mediaDedupKey("https://a/x.mp4?t=2", "video/mp4"));
   });
 });
+
+describe("media request headers", () => {
+  const page = "https://video.example.com/watch/1234#t=42";
+  const cdn = "https://cdn.other.example/seg/1.mp4?token=abc";
+
+  it("derives Origin from the page and Referer from the whole page URL", () => {
+    const headers = mediaHeaders({ url: cdn, pageUrl: page, cookies: "sid=1", userAgent: "UA" });
+    expect(headers.Origin).toBe("https://video.example.com");
+    // The fragment is dropped; the path is not — a hotlink check compares it.
+    expect(headers.Referer).toBe("https://video.example.com/watch/1234");
+    expect(headers.Cookie).toBe("sid=1");
+    expect(headers["User-Agent"]).toBe("UA");
+  });
+
+  it("keeps what the browser actually sent over anything derived", () => {
+    const headers = mediaHeaders({
+      captured: {
+        Origin: "https://player.example",
+        Referer: "https://player.example/embed/x",
+        Accept: "video/webm,*/*",
+        Authorization: "Bearer t",
+      },
+      url: cdn,
+      pageUrl: page,
+      cookies: "sid=1",
+      userAgent: "UA",
+    });
+    expect(headers.Origin).toBe("https://player.example");
+    expect(headers.Referer).toBe("https://player.example/embed/x");
+    expect(headers.Accept).toBe("video/webm,*/*");
+    expect(headers.Authorization).toBe("Bearer t");
+  });
+
+  it("prefers the fresh cookie jar but keeps a captured cookie when it is empty", () => {
+    expect(mediaHeaders({ captured: { Cookie: "old=1" }, url: cdn, cookies: "new=2" }).Cookie).toBe("new=2");
+    expect(mediaHeaders({ captured: { Cookie: "captured=1" }, url: cdn, cookies: "" }).Cookie).toBe("captured=1");
+  });
+
+  it("falls back through the frame, the referer, then the media url for Origin", () => {
+    expect(mediaHeaders({ url: cdn, pageUrl: "", captured: { Referer: "https://a.example/p" } }).Origin).toBe(
+      "https://a.example",
+    );
+    expect(mediaHeaders({ url: cdn, pageUrl: "" }).Origin).toBe("https://cdn.other.example");
+    expect(mediaHeaders({ url: cdn, pageUrl: "" }).Referer).toBeUndefined();
+  });
+
+  it("never replays hop-by-hop, sec-* or sniffed x-* headers", () => {
+    const headers = mediaHeaders({
+      captured: {
+        Host: "cdn.other.example",
+        Connection: "keep-alive",
+        "Sec-Fetch-Mode": "cors",
+        "Content-Length": "10",
+        "X-Playback-Session-Id": "deadbeef",
+        Accept: "*/*",
+      },
+      url: cdn,
+      pageUrl: page,
+    });
+    expect(headers.Accept).toBe("*/*");
+    for (const name of ["Host", "Connection", "Sec-Fetch-Mode", "Content-Length", "X-Playback-Session-Id"]) {
+      expect(headers[name]).toBeUndefined();
+    }
+  });
+});
+

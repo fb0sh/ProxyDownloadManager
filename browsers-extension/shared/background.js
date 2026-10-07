@@ -11,6 +11,7 @@ import {
   parseAck,
   filterHeaders,
   mediaDedupKey,
+  mediaHeaders,
   shouldSkipMediaUrl,
   interceptDecision,
   PROTOCOL_VERSION,
@@ -46,6 +47,13 @@ const defaultSettings = {
 
 const mediaByTab = new Map();
 const requestCtx = new Map();
+// Request headers the browser actually sent, by requestId, waiting for the
+// response that follows. This is the ground truth a sniffed download must
+// replay: Origin / Referer / Accept / Authorization as the site saw them.
+const sentHeaders = new Map();
+// Entries are read long after the response, when the user clicks Download, so
+// the map is bounded rather than cleaned per request.
+const REQUEST_CTX_MAX = 500;
 const bypassTabs = new Set();
 const passthroughUntil = new Map();
 
@@ -437,14 +445,16 @@ async function activeTab() {
 
 async function buildFromTab(url, tab) {
   const cookies = await cookiesFor(url);
+  const pageUrl = tab?.url || "";
+  const headers = mediaHeaders({ url, pageUrl, cookies, userAgent: navigator.userAgent });
   return buildDownloadRequest({
     url,
     filename: filenameFromUrl(url),
-    referrer: tab?.url || "",
-    tabUrl: tab?.url || "",
+    referrer: headers.Referer || pageUrl,
+    tabUrl: pageUrl,
     cookies,
     userAgent: navigator.userAgent,
-    headers: { Cookie: cookies, Referer: tab?.url || "", "User-Agent": navigator.userAgent },
+    headers,
   });
 }
 
@@ -452,11 +462,15 @@ async function buildFromDownload(item, tab, requestId) {
   const url = getDownloadUrl(item);
   const cookies = await cookiesFor(url);
   const ctx = requestCtx.get(url) || requestCtx.get(item.url) || {};
-  const headers = filterHeaders({
-    ...(ctx.headers || {}),
-    Cookie: cookies,
-    Referer: item.referrer || tab?.url || ctx.referrer || "",
-    "User-Agent": navigator.userAgent,
+  // A browser download carries the page it started from; the captured request
+  // headers carry what the site's own fetch looked like.
+  const pageUrl = item.referrer || ctx.pageUrl || tab?.url || "";
+  const headers = mediaHeaders({
+    captured: ctx.requestHeaders,
+    url,
+    pageUrl,
+    cookies,
+    userAgent: navigator.userAgent,
   });
   return buildDownloadRequest({
     requestId,
@@ -465,7 +479,7 @@ async function buildFromDownload(item, tab, requestId) {
     finalUrl: item.finalUrl || item.url,
     filename: (item.filename || "").split(/[/\\]/).pop() || filenameFromUrl(url),
     method: item.method || "GET",
-    referrer: item.referrer || tab?.url || "",
+    referrer: headers.Referer || pageUrl,
     tabUrl: tab?.url || "",
     cookies,
     userAgent: navigator.userAgent,
@@ -495,6 +509,16 @@ function filenameFromUrl(url) {
   }
 }
 
+/** Headers the browser sent for one request, filtered to what we may replay. */
+function onBeforeSendHeaders(details) {
+  sentHeaders.set(details.requestId, filterHeaders(details.requestHeaders || []));
+}
+
+/** A request is over: its headers are no longer needed. */
+function forgetSentHeaders(details) {
+  sentHeaders.delete(details.requestId);
+}
+
 function onHeadersReceived(details) {
   const headers = {};
   for (const h of details.responseHeaders || []) {
@@ -502,12 +526,20 @@ function onHeadersReceived(details) {
   }
   const type = (headers["content-type"] || headers["Content-Type"] || "").split(";")[0].trim();
   const length = Number(headers["content-length"] || headers["Content-Length"] || 0);
+  // `documentUrl` is the frame the request came from — the page a hotlink
+  // check compares against. `initiator` only ever carries its origin.
+  const pageUrl = details.documentUrl || details.initiator || "";
+  const sent = sentHeaders.get(details.requestId) || {};
   requestCtx.set(details.url, {
-    headers: filterHeaders(headers),
+    requestHeaders: sent,
     contentType: type,
     contentLength: length,
-    referrer: details.initiator || "",
+    pageUrl,
   });
+  if (requestCtx.size > REQUEST_CTX_MAX) {
+    const oldest = requestCtx.keys().next().value;
+    if (oldest !== undefined) requestCtx.delete(oldest);
+  }
   if (shouldSkipMediaUrl(details.url)) return;
   const isMedia =
     type.startsWith("video/") ||
@@ -527,11 +559,27 @@ function onHeadersReceived(details) {
     contentType: type,
     size: length,
     tabId,
-    referrer: details.initiator || "",
+    referrer: pageUrl,
+    pageUrl,
+    // Kept with the hit: the user may click Download long after the
+    // request finished and sentHeaders was cleared.
+    captured: sent,
     capturedAt: Date.now(),
   });
   mediaByTab.set(tabId, list.slice(0, 50));
   broadcastStatus();
+}
+
+if (chrome.webRequest?.onBeforeSendHeaders) {
+  const filter = { urls: ["<all_urls>"] };
+  try {
+    chrome.webRequest.onBeforeSendHeaders.addListener(onBeforeSendHeaders, filter, [
+      "requestHeaders",
+      "extraHeaders",
+    ]);
+  } catch {
+    chrome.webRequest.onBeforeSendHeaders.addListener(onBeforeSendHeaders, filter, ["requestHeaders"]);
+  }
 }
 
 if (chrome.webRequest?.onHeadersReceived) {
@@ -541,6 +589,12 @@ if (chrome.webRequest?.onHeadersReceived) {
   } catch {
     chrome.webRequest.onHeadersReceived.addListener(onHeadersReceived, filter, ["responseHeaders"]);
   }
+}
+
+if (chrome.webRequest?.onCompleted) {
+  const filter = { urls: ["<all_urls>"] };
+  chrome.webRequest.onCompleted.addListener(forgetSentHeaders, filter);
+  chrome.webRequest.onErrorOccurred.addListener(forgetSentHeaders, filter);
 }
 
 chrome.tabs?.onRemoved?.addListener((tabId) => {
@@ -629,20 +683,26 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       const list = mediaByTab.get(tab?.id ?? request.tabId ?? -1) || [];
       const hit = list.find((m) => m.url === request.url) || {};
       const cookies = await cookiesFor(request.url);
-      const referrer = request.referrer || hit.referrer || tab?.url || "";
+      // The page the media played on, in this order: the frame the request
+      // came from, the tab it belongs to, then whatever the caller knew.
+      // `details.initiator` is an origin, never a page path, so it is last.
+      const pageUrl = hit.pageUrl || tab?.url || request.tabUrl || request.referrer || "";
+      const headers = mediaHeaders({
+        captured: hit.captured,
+        url: request.url,
+        pageUrl,
+        cookies,
+        userAgent: navigator.userAgent,
+      });
       const req = buildDownloadRequest({
         url: request.url,
         finalUrl: request.url,
         filename: filenameFromUrl(request.url),
-        referrer,
+        referrer: headers.Referer || pageUrl,
         tabUrl: tab?.url || "",
         cookies,
         userAgent: navigator.userAgent,
-        headers: {
-          Cookie: cookies,
-          Referer: referrer,
-          "User-Agent": navigator.userAgent,
-        },
+        headers,
         contentType: request.contentType || hit.contentType || "",
         contentLength: request.size || hit.size || 0,
       });
