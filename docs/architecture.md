@@ -29,7 +29,7 @@ Partial bytes live at `{home}/temp/{id}.pdm`. HLS parts live at `{home}/temp/hls
 
 Engines report through a typed channel (`types/event.rs`): started, byte progress with per-part bytes, segment progress, a phase change, completed, or a failure carrying its `PdmError`. `ProgressLedger::apply` is the only place a report touches progress records; `DownloadManager::handle_event` calls it and then builds the frontend payload, so the ledger has always recorded a report before the frontend hears of it.
 
-Engines emit at most one progress event per 500ms, and skip the emit when bytes and the part snapshot are unchanged. A phase-only payload (`retrying`, `merging`, `connecting`) does not reset downloaded bytes. HLS with an unknown byte size reports segment counts in `downloaded` / `total_size`.
+Engines emit at most one progress event per 500ms, and skip the emit when bytes and the part snapshot are unchanged. A phase-only payload (`retrying`, `merging`, `downloading`) does not reset downloaded bytes. HLS with an unknown byte size reports segment counts in `downloaded` / `total_size`.
 
 ## Connections
 
