@@ -267,7 +267,9 @@ const en = {
     saveAndRetry: "Save and retry",
     show: "Advanced",
     hide: "Hide advanced",
+    sentNote: "{n} request headers will be sent, including credentials",
   },
+
 
 };
 
