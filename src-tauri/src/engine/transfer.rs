@@ -225,6 +225,9 @@ impl Transfer {
         // bytes belong there; 0 reads until the body ends.
         let mut at = task.offset;
         let mut cap = task.length;
+        // Some origins cap how much one response may carry, so a 206 can end
+        // short of the object. The rest is then another request.
+        let mut stops_short_of_the_object = false;
         let accepted = if range.is_some() {
             status == reqwest::StatusCode::OK || status == reqwest::StatusCode::PARTIAL_CONTENT
         } else {
@@ -307,6 +310,10 @@ impl Transfer {
             } else {
                 task.length.min(sent)
             };
+            // An open-ended request is only done when the slice reaches the
+            // end of the object. `end + 1 < total` without overflowing.
+            stops_short_of_the_object =
+                task.length == 0 && total.is_some_and(|total| end < total.saturating_sub(1));
         }
         if at == 0 && task.length == 0 {
             if let Err(e) = file.set_len(0) {
@@ -368,7 +375,9 @@ impl Transfer {
             }
             self.perf.note_body();
             // A stop ends the throttle wait: the bytes are already here, and
-            // a tight limit must not hold a pause.
+            // a tight limit must not hold a pause. The chunk below is kept and
+            // written either way, so dropping the wait costs at most the burst
+            // one limiter accounts for — it never loses bytes.
             tokio::select! {
                 biased;
                 _ = self.limiter.wait_n(chunk.len() as u64) => {}
@@ -405,8 +414,10 @@ impl Transfer {
         };
 
         let remaining = if task.length == 0 {
-            // An open-ended body that ended on its own is all there is.
-            if matches!(end, BodyEnd::Ended) {
+            // An open-ended body that ended on its own is all there is —
+            // unless its Content-Range stopped short of the object, in which
+            // case the slice that is left is another request.
+            if matches!(end, BodyEnd::Ended) && !stops_short_of_the_object {
                 return Attempt::Complete;
             }
             Task {
@@ -698,6 +709,9 @@ mod tests {
         Cut(usize),
         /// 206 with the bytes asked for.
         Range,
+        /// 206 limited to this many bytes of what was asked for — an origin
+        /// that caps how much one response may carry.
+        Slice(usize),
         /// 206, one byte at a time, faster than the idle window.
         Trickle,
         /// 206, a few bytes, then silence while the socket stays open.
@@ -810,6 +824,18 @@ mod tests {
             }
             Step::Range => {
                 let _ = stream.write_all(partial.as_bytes()).await;
+                let _ = stream.write_all(slice).await;
+            }
+            Step::Slice(cap) => {
+                // A 206 that carries only the first `cap` bytes of the range
+                // that was asked for, and says so in its Content-Range.
+                let end = (start + cap as u64).saturating_sub(1).min(end).max(start);
+                let slice = &body[start as usize..=end as usize];
+                let capped = format!(
+                    "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {start}-{end}/{total}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    slice.len()
+                );
+                let _ = stream.write_all(capped.as_bytes()).await;
                 let _ = stream.write_all(slice).await;
             }
             Step::Trickle => {
@@ -1148,6 +1174,45 @@ mod tests {
         );
         assert_eq!(bench.on_disk(), object(total));
         assert_eq!(bench.bytes.load(Ordering::Relaxed), 3000);
+    }
+
+    /// An origin that caps one response hands back a slice that stops short of
+    /// the object. That is not the end of the tail that was asked for.
+    #[tokio::test]
+    async fn a_capped_206_slice_is_not_the_whole_tail() {
+        let total = 4000u64;
+        let (url, _) = origin(total, vec![Step::Slice(1000)]).await;
+        let bench = Bench::new(BODY_IDLE, 0, 0);
+        write_at(&bench.file, &object(total)[..2000], 0).unwrap();
+        // No known total either: the Content-Range is the only place the
+        // object's size is stated, and it must not be read as "done".
+        assert_eq!(
+            bench.attempt(&url, tail(2000), 0).await,
+            Attempt::Partial {
+                remaining: Task {
+                    offset: 3000,
+                    length: 0
+                }
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn a_capped_206_slice_is_continued_by_fetch() {
+        let total = 4000u64;
+        let (url, hits) = origin(total, vec![Step::Slice(1000), Step::Range]).await;
+        let bench = Bench::new(BODY_IDLE, 0, 0);
+        write_at(&bench.file, &object(total)[..2000], 0).unwrap();
+        assert_eq!(
+            bench.fetch(&url, tail(2000), total).await,
+            Fetched::Complete
+        );
+        assert_eq!(bench.on_disk(), object(total));
+        assert_eq!(bench.end.load(Ordering::Relaxed), total);
+        assert_eq!(hits.load(Ordering::Relaxed), 2);
+        // 1000 from the capped answer plus 1000 for the rest — the tail was
+        // never fetched twice.
+        assert_eq!(bench.bytes.load(Ordering::Relaxed), 2000);
     }
 
     #[tokio::test]

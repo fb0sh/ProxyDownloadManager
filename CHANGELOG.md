@@ -3,6 +3,12 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+## [Unreleased]
+
+### Fixed
+
+- 源站如果限制单次 206 响应的长度（只返回所请求区间的一部分），续传会被误判为已完成：已知总大小时报「下载不完整」而失败，未知总大小时会更糟——把被截断的文件当成完整文件重命名。现在会按 Content-Range 里声明的总大小继续请求剩下的部分
+
 ## [0.17.1] - 2026-10-06
 
 ### Fixed
