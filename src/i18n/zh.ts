@@ -254,6 +254,23 @@ const zh: Translations = {
     ffStep3: "选择 firefox 文件夹中的 manifest.json",
     ffNote: "注意：Firefox 临时加载的附加组件重启后失效",
   },
+  headers: {
+    tabOverview: "概览",
+    tabAdvanced: "高级",
+    title: "请求头",
+    name: "名称",
+    value: "值",
+    add: "添加一行",
+    remove: "删除",
+    paste: "粘贴",
+    import: "导入",
+    pastePlaceholder: "粘贴请求头，每行 Name: value；curl 的 -H 行也能识别",
+    hint: "每次请求都会带上；框架类与 Range 头会被忽略",
+    saveAndRetry: "保存并重试",
+    show: "高级",
+    hide: "收起高级",
+  },
+
 };
 
 export default zh;
