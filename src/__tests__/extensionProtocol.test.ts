@@ -13,6 +13,7 @@ import {
   interceptDecision,
   ignoreReason,
 } from "../../browsers-extension/shared/protocol.js";
+import "../../browsers-extension/shared/panel.js";
 
 describe("extension protocol", () => {
   it("keeps download headers and drops hop-by-hop / sec-", () => {
@@ -217,5 +218,55 @@ describe("panel visibility", () => {
     expect(list).toEqual(["example.com", "other.test"]);
     expect(removeHiddenHost(list, "EXAMPLE.com")).toEqual(["other.test"]);
     expect(removeHiddenHost(undefined, "x")).toEqual([]);
+  });
+});
+
+type PanelApi = { pickElement: (url: string, root?: Document | Element) => HTMLMediaElement | null };
+const mediaPanel = (globalThis as unknown as { __proxydmPanel: PanelApi }).__proxydmPanel;
+
+describe("media panel: which element to sit above", () => {
+  function mount(html: string) {
+    document.body.innerHTML = html;
+    return Array.from(document.querySelectorAll("video, audio")) as HTMLMediaElement[];
+  }
+  function size(el: Element, width: number, height: number) {
+    el.getBoundingClientRect = () => ({ width, height }) as DOMRect;
+  }
+
+  it("matches the element carrying the sniffed url, query string aside", () => {
+    const [first, second] = mount(
+      '<video src="https://cdn.example/a.mp4"></video><video src="https://cdn.example/b.mp4"></video>',
+    );
+    expect(mediaPanel.pickElement("https://cdn.example/b.mp4?token=abc", document)).toBe(second);
+    expect(mediaPanel.pickElement("https://cdn.example/a.mp4", document)).toBe(first);
+  });
+
+  it("looks through <source> children", () => {
+    const [video] = mount(
+      '<video><source src="https://cdn.example/sd.mp4" type="video/mp4"></video>',
+    );
+    expect(mediaPanel.pickElement("https://cdn.example/sd.mp4", document)).toBe(video);
+  });
+
+  it("falls back to the largest visible player for a blob/MSE source", () => {
+    const [small, large] = mount('<video src="blob:https://x/1"></video><video src="blob:https://x/2"></video>');
+    size(small, 320, 180);
+    size(large, 1280, 720);
+    // Neither src can match: the sniffed URL is the manifest, not the element's.
+    expect(mediaPanel.pickElement("https://cdn.example/master.m3u8", document)).toBe(large);
+  });
+
+  it("ignores a hidden player", () => {
+    const [hidden, visible] = mount(
+      '<video src="blob:https://x/1" style="display:none"></video><video src="blob:https://x/2"></video>',
+    );
+    size(hidden, 1920, 1080);
+    size(visible, 640, 360);
+    expect(mediaPanel.pickElement("https://cdn.example/master.m3u8", document)).toBe(visible);
+  });
+
+  it("anchors nothing when the page has no player", () => {
+    mount('<div>no media here</div>');
+    expect(mediaPanel.pickElement("https://cdn.example/a.mp4", document)).toBe(null);
   });
 });

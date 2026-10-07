@@ -613,6 +613,13 @@ if (chrome.webRequest?.onCompleted) {
   chrome.webRequest.onErrorOccurred.addListener(forgetSentHeaders, filter);
 }
 
+chrome.tabs?.onUpdated?.addListener((tabId, changeInfo) => {
+  // A new document: the old list described a page that is gone. Keeping it also
+  // meant the new page's first media request was deduped away, so nothing was
+  // ever pushed and the panel only appeared after touching a switch.
+  if (changeInfo.status === "loading" || changeInfo.url) mediaByTab.delete(tabId);
+});
+
 chrome.tabs?.onRemoved?.addListener((tabId) => {
   mediaByTab.delete(tabId);
   bypassTabs.delete(tabId);
@@ -817,30 +824,33 @@ function mediaPayloadForTab(tab, reset) {
   };
 }
 
-function pushMediaForTab(tabId, reset) {
-  if (tabId == null || tabId < 0) return;
-  chrome.tabs.get(tabId).then(
-    (tab) => {
-      chrome.tabs
-        .sendMessage(tabId, { action: "proxydm-media", ...mediaPayloadForTab(tab, reset) })
-        .catch(() => {});
+function sendMedia(tab, reset) {
+  if (tab?.id == null) return;
+  chrome.tabs.sendMessage(
+    tab.id,
+    { action: "proxydm-media", ...mediaPayloadForTab(tab, reset) },
+    () => {
+      // No content script on this tab (chrome:// pages, the store, a PDF
+      // viewer). Reading lastError keeps Chrome from logging it as unchecked.
+      const error = chrome.runtime.lastError;
+      if (error) debug("media push skipped", tab.id, error.message);
     },
-    () => {},
   );
 }
 
+function pushMediaForTab(tabId, reset) {
+  if (tabId == null || tabId < 0) return;
+  chrome.tabs.get(tabId, (tab) => {
+    if (chrome.runtime.lastError || !tab) return;
+    sendMedia(tab, reset);
+  });
+}
+
 function pushMediaToAllTabs(reset) {
-  chrome.tabs.query({}).then(
-    (tabs) => {
-      for (const tab of tabs) {
-        if (tab.id == null) continue;
-        chrome.tabs
-          .sendMessage(tab.id, { action: "proxydm-media", ...mediaPayloadForTab(tab, reset) })
-          .catch(() => {});
-      }
-    },
-    () => {},
-  );
+  chrome.tabs.query({}, (tabs) => {
+    if (chrome.runtime.lastError || !tabs) return;
+    for (const tab of tabs) sendMedia(tab, reset);
+  });
 }
 
 function broadcastStatus() {
