@@ -5,6 +5,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- 重放请求头改为「只挡逐跳与框架头」：此前是白名单，`x-playback-session-id` 这类源站用来鉴权或标记播放会话的自定义头会被静默丢弃——这正是「浏览器里能放、ProxyDM 下载 403」的常见原因；现在浏览器发过的头都会重放，只有 Host、Connection、Content-Length、Content-Encoding、Range / If-Range、HTTP/2 伪头等会被挡掉
+
 ### Fixed
 
 - 修复媒体浮窗在刷新或重新进入页面后不出现：嗅探列表此前从不在页面导航时清空，新页面的第一个媒体请求会被去重掉、于是不再推送；现在导航即清空，页面也会在加载完成、重新可见时主动追问一次

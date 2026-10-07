@@ -1,24 +1,16 @@
 use crate::types::PendingDownloadRequest;
 use std::collections::HashMap;
 
-/// Headers that are safe and useful to replay on a download request.
-/// Range and If-Range are not replayed: the engine owns those so a stored
-/// browser value cannot be appended beside the chunk's Range.
-const ALLOWED: &[&str] = &[
-    "cookie",
-    "referer",
-    "origin",
-    "user-agent",
-    "authorization",
-    "accept",
-    "accept-language",
-    "accept-encoding",
-    "if-match",
-    "if-none-match",
-    "if-modified-since",
-];
+/// Headers that must never be replayed, rather than a list of the ones that
+/// may be: a media CDN can key on anything the browser sent (`x-*` playback
+/// session ids especially), and dropping a header the origin required is
+/// exactly how a request that worked in the tab fails here.
+///
+/// Hop-by-hop and framing headers would corrupt the request, and Range /
+/// If-Range belong to the engine — a stored browser value appended beside a
+/// chunk's Range is two of them.
 
-/// Hop-by-hop / browser-internal headers that must never be forwarded.
+/// Hop-by-hop, framing, pseudo and engine-owned headers.
 fn is_blocked(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
     matches!(
@@ -28,6 +20,7 @@ fn is_blocked(name: &str) -> bool {
             | "keep-alive"
             | "proxy-connection"
             | "proxy-authenticate"
+            | "proxy-authorization"
             | "te"
             | "trailer"
             | "transfer-encoding"
@@ -35,13 +28,9 @@ fn is_blocked(name: &str) -> bool {
             | "content-length"
             | "content-encoding"
             | "expect"
-    ) || n.starts_with("sec-")
-        || n.starts_with(":")
-}
-
-fn is_allowed(name: &str) -> bool {
-    let n = name.to_ascii_lowercase();
-    ALLOWED.iter().any(|a| *a == n)
+            | "range"
+            | "if-range"
+    ) || n.starts_with(':')
 }
 
 /// Keep only headers a download engine should replay.
@@ -54,9 +43,7 @@ pub fn filter_headers(input: &HashMap<String, String>) -> HashMap<String, String
         if is_blocked(k) {
             continue;
         }
-        if is_allowed(k) {
-            out.insert(canonical_name(k), v.clone());
-        }
+        out.insert(canonical_name(k), v.clone());
     }
     out
 }
@@ -71,7 +58,9 @@ fn canonical_name(name: &str) -> String {
         "accept" => "Accept".into(),
         "accept-language" => "Accept-Language".into(),
         "accept-encoding" => "Accept-Encoding".into(),
-        other => other.to_string(),
+        // Anything else keeps the caller's spelling: header names are
+        // case-insensitive on the wire, and the settings UI shows them back.
+        _ => name.to_string(),
     }
 }
 
@@ -224,7 +213,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn filters_hop_by_hop_and_sec() {
+    fn keeps_what_the_browser_sent_and_drops_the_unsafe() {
         let mut input = HashMap::new();
         input.insert("Host".into(), "cdn.example".into());
         input.insert("Connection".into(), "keep-alive".into());
@@ -234,16 +223,22 @@ mod tests {
         input.insert("Content-Length".into(), "12".into());
         input.insert("Range".into(), "bytes=0-0".into());
         input.insert("If-Range".into(), "\"etag\"".into());
+        input.insert("X-Playback-Session-Id".into(), "deadbeef".into());
+        input.insert(":authority".into(), "cdn.example".into());
         let out = filter_headers(&input);
         assert_eq!(out.get("Cookie").unwrap(), "sid=1");
         assert_eq!(out.get("Referer").unwrap(), "https://example.com/");
-        assert!(!out.keys().any(|k| k.eq_ignore_ascii_case("host")));
-        assert!(!out.keys().any(|k| k.eq_ignore_ascii_case("range")));
-        assert!(!out.keys().any(|k| k.eq_ignore_ascii_case("if-range")));
-        assert!(!out
-            .keys()
-            .any(|k| k.to_ascii_lowercase().starts_with("sec-")));
-        assert!(!out.keys().any(|k| k.eq_ignore_ascii_case("content-length")));
+        // A header the origin demanded but the old allow-list dropped.
+        assert_eq!(out.get("X-Playback-Session-Id").unwrap(), "deadbeef");
+        // A browser-managed header is harmless to replay and helps some CDNs.
+        assert_eq!(out.get("Sec-Fetch-Mode").unwrap(), "navigate");
+        for blocked in ["host", "range", "if-range", "content-length", "connection"] {
+            assert!(
+                !out.keys().any(|k| k.eq_ignore_ascii_case(blocked)),
+                "{blocked} must not be replayed"
+            );
+        }
+        assert!(!out.keys().any(|k| k.starts_with(':')));
     }
 
     #[test]
