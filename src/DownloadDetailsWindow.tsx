@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { LogicalSize } from "@tauri-apps/api/dpi";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { errorDetail, failureText, formatBytes, formatRateLimit, isActiveStatus, isFailed, statusLabel, statusString } from "./utils/format";
@@ -12,6 +12,7 @@ import { Progress } from "./components/ui/progress";
 import { Select } from "./components/ui/select";
 import { tauriClient } from "./tauriClient";
 import FileIcon from "./components/FileIcon";
+import { HeadersEditor, headersToRows, newHeaderRow, rowsToHeaders, type HeaderRow } from "./components/HeadersEditor";
 import type { DownloadItem } from "./types";
 import {
   connectionOptionLabel,
@@ -86,6 +87,10 @@ export default function DownloadDetailsWindow() {
   const [extraBusy, setExtraBusy] = useState(false);
   const [controlBusy, setControlBusy] = useState<"proxy" | "conn" | "rate" | null>(null);
   const [controlError, setControlError] = useState<string | null>(null);
+  const [tab, setTab] = useState<"overview" | "advanced">("overview");
+  const [headerRows, setHeaderRows] = useState<HeaderRow[]>(() => [newHeaderRow()]);
+  /** Seed the editor once per download, so a refresh cannot overwrite edits. */
+  const seededFor = useRef<number | null>(null);
   const removeDownload = useDeleteDownload();
   const redownload = useRedownloadDownload();
 
@@ -108,8 +113,10 @@ export default function DownloadDetailsWindow() {
   useEffect(() => {
     const win = getCurrentWebviewWindow();
     if (typeof win.setSize !== "function") return;
-    void win.setSize(new LogicalSize(DETAILS_SIZE.width, DETAILS_SIZE.height)).catch(() => {});
-  }, []);
+    // The headers editor needs room the overview does not.
+    const height = tab === "advanced" ? 470 : DETAILS_SIZE.height;
+    void win.setSize(new LogicalSize(DETAILS_SIZE.width, height)).catch(() => {});
+  }, [tab]);
 
   const id = liveId ?? urlId;
   const {
@@ -262,6 +269,31 @@ export default function DownloadDetailsWindow() {
       setExtraBusy(false);
     }
   };
+  useEffect(() => {
+    if (!item || seededFor.current === item.id) return;
+    seededFor.current = item.id;
+    setHeaderRows(headersToRows(item.headers));
+  }, [item]);
+
+  /**
+   * Save the edited headers and retry: refresh re-probes the URL with them (so a
+   * bad header surfaces here rather than as a failed resume), then resume keeps
+   * the bytes already downloaded.
+   */
+  const saveHeaders = async () => {
+    if (busy) return;
+    setExtraBusy(true);
+    setControlError(null);
+    try {
+      await tauriClient.refreshDownloadUrl(item.id, item.url, rowsToHeaders(headerRows));
+      await handleResume();
+    } catch (err) {
+      setControlError(controlErrorText(err));
+    } finally {
+      setExtraBusy(false);
+    }
+  };
+
   const handleRetry = async () => {
     if (busy) return;
     setExtraBusy(true);
@@ -290,6 +322,42 @@ export default function DownloadDetailsWindow() {
           </Button>
         </div>
 
+        <div className="flex shrink-0 items-center gap-1">
+          {(["overview", "advanced"] as const).map((key) => (
+            <Button
+              key={key}
+              variant={tab === key ? "default" : "ghost"}
+              className="h-6 px-2 text-[12px]"
+              onClick={() => setTab(key)}
+            >
+              {key === "overview" ? t("headers.tabOverview") : t("headers.tabAdvanced")}
+            </Button>
+          ))}
+        </div>
+
+        {tab === "advanced" && (
+          <div className="flex min-h-0 flex-1 flex-col gap-2">
+            <HeadersEditor rows={headerRows} onChange={setHeaderRows} disabled={busy} />
+            <div className="flex shrink-0 items-center gap-2">
+              <Button
+                variant="default"
+                className="h-7 px-2.5 text-[12px]"
+                disabled={busy}
+                onClick={() => { void saveHeaders(); }}
+              >
+                {t("headers.saveAndRetry")}
+              </Button>
+              {controlError && (
+                <span className="min-w-0 truncate text-[11px] text-destructive" title={controlError}>
+                  {controlError}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {tab === "overview" && (
+          <>
         <div className="flex min-w-0 items-center gap-2">
         <div className="grid min-w-0 flex-1 grid-cols-3 gap-x-3 gap-y-1">
           <Field label={t("properties.status")} value={statusText} title={statusTitle} valueClass={failed ? "text-destructive" : ""} />
@@ -346,6 +414,8 @@ export default function DownloadDetailsWindow() {
             </div>
           )}
         </div>
+          </>
+        )}
       </div>
 
       <div className="mt-2 flex items-center gap-1.5 border-t border-border px-2 py-1.5">

@@ -252,6 +252,23 @@ const en = {
     ffStep3: "Select firefox/manifest.json inside the folder",
     ffNote: "Note: Firefox temporary add-ons reset on restart",
   },
+  headers: {
+    tabOverview: "Overview",
+    tabAdvanced: "Advanced",
+    title: "Request headers",
+    name: "Name",
+    value: "Value",
+    add: "Add header",
+    remove: "Remove",
+    paste: "Paste",
+    import: "Import",
+    pastePlaceholder: "Paste headers here — one Name: value per line. curl -H lines work too.",
+    hint: "Replayed on every request; framing and Range headers are ignored",
+    saveAndRetry: "Save and retry",
+    show: "Advanced",
+    hide: "Hide advanced",
+  },
+
 };
 
 export default en;
