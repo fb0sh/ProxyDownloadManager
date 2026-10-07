@@ -12,6 +12,7 @@ import {
   filterHeaders,
   mediaDedupKey,
   mediaHeaders,
+  isMediaResponse,
   panelVisible,
   addHiddenHost,
   removeHiddenHost,
@@ -556,13 +557,9 @@ function onHeadersReceived(details) {
   // needs it. Only media detection is what the switch turns off.
   if (!runtimeSniff) return;
   if (shouldSkipMediaUrl(details.url)) return;
-  const isMedia =
-    type.startsWith("video/") ||
-    type.startsWith("audio/") ||
-    type === "application/vnd.apple.mpegurl" ||
-    type === "application/x-mpegURL" ||
-    /\.m3u8(\?|$)/i.test(details.url);
-  if (!isMedia) return;
+  // Content type alone loses every file served as application/octet-stream,
+  // which is how Bilibili hands over its whole DASH tracks (`….m4s`).
+  if (!isMediaResponse({ url: details.url, contentType: type })) return;
   const tabId = details.tabId;
   if (tabId < 0) return;
   const list = mediaByTab.get(tabId) || [];

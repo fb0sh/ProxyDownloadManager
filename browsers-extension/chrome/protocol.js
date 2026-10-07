@@ -116,6 +116,41 @@ export function mediaDedupKey(url, contentType) {
   }
 }
 
+/**
+ * Extensions a media file (or a manifest of one) is served under. The response
+ * content type alone is not enough: Bilibili's DASH tracks (`…-1-30232.m4s`,
+ * a whole 60 MB video or audio track fetched with Range requests) come back as
+ * `application/octet-stream`, so a type-only test silently misses every one of
+ * them, which reads as "sniffing stopped working".
+ */
+const MEDIA_EXTENSION = /\.(m4s|m4v|m4a|mp4|webm|mkv|flv|mov|aac|flac|mp3|opus|ogg|oga|wav|mpd|m3u8)(\?|$)/i;
+
+/**
+ * Is this response a media file worth offering?
+ *
+ * A media content type or manifest type is taken at face value. Otherwise a
+ * media-looking extension counts, but only when the response is binary or
+ * untyped — an error page served for a `.mp4` path is HTML, not a video.
+ *
+ * @param {{url?: string, contentType?: string}} response
+ * @returns {boolean}
+ */
+export function isMediaResponse(response) {
+  // Parameters (`; charset=…`) are not part of the type.
+  const type = String(response?.contentType || "").toLowerCase().split(";")[0].trim();
+  const url = String(response?.url || "");
+  if (type.startsWith("video/") || type.startsWith("audio/")) return true;
+  if (type === "application/vnd.apple.mpegurl" || type === "application/x-mpegurl") return true;
+  if (type === "application/dash+xml") return true;
+  if (!MEDIA_EXTENSION.test(url)) return false;
+  return (
+    type === "" ||
+    type === "application/octet-stream" ||
+    type === "binary/octet-stream" ||
+    type === "application/binary"
+  );
+}
+
 export function shouldSkipMediaUrl(url) {
   if (!url) return true;
   if (url.startsWith("blob:") || url.startsWith("data:")) return true;

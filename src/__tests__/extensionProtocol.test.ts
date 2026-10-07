@@ -12,6 +12,7 @@ import {
   removeHiddenHost,
   interceptDecision,
   ignoreReason,
+  isMediaResponse,
 } from "../../browsers-extension/shared/protocol.js";
 import "../../browsers-extension/shared/panel.js";
 
@@ -279,5 +280,41 @@ describe("media panel: which element to sit above", () => {
   it("anchors nothing when the page has no player", () => {
     mount('<div>no media here</div>');
     expect(mediaPanel.pickElement("https://cdn.example/a.mp4", document)).toBe(null);
+  });
+});
+
+describe("which responses count as media", () => {
+  it("takes a media content type at face value", () => {
+    expect(isMediaResponse({ url: "https://cdn/x", contentType: "video/mp4" })).toBe(true);
+    expect(isMediaResponse({ url: "https://cdn/x", contentType: "audio/mp4" })).toBe(true);
+    expect(isMediaResponse({ url: "https://cdn/x", contentType: "application/vnd.apple.mpegurl" })).toBe(true);
+    expect(isMediaResponse({ url: "https://cdn/x", contentType: "application/dash+xml" })).toBe(true);
+  });
+
+  it("recognises a media extension served as octet-stream (Bilibili DASH)", () => {
+    // The request that started this: a whole 60 MB track, octet-stream typed.
+    const url =
+      "https://upos-sz-mirrorcoso1.bilivideo.com/upgcxcode/99/91/137649199/137649199-1-30232.m4s?e=abc&deadline=1";
+    expect(isMediaResponse({ url, contentType: "application/octet-stream" })).toBe(true);
+    // A parameter on the type does not change which type it is.
+    expect(isMediaResponse({ url, contentType: "application/octet-stream; charset=binary" })).toBe(true);
+    expect(isMediaResponse({ url: "https://cdn/x.m4s", contentType: "" })).toBe(true);
+  });
+
+  it("covers the other container extensions too", () => {
+    for (const ext of ["mp4", "webm", "mkv", "flv", "mov", "m4a", "m4v", "aac", "flac", "mp3", "opus", "ogg", "wav", "m3u8", "mpd"]) {
+      expect(isMediaResponse({ url: `https://cdn/x.${ext}`, contentType: "application/octet-stream" })).toBe(true);
+    }
+  });
+
+  it("does not offer an error page served for a media-looking path", () => {
+    expect(isMediaResponse({ url: "https://cdn/x.mp4", contentType: "text/html" })).toBe(false);
+    expect(isMediaResponse({ url: "https://cdn/x.m4s", contentType: "text/html; charset=utf-8" })).toBe(false);
+  });
+
+  it("ignores ordinary pages and api calls", () => {
+    expect(isMediaResponse({ url: "https://site/page", contentType: "text/html" })).toBe(false);
+    expect(isMediaResponse({ url: "https://api/data.json", contentType: "application/json" })).toBe(false);
+    expect(isMediaResponse({ url: "https://api/playurl?bvid=1", contentType: "application/octet-stream" })).toBe(false);
   });
 });

@@ -3,6 +3,12 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+## [Unreleased]
+
+### Fixed
+
+- 修复嗅探漏掉以 `application/octet-stream` 下发的媒体文件：B 站 DASH 的 `.m4s` 轨（整段约 60MB 的视频/音频轨，播放器用 Range 请求取）响应头就是 octet-stream，而媒体判定此前只看 `content-type`，于是这类媒体全部漏掉、表现为「嗅探不到了」；现在同时按 URL 扩展名（m4s/m4v/m4a/mp4/webm/mkv/flv/mov/aac/flac/mp3/opus/ogg/wav/m3u8/mpd）判定，但要求响应是二进制或未标注类型，避免把 `.mp4` 路径上的 HTML 错误页当成媒体
+
 ## [0.20.1] - 2026-10-07
 
 ### Fixed
