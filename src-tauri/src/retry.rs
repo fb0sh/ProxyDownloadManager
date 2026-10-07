@@ -11,6 +11,7 @@ pub fn is_retryable(err: &PdmError) -> bool {
         PdmError::Network(msg) | PdmError::Io(msg) | PdmError::Other(msg) => {
             is_retryable_message(msg)
         }
+        PdmError::Timeout(_) => true,
         PdmError::RetriesExhausted(cause) => is_retryable(cause),
         PdmError::Incomplete(_) => true,
         PdmError::Probe(msg) => is_retryable_message(msg),
