@@ -6,5 +6,37 @@
   "extensionDescription": {
     "message": "Send downloads to the ProxyDM desktop app, with per-task proxy selection and multi-threaded acceleration.",
     "description": "Short description shown in the store listing (max 132 characters)."
+  },
+  "panelDrag": {
+    "message": "Drag",
+    "description": "Tooltip of the panel's drag handle."
+  },
+  "panelCollapse": {
+    "message": "Collapse",
+    "description": "Tooltip of the panel's collapse button."
+  },
+  "panelClose": {
+    "message": "Close",
+    "description": "Tooltip of the panel's close button."
+  },
+  "panelHideSite": {
+    "message": "Don't show on this site",
+    "description": "Panel button that hides the panel on this site for good."
+  },
+  "panelHint": {
+    "message": "Drag ⠿ to move",
+    "description": "Shown in the panel's footer next to the hide-site button."
+  },
+  "panelDownload": {
+    "message": "Download",
+    "description": "Row action in the media panel."
+  },
+  "panelSent": {
+    "message": "Sent to ProxyDM",
+    "description": "Row state after the desktop accepted the download."
+  },
+  "panelFailed": {
+    "message": "ProxyDM did not accept it",
+    "description": "Row state when the download was not accepted."
   }
 }

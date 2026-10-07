@@ -12,6 +12,9 @@ import {
   filterHeaders,
   mediaDedupKey,
   mediaHeaders,
+  panelVisible,
+  addHiddenHost,
+  removeHiddenHost,
   shouldSkipMediaUrl,
   interceptDecision,
   PROTOCOL_VERSION,
@@ -37,6 +40,12 @@ const NOT_RUNNING_NOTIFICATION_COOLDOWN_MS = 15000;
 const STORAGE_KEY = "proxydm_enabled";
 const SETTINGS_KEY = "proxydm_settings";
 const BYPASS_NEXT_KEY = "proxydm_bypass_next";
+// Media sniffing and the on-page panel are their own switches, deliberately
+// separate from proxydm_enabled (which gates interception): a user may want
+// downloads intercepted without a panel on every page, or the reverse.
+const SNIFF_KEY = "proxydm_sniff";
+const PANEL_KEY = "proxydm_panel";
+const HIDDEN_HOSTS_KEY = "proxydm_panel_hidden_hosts";
 
 const defaultSettings = {
   minSize: 0,
@@ -59,6 +68,9 @@ const passthroughUntil = new Map();
 
 let runtimeEnabled = true;
 let runtimeSettings = { ...defaultSettings };
+let runtimeSniff = true;
+let runtimePanel = true;
+let runtimeHiddenHosts = [];
 let bypassNext = false;
 let activeTabId = null;
 
@@ -540,6 +552,9 @@ function onHeadersReceived(details) {
     const oldest = requestCtx.keys().next().value;
     if (oldest !== undefined) requestCtx.delete(oldest);
   }
+  // requestCtx above is still filled while sniffing is off: interception
+  // needs it. Only media detection is what the switch turns off.
+  if (!runtimeSniff) return;
   if (shouldSkipMediaUrl(details.url)) return;
   const isMedia =
     type.startsWith("video/") ||
@@ -568,6 +583,7 @@ function onHeadersReceived(details) {
   });
   mediaByTab.set(tabId, list.slice(0, 50));
   broadcastStatus();
+  pushMediaForTab(tabId);
 }
 
 if (chrome.webRequest?.onBeforeSendHeaders) {
@@ -613,6 +629,18 @@ chrome.storage?.onChanged?.addListener((changes, area) => {
     if (changes[SETTINGS_KEY]) {
       runtimeSettings = { ...defaultSettings, ...(changes[SETTINGS_KEY].newValue || {}) };
     }
+    if (changes[SNIFF_KEY]) runtimeSniff = changes[SNIFF_KEY].newValue !== false;
+    if (changes[PANEL_KEY]) {
+      runtimePanel = changes[PANEL_KEY].newValue !== false;
+      // Turning the panel back on clears each page's own close.
+      pushMediaToAllTabs(true);
+    }
+    if (changes[HIDDEN_HOSTS_KEY]) {
+      runtimeHiddenHosts = Array.isArray(changes[HIDDEN_HOSTS_KEY].newValue)
+        ? changes[HIDDEN_HOSTS_KEY].newValue
+        : [];
+    }
+    if (changes[SNIFF_KEY] || changes[HIDDEN_HOSTS_KEY]) pushMediaToAllTabs();
   }
   if (area === "session" && changes[BYPASS_NEXT_KEY]) {
     bypassNext = !!changes[BYPASS_NEXT_KEY].newValue;
@@ -651,6 +679,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       const settings = getSettings();
       sendResponse({
         enabled,
+        sniff: runtimeSniff,
+        panel: runtimePanel,
+        hiddenHosts: runtimeHiddenHosts,
         connected,
         downloaderVersion,
         mediaCount: media.length,
@@ -674,6 +705,49 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     chrome.storage.session?.set?.({ [BYPASS_NEXT_KEY]: true });
     sendResponse({ ok: true });
     return;
+  }
+  if (request.action === "media-for-tab") {
+    (async () => {
+      await runtimeReady;
+      const tab = sender.tab || (await activeTab());
+      sendResponse(mediaPayloadForTab(tab));
+    })();
+    return true;
+  }
+  if (request.action === "set-sniff") {
+    runtimeSniff = request.sniff !== false;
+    chrome.storage.local.set({ [SNIFF_KEY]: runtimeSniff }).then(() => {
+      pushMediaToAllTabs();
+      sendResponse({ ok: true, sniff: runtimeSniff });
+    });
+    return true;
+  }
+  if (request.action === "set-panel") {
+    runtimePanel = request.panel !== false;
+    chrome.storage.local.set({ [PANEL_KEY]: runtimePanel }).then(() => {
+      // reset: a page the user closed the panel on gets it back when the
+      // switch is turned on, which is the only way to undo that close.
+      pushMediaToAllTabs(true);
+      sendResponse({ ok: true, panel: runtimePanel });
+    });
+    return true;
+  }
+  if (request.action === "hide-panel-site") {
+    const host = String(request.host || hostnameOf(sender.tab?.url || "")).toLowerCase();
+    if (host) {
+      runtimeHiddenHosts = addHiddenHost(runtimeHiddenHosts, host);
+      chrome.storage.local.set({ [HIDDEN_HOSTS_KEY]: runtimeHiddenHosts });
+    }
+    pushMediaToAllTabs();
+    sendResponse({ ok: true, hiddenHosts: runtimeHiddenHosts });
+    return true;
+  }
+  if (request.action === "unhide-panel-site") {
+    runtimeHiddenHosts = removeHiddenHost(runtimeHiddenHosts, request.host);
+    chrome.storage.local.set({ [HIDDEN_HOSTS_KEY]: runtimeHiddenHosts });
+    pushMediaToAllTabs();
+    sendResponse({ ok: true, hiddenHosts: runtimeHiddenHosts });
+    return true;
   }
   if (request.action === "download-media") {
     (async () => {
@@ -714,15 +788,79 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 });
 
+function hostnameOf(url) {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * What the page-side panel needs to know: the sniffed list and whether it
+ * belongs on this page. Visibility is decided here, not in the content script,
+ * so the rule lives once — in protocol.panelVisible, under test — and the
+ * content script never needs the settings or the hidden-site list.
+ */
+function mediaPayloadForTab(tab, reset) {
+  const media = mediaByTab.get(tab?.id ?? -1) || [];
+  return {
+    media,
+    visible: panelVisible({
+      sniff: runtimeSniff,
+      panel: runtimePanel,
+      hiddenHosts: runtimeHiddenHosts,
+      hostname: hostnameOf(tab?.url || ""),
+      mediaCount: media.length,
+    }),
+    ...(reset ? { reset: true } : {}),
+  };
+}
+
+function pushMediaForTab(tabId, reset) {
+  if (tabId == null || tabId < 0) return;
+  chrome.tabs.get(tabId).then(
+    (tab) => {
+      chrome.tabs
+        .sendMessage(tabId, { action: "proxydm-media", ...mediaPayloadForTab(tab, reset) })
+        .catch(() => {});
+    },
+    () => {},
+  );
+}
+
+function pushMediaToAllTabs(reset) {
+  chrome.tabs.query({}).then(
+    (tabs) => {
+      for (const tab of tabs) {
+        if (tab.id == null) continue;
+        chrome.tabs
+          .sendMessage(tab.id, { action: "proxydm-media", ...mediaPayloadForTab(tab, reset) })
+          .catch(() => {});
+      }
+    },
+    () => {},
+  );
+}
+
 function broadcastStatus() {
   chrome.runtime.sendMessage({ action: "status-changed" }).catch(() => {});
 }
 
 async function loadRuntime() {
   try {
-    const r = await chrome.storage.local.get([STORAGE_KEY, SETTINGS_KEY]);
+    const r = await chrome.storage.local.get([
+      STORAGE_KEY,
+      SETTINGS_KEY,
+      SNIFF_KEY,
+      PANEL_KEY,
+      HIDDEN_HOSTS_KEY,
+    ]);
     runtimeEnabled = r[STORAGE_KEY] !== false;
     runtimeSettings = { ...defaultSettings, ...(r[SETTINGS_KEY] || {}) };
+    runtimeSniff = r[SNIFF_KEY] !== false;
+    runtimePanel = r[PANEL_KEY] !== false;
+    runtimeHiddenHosts = Array.isArray(r[HIDDEN_HOSTS_KEY]) ? r[HIDDEN_HOSTS_KEY] : [];
   } catch {
     /* keep defaults until storage is readable */
   }

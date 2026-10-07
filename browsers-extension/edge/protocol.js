@@ -200,6 +200,65 @@ function extensionOf(filename, url) {
   return ext;
 }
 
+/** Split a comma/space separated host list, or pass an array through. */
+function hostList(patterns) {
+  if (Array.isArray(patterns)) return patterns.map((p) => String(p).trim().toLowerCase()).filter(Boolean);
+  return String(patterns || "")
+    .split(/[,\s]+/)
+    .map((p) => p.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+/**
+ * Does a hostname match one of the patterns, exactly or as a subdomain?
+ * `patterns` is either an array (the panel's hidden sites) or the comma
+ * separated string the settings inputs hold.
+ * @param {string} hostname
+ * @param {string[] | string} patterns
+ * @returns {boolean}
+ */
+export function hostMatches(hostname, patterns) {
+  const host = String(hostname || "").toLowerCase();
+  if (!host) return false;
+  return hostList(patterns).some((p) => host === p || host.endsWith("." + p));
+}
+
+/**
+ * Whether the on-page panel belongs on this page right now. An empty page has
+ * nothing to show, so it only appears once something was sniffed.
+ * @param {{sniff?: boolean, panel?: boolean, hiddenHosts?: string[] | string, hostname?: string, mediaCount?: number, closed?: boolean}} state
+ * @returns {boolean}
+ */
+export function panelVisible({ sniff, panel, hiddenHosts, hostname, mediaCount, closed }) {
+  if (panel === false || sniff === false || closed === true) return false;
+  if (hostMatches(hostname, hiddenHosts)) return false;
+  return Number(mediaCount || 0) > 0;
+}
+
+/**
+ * Add a host to the hidden list: lower-cased, deduped, order preserved.
+ * @param {string[]} [list]
+ * @param {string} host
+ * @returns {string[]}
+ */
+export function addHiddenHost(list, host) {
+  const next = Array.isArray(list) ? list.slice() : [];
+  const h = String(host || "").trim().toLowerCase();
+  if (h && !next.map((x) => String(x).toLowerCase()).includes(h)) next.push(h);
+  return next;
+}
+
+/**
+ * Drop a host from the hidden list.
+ * @param {string[]} [list]
+ * @param {string} host
+ * @returns {string[]}
+ */
+export function removeHiddenHost(list, host) {
+  const h = String(host || "").trim().toLowerCase();
+  return (Array.isArray(list) ? list : []).filter((x) => String(x).toLowerCase() !== h);
+}
+
 // Why a browser download must be left alone. Empty string means it can be taken.
 export function ignoreReason(url, filename, fileSize, settings) {
   const cfg = settings || {};
@@ -209,10 +268,7 @@ export function ignoreReason(url, filename, fileSize, settings) {
   } catch {
     return "";
   }
-  const ignored = String(cfg.ignoredDomains || "")
-    .split(/[,\s]+/)
-    .filter(Boolean);
-  if (ignored.some((d) => hostname === d || hostname.endsWith("." + d))) return "ignored-domain";
+  if (hostMatches(hostname, cfg.ignoredDomains)) return "ignored-domain";
   const ext = extensionOf(filename, url);
   const ignoredExt = String(cfg.ignoredExtensions || "")
     .split(/[,\s]+/)
