@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "default_locale": "en",
   "name": "__MSG_extensionName__",
-  "version": "0.20.2",
+  "version": "0.21.0",
   "description": "__MSG_extensionDescription__",
   "homepage_url": "https://github.com/fb0sh/ProxyDownloadManager",
   "author": "fb0sh",
