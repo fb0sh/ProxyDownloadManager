@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { DownloadItem, ProbeInfo, Settings, UpdateInfo } from "./types";
+import type { DownloadItem, PendingDownloadRequest, ProbeInfo, Settings, UpdateInfo } from "./types";
 
 export interface FileIconRequest {
   id: number;
@@ -29,6 +29,8 @@ export const tauriClient = {
       status: item.status || "queued",
     })) as DownloadItem[];
   },
+  takePendingDownload: (requestId: string) =>
+    invoke<PendingDownloadRequest | null>("take_pending_download", { requestId }),
   startDownload: (opts: {
     url: string;
     filename: string;

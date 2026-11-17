@@ -193,6 +193,9 @@ const en = {
     direct: "Direct",
     auto: "Auto",
     autoSuggested: "Auto ({n})",
+    quality: "Stream quality",
+    qualityAuto: "Highest bitrate (Auto)",
+    htmlTrapWarning: "Server returned an HTML page (text/html) instead of a file — check cookies/Referer or expired link.",
   },
   log: {
     title: "Log",

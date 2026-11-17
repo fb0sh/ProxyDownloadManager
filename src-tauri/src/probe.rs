@@ -17,6 +17,34 @@ pub struct ProbeResult {
     pub is_hls: bool,
 }
 
+fn effective_user_agents(headers: &HashMap<String, String>, user_agents: &[String]) -> Vec<String> {
+    // When the caller (e.g. browser extension) already captured the browser's exact
+    // User-Agent in `headers`, `apply_headers` pins it on every request. Looping 5
+    // fallback UAs would replay the exact same wire request 5 times.
+    let explicit_ua = headers
+        .iter()
+        .any(|(k, v)| k.eq_ignore_ascii_case("user-agent") && !v.is_empty());
+    if explicit_ua {
+        return vec![String::new()];
+    }
+    let mut out: Vec<String> = Vec::with_capacity(user_agents.len() + 1);
+    for ua in user_agents.iter().chain(std::iter::once(&String::new())) {
+        if !out.contains(ua) {
+            out.push(ua.clone());
+        }
+    }
+    out
+}
+
+fn parse_empty_416_total(resp: &reqwest::Response) -> Option<u64> {
+    resp.headers()
+        .get("content-range")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split('/').nth(1))
+        .and_then(|t| t.trim().parse::<u64>().ok())
+        .filter(|&total| total == 0)
+}
+
 pub async fn probe(
     url: &str,
     headers: &HashMap<String, String>,
@@ -27,20 +55,21 @@ pub async fn probe(
     let client = pool
         .get_client(proxy)
         .map_err(|e| PdmError::ClientBuild(e.to_string()))?;
+    let candidates = effective_user_agents(headers, user_agents);
     log::info!(
         "[ProxyDM] probe start url={} proxy={:?} uas={}",
         url,
         proxy,
-        user_agents.len()
+        candidates.len()
     );
 
-    // Try each UA, return first success
+    // Try each candidate UA, return first success.
     let mut first_err: Option<String> = None;
-    for (i, ua) in user_agents
-        .iter()
-        .chain(std::iter::once(&String::new()))
-        .enumerate()
-    {
+    let mut fatal_http: Option<u16> = None;
+    let total_candidates = candidates.len();
+
+    for (i, ua) in candidates.iter().enumerate() {
+        let is_last_ua = i + 1 >= total_candidates;
         log::info!(
             "[ProxyDM] probe attempt #{} ua_prefix={:?}...",
             i,
@@ -56,12 +85,10 @@ pub async fn probe(
             crate::headers::prepare_request(client.get(url), headers, ua, Some("bytes=0-0"));
         range_req = range_req.timeout(std::time::Duration::from_secs(30));
 
-        let resp = range_req.send().await;
-        let resp = match resp {
+        let resp = match range_req.send().await {
             Ok(r) => r,
             Err(e) => {
                 if first_err.is_none() {
-                    // Capture full error chain: Display + source
                     let mut msg = format!("{}", e);
                     let mut src = e.source();
                     while let Some(s) = src {
@@ -70,16 +97,14 @@ pub async fn probe(
                     }
                     first_err = Some(msg);
                 }
-                continue; // try next UA on network error
+                continue;
             }
         };
-        let status = resp.status();
-        let protocol = crate::network::protocol::protocol_label(resp.version());
 
-        let supports_range = status == reqwest::StatusCode::PARTIAL_CONTENT;
-
-        let file_size = if supports_range {
-            resp.headers()
+        let initial_status = resp.status();
+        let (resp, supports_range, file_size) = if initial_status == reqwest::StatusCode::PARTIAL_CONTENT {
+            let size = resp
+                .headers()
                 .get("content-range")
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| {
@@ -87,35 +112,73 @@ pub async fn probe(
                         .nth(1)
                         .and_then(|n| n.trim().parse::<u64>().ok())
                 })
-                .unwrap_or(0)
-        } else if status == reqwest::StatusCode::OK {
-            resp.headers()
+                .unwrap_or(0);
+            (resp, true, size)
+        } else if initial_status == reqwest::StatusCode::OK {
+            let size = resp
+                .headers()
                 .get("content-length")
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(0)
-        } else if status == reqwest::StatusCode::FORBIDDEN
-            || status == reqwest::StatusCode::METHOD_NOT_ALLOWED
+                .unwrap_or(0);
+            (resp, false, size)
+        } else if initial_status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE
+            && parse_empty_416_total(&resp).is_some()
         {
+            // `416` with `Content-Range: bytes */0` is a legitimate 0-byte file.
+            (resp, false, 0)
+        } else if matches!(initial_status.as_u16(), 400 | 403 | 405 | 416 | 501) {
+            // Gateways / presigned endpoints that reject `Range: bytes=0-0`: retry
+            // without `Range` and promote `r2` so metadata comes from the 200 OK.
             let mut get_req = crate::headers::prepare_request(client.get(url), headers, ua, None);
             get_req = get_req.timeout(std::time::Duration::from_secs(30));
             match get_req.send().await {
-                Ok(r2) if r2.status().is_success() => r2
-                    .headers()
-                    .get("content-length")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|s| s.parse::<u64>().ok())
-                    .unwrap_or(0),
-                Ok(r2) if crate::retry::is_fatal_client_status(r2.status().as_u16()) => {
-                    return Err(PdmError::Http(r2.status().as_u16()));
+                Ok(r2) if r2.status().is_success() => {
+                    let size = r2
+                        .headers()
+                        .get("content-length")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .unwrap_or(0);
+                    (r2, false, size)
                 }
-                _ => continue,
+                Ok(r2) => {
+                    let code = r2.status().as_u16();
+                    // A non-browser default UA often gets 403 from WAFs; keep trying
+                    // browser fallback UAs before declaring 403 fatal.
+                    if code == 403 && !is_last_ua {
+                        fatal_http.get_or_insert(code);
+                        continue;
+                    }
+                    if crate::retry::is_fatal_client_status(code) {
+                        return Err(PdmError::Http(code));
+                    }
+                    if first_err.is_none() {
+                        first_err = Some(format!("HTTP {}", r2.status()));
+                    }
+                    continue;
+                }
+                Err(e) => {
+                    if first_err.is_none() {
+                        first_err = Some(e.to_string());
+                    }
+                    continue;
+                }
             }
-        } else if crate::retry::is_fatal_client_status(status.as_u16()) {
-            return Err(PdmError::Http(status.as_u16()));
+        } else if crate::retry::is_fatal_client_status(initial_status.as_u16()) {
+            return Err(PdmError::Http(initial_status.as_u16()));
         } else {
-            return Err(PdmError::Probe(format!("HTTP {}", status)));
+            if !is_last_ua {
+                if first_err.is_none() {
+                    first_err = Some(format!("HTTP {}", initial_status));
+                }
+                continue;
+            }
+            return Err(PdmError::Probe(format!("HTTP {}", initial_status)));
         };
+
+        let status = resp.status();
+        let protocol = crate::network::protocol::protocol_label(resp.version());
 
         // Every field is extracted before the body is touched: draining moves
         // `resp`, and the metadata must survive that.
@@ -143,16 +206,22 @@ pub async fn probe(
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
         let final_url = resp.url().to_string();
-        let is_hls = content_type.contains("mpegurl")
-            || content_type.contains("x-mpegURL")
-            || url.contains(".m3u8");
+        let ct_lower = content_type.to_ascii_lowercase();
+        let is_hls = ct_lower.contains("mpegurl")
+            || final_url.to_ascii_lowercase().contains(".m3u8")
+            || url.to_ascii_lowercase().contains(".m3u8");
         let content_length = resp
             .headers()
             .get(reqwest::header::CONTENT_LENGTH)
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.parse::<u64>().ok());
 
-        let file_name = crate::filename::extract_filename(url, cd_owned.as_deref())
+        // Prefer Content-Disposition, then redirected `final_url` path, then original `url`.
+        let file_name = cd_owned
+            .as_deref()
+            .and_then(crate::filename::from_content_disposition)
+            .or_else(|| crate::filename::from_url(&final_url))
+            .or_else(|| crate::filename::from_url(url))
             .unwrap_or_else(|| "download".to_string());
 
         log::info!(
@@ -201,6 +270,10 @@ pub async fn probe(
             final_url,
             is_hls,
         });
+    }
+
+    if let Some(code) = fatal_http {
+        return Err(PdmError::Http(code));
     }
 
     let err_msg = match first_err {
@@ -771,5 +844,95 @@ mod tests {
             2,
             "a cookied download reused a cookieless probe"
         );
+    }
+
+    #[tokio::test]
+    async fn range_rejected_fallback_keeps_plain_get_metadata() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 2048];
+                    let n = stream.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    if req.to_ascii_lowercase().contains("range:") {
+                        let _ = stream
+                            .write_all(b"HTTP/1.1 405 Method Not Allowed\r\nContent-Type: text/plain\r\nContent-Length: 0\r\n\r\n")
+                            .await;
+                    } else {
+                        let _ = stream
+                            .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nContent-Length: 4096\r\nContent-Disposition: attachment; filename*=UTF-8''%E8%B5%84%E6%96%99.zip\r\n\r\n")
+                            .await;
+                    }
+                });
+            }
+        });
+        let url = format!("http://127.0.0.1:{port}/download?id=9");
+        let pool = Arc::new(NetworkPool::new(false));
+        let res = probe(&url, &HashMap::new(), None, &pool, &["ua".into()])
+            .await
+            .unwrap();
+        assert!(!res.supports_range);
+        assert_eq!(res.file_size, 4096);
+        assert_eq!(res.content_type, "application/zip");
+        assert_eq!(res.file_name, "资料.zip");
+    }
+
+    #[tokio::test]
+    async fn waf_403_on_default_ua_continues_to_browser_ua_and_explicit_ua_dedupes() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let hits = Arc::new(AtomicUsize::new(0));
+        let count = hits.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let count = count.clone();
+                tokio::spawn(async move {
+                    count.fetch_add(1, Ordering::Relaxed);
+                    let mut buf = [0u8; 2048];
+                    let n = stream.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    if req.contains("Mozilla/5.0") {
+                        let _ = stream
+                            .write_all(b"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-0/512\r\nContent-Length: 1\r\n\r\nA")
+                            .await;
+                    } else {
+                        let _ = stream
+                            .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                            .await;
+                    }
+                });
+            }
+        });
+        let url = format!("http://127.0.0.1:{port}/pkg.bin");
+        let pool = Arc::new(NetworkPool::new(false));
+        let uas = vec![
+            "ProxyDM/1.0".to_string(),
+            "Mozilla/5.0 Chrome/131.0".to_string(),
+        ];
+        let res = probe(&url, &HashMap::new(), None, &pool, &uas)
+            .await
+            .unwrap();
+        assert_eq!(res.file_size, 512);
+        assert!(res.supports_range);
+
+        // Explicit User-Agent in headers must not loop through 5 fallback UAs.
+        hits.store(0, Ordering::Relaxed);
+        let mut hdrs = HashMap::new();
+        hdrs.insert("User-Agent".into(), "CustomLockedUA/1.0".into());
+        let err = probe(&url, &hdrs, None, &pool, &uas).await.unwrap_err();
+        assert!(matches!(err, PdmError::Http(403)));
+        // 1 Range attempt + 1 plain-GET fallback attempt = 2 requests total (not 10).
+        assert_eq!(hits.load(Ordering::Relaxed), 2);
     }
 }

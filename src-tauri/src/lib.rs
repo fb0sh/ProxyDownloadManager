@@ -76,14 +76,21 @@ fn spawn_event_handler(
 }
 
 /// Spawn the WebSocket request forwarder: receives download requests from browser extensions,
-/// activates the app, and emits to the frontend.
+/// stores a Claim-Check ticket so cold-started windows never miss headers, activates the app,
+/// and emits to the frontend.
 fn spawn_ws_forwarder(
     bus: Arc<crate::event_bus::EventBus>,
+    pending_requests: Arc<crate::ws::server::PendingRequestStore>,
     mut request_rx: mpsc::UnboundedReceiver<crate::types::PendingDownloadRequest>,
 ) {
     tauri::async_runtime::spawn(async move {
         while let Some(req) = request_rx.recv().await {
-            log::info!("[ProxyDM consumer] Received request_rx: url={}", req.url);
+            let req = pending_requests.store(req);
+            log::info!(
+                "[ProxyDM consumer] Received request_rx: id={} url={}",
+                req.request_id,
+                req.url
+            );
 
             #[cfg(target_os = "macos")]
             {
@@ -227,6 +234,8 @@ pub fn run() {
                 bus.clone(),
             ));
 
+            let pending_requests = Arc::new(crate::ws::server::PendingRequestStore::new());
+
             let state = Arc::new(AppState {
                 dm: dm.clone(),
                 ledger: ledger.clone(),
@@ -234,6 +243,7 @@ pub fn run() {
                 bus: bus.clone(),
                 settings: settings_svc.clone(),
                 network: network_svc.clone(),
+                pending_requests: pending_requests.clone(),
             });
             app.manage(state);
 
@@ -270,7 +280,7 @@ pub fn run() {
 
             // Spawn background tasks
             spawn_event_handler(dm.clone(), event_rx);
-            spawn_ws_forwarder(bus, request_rx);
+            spawn_ws_forwarder(bus, pending_requests, request_rx);
             start_ws_server(event_tx, request_tx);
             spawn_flush_loop(ledger.clone());
             crash_recovery(&ledger);
@@ -279,6 +289,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             cmd::list_downloads,
+            cmd::take_pending_download,
             cmd::start_download,
             cmd::probe_url,
             cmd::set_download_connections,
