@@ -398,6 +398,8 @@ async function invoke(command: string, args?: Record<string, any>): Promise<any>
       return ["[INFO] ProxyDM started", "[INFO] Extensions synced", "[INFO] Download manager ready"];
     case "file_exists":
       return true;
+    case "take_pending_download":
+      return null;
     case "get_extensions_dir":
       return "~/Library/Application Support/com.fb0sh.proxydownloadmanager/extensions";
     case "open_extensions_folder":

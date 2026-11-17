@@ -195,6 +195,9 @@ const zh: Translations = {
     direct: "直连",
     auto: "自动",
     autoSuggested: "自动 ({n})",
+    quality: "清晰度",
+    qualityAuto: "最高码率（自动）",
+    htmlTrapWarning: "服务器返回了网页 (text/html) 而非文件，可能是登录态缺失、防盗链拦截或链接已过期。",
   },
   log: {
     title: "日志",

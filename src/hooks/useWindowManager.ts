@@ -14,11 +14,20 @@ export function useWindowManager() {
       return;
     }
 
-    const url = typeof payload === "string" ? payload : payload?.url;
     const base = window.location.origin + window.location.pathname.replace(/\/+$/, "");
     const params = new URLSearchParams();
     params.set("view", "new-download");
-    if (url) params.set("url", url);
+    if (typeof payload === "string") {
+      if (payload) params.set("url", payload);
+    } else if (payload?.request_id) {
+      // Claim-Check ticket: NewDownloadWindow pulls the full request (headers,
+      // cookies, final_url, filename) on mount instead of probing a bare URL
+      // or losing the `tauri://created` event before `listen()` is registered.
+      params.set("ticket", payload.request_id);
+    } else if (payload) {
+      const u = payload.final_url || payload.url;
+      if (u) params.set("url", u);
+    }
 
     const win = new WebviewWindow("new-download", {
       url: `${base}?${params.toString()}`,

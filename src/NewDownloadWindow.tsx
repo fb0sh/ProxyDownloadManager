@@ -13,6 +13,23 @@ import { Label } from "./components/ui/label";
 import { Select } from "./components/ui/select";
 import { HeadersEditor, headersToRows, newHeaderRow, rowsToHeaders, type HeaderRow } from "./components/HeadersEditor";
 
+const BINARY_EXT_RE =
+  /\.(zip|7z|rar|tar|gz|bz2|xz|tgz|dmg|exe|msi|pkg|deb|rpm|appimage|apk|iso|mp4|mkv|webm|mov|flv|avi|m4s|m4v|ts|mp3|m4a|flac|wav|ogg|opus|aac|pdf|doc|docx|xls|xlsx|ppt|pptx|bin)(\?|$)/i;
+
+function isHtmlTrap(filename: string, targetUrl: string, contentType?: string): boolean {
+  const ct = (contentType || "").toLowerCase().split(";")[0].trim();
+  if (ct !== "text/html" && ct !== "application/xhtml+xml") return false;
+  return BINARY_EXT_RE.test(filename) || BINARY_EXT_RE.test(targetUrl);
+}
+
+function formatVariantLabel(v: { resolution: string; bandwidth: number; codecs: string }): string {
+  const parts: string[] = [];
+  if (v.resolution) parts.push(v.resolution);
+  if (v.bandwidth > 0) parts.push(`${(v.bandwidth / 1_000_000).toFixed(1)} Mbps`);
+  if (parts.length === 0 && v.codecs) parts.push(v.codecs);
+  return parts.join(" · ") || "Variant";
+}
+
 export default function NewDownloadWindow() {
   const { settings: loadedSettings } = useSettings();
   const proxies = loadedSettings?.proxies ?? {};
@@ -27,6 +44,7 @@ export default function NewDownloadWindow() {
   const [savePath, setSavePath] = useState(loadedSettings?.download_dir ?? "");
   const [headerRows, setHeaderRows] = useState<HeaderRow[]>(() => [newHeaderRow()]);
   const [showHeaders, setShowHeaders] = useState(false);
+  const [selectedVariantUri, setSelectedVariantUri] = useState("");
   // One source of truth: the editor's rows. The probe and the download both use
   // the map derived from them, so editing a header re-probes the URL before you
   // commit to the download — which is how a Referer gets fixed before a 403.
@@ -40,14 +58,18 @@ export default function NewDownloadWindow() {
   const filenameRef = useRef(filename);
   const autoFilledRef = useRef(autoFilled);
   const connectionTouched = useRef(false);
+  const proxyTouched = useRef(false);
+  const savePathTouched = useRef(false);
+  const seenRequestIds = useRef<Set<string>>(new Set());
+  const fallbackOriginUrl = useRef("");
   filenameRef.current = filename;
   autoFilledRef.current = autoFilled;
 
   useEffect(() => {
     if (loadedSettings) {
       setLanguage(loadedSettings.language || "en");
-      setProxyName(loadedSettings.default_proxy);
-      setSavePath(loadedSettings.download_dir);
+      if (!proxyTouched.current) setProxyName(loadedSettings.default_proxy);
+      if (!savePathTouched.current) setSavePath(loadedSettings.download_dir);
       // A configured default is the starting thread count. Auto stays only
       // when settings itself is Auto, so a number is not size-detected.
       if (!connectionTouched.current && loadedSettings.max_connections > 0) {
@@ -59,17 +81,30 @@ export default function NewDownloadWindow() {
 
   const applyRequest = (req: PendingDownloadRequest | string) => {
     if (typeof req === "string") {
+      fallbackOriginUrl.current = "";
+      setSelectedVariantUri("");
       setUrl(req);
       const fn = extractFilename(req);
       if (fn) { setFilename(fn); setAutoFilled(true); }
       return;
     }
+    if (req.request_id) {
+      if (seenRequestIds.current.has(req.request_id)) return;
+      seenRequestIds.current.add(req.request_id);
+    }
+    fallbackOriginUrl.current =
+      req.final_url && req.url && req.final_url !== req.url ? req.url : "";
+    setSelectedVariantUri("");
     const u = req.final_url || req.url;
     setUrl(u);
     if (req.filename) { setFilename(req.filename); setAutoFilled(true); }
     else {
       const fn = extractFilename(u);
       if (fn) { setFilename(fn); setAutoFilled(true); }
+    }
+    if (req.proxy_name) {
+      proxyTouched.current = true;
+      setProxyName(req.proxy_name);
     }
     if (req.connections) {
       connectionTouched.current = true;
@@ -85,15 +120,29 @@ export default function NewDownloadWindow() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
+    const ticket = params.get("ticket") ?? "";
     const initial = params.get("url") ?? "";
-    if (initial) applyRequest(initial);
+    if (!ticket && initial) applyRequest(initial);
 
     let cancelled = false;
     let unlistenFn: (() => void) | null = null;
     (async () => {
+      if (ticket) {
+        try {
+          const pending = await tauriClient.takePendingDownload?.(ticket);
+          if (!cancelled && pending) applyRequest(pending);
+          else if (!cancelled && initial) applyRequest(initial);
+        } catch {
+          if (!cancelled && initial) applyRequest(initial);
+        }
+      }
       const { listen } = await import("@tauri-apps/api/event");
       const unlisten = await listen<PendingDownloadRequest | string>("new-download-request", (event) => {
-        if (!cancelled) applyRequest(event.payload);
+        const payload = event.payload;
+        if (payload && typeof payload === "object" && payload.request_id) {
+          tauriClient.takePendingDownload?.(payload.request_id)?.catch?.(() => {});
+        }
+        if (!cancelled) applyRequest(payload);
       });
       const unlistenOld = await listen<string>("new-download-url", (event) => {
         if (!cancelled) applyRequest(event.payload);
@@ -129,8 +178,21 @@ export default function NewDownloadWindow() {
       return "ok" as const;
     } catch (err) {
       if (seq !== probeSeq.current) return "stale" as const;
+      const msg = err instanceof Error ? err.message : String(err);
+      // If an ephemeral signed `final_url` already expired (401/403/410), fall
+      // back once to the original link so the redirect can mint a fresh token.
+      if (
+        fallbackOriginUrl.current &&
+        fallbackOriginUrl.current !== url &&
+        /\b(401|403|410)\b/.test(msg)
+      ) {
+        const origin = fallbackOriginUrl.current;
+        fallbackOriginUrl.current = "";
+        setUrl(origin);
+        return "stale" as const;
+      }
       setProbe(null);
-      setProbeError(err instanceof Error ? err.message : String(err));
+      setProbeError(msg);
       lastProbeKey.current = "";
       return "error" as const;
     } finally {
@@ -156,6 +218,8 @@ export default function NewDownloadWindow() {
   }, [probeKey, url, probeNow]);
 
   const handleUrlChange = useCallback((value: string) => {
+    fallbackOriginUrl.current = "";
+    setSelectedVariantUri("");
     setUrl(value);
     const fn = extractFilename(value);
     if (fn) { setFilename(fn); setAutoFilled(true); }
@@ -163,16 +227,30 @@ export default function NewDownloadWindow() {
 
   const browse = async () => {
     const dir = await open({ directory: true, multiple: false, title: t("newDownload.saveTo") });
-    if (dir) setSavePath(dir as string);
+    if (dir) {
+      savePathTouched.current = true;
+      setSavePath(dir as string);
+    }
   };
 
   const connections = connectionMode === "auto" ? 0 : manualConnections;
 
+  const sortedVariants = useMemo(() => {
+    if (!probe?.is_hls || !probe.hls_variants?.length) return [];
+    return [...probe.hls_variants].sort((a, b) => (b.bandwidth || 0) - (a.bandwidth || 0));
+  }, [probe]);
+
+  const htmlTrap = useMemo(
+    () => (probe ? isHtmlTrap(filename, url, probe.content_type) : false),
+    [probe, filename, url],
+  );
+
   const submit = async (paused: boolean) => {
-    if (!url) return;
+    const targetUrl = selectedVariantUri || url;
+    if (!targetUrl) return;
     try {
       const id = await startDownload.mutateAsync({
-        url, filename, proxyName, connections, savePath, headers, startPaused: paused,
+        url: targetUrl, filename, proxyName, connections, savePath, headers, startPaused: paused,
       });
       const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
       const existing = await WebviewWindow.getByLabel("download-details");
@@ -233,7 +311,13 @@ export default function NewDownloadWindow() {
       <div>
         <Label>{t("newDownload.saveTo")}</Label>
         <div className="flex gap-1">
-          <Input value={savePath} onChange={(e) => setSavePath(e.target.value)} />
+          <Input
+            value={savePath}
+            onChange={(e) => {
+              savePathTouched.current = true;
+              setSavePath(e.target.value);
+            }}
+          />
           <Button onClick={browse}>{t("newDownload.browse")}</Button>
         </div>
       </div>
@@ -258,12 +342,34 @@ export default function NewDownloadWindow() {
         </div>
         <div>
           <Label>{t("newDownload.proxy")}</Label>
-          <Select value={proxyName} onChange={(e) => setProxyName(e.target.value)}>
+          <Select
+            value={proxyName}
+            onChange={(e) => {
+              proxyTouched.current = true;
+              setProxyName(e.target.value);
+            }}
+          >
             <option value="">{t("newDownload.direct")}</option>
             {Object.keys(proxies).map((name) => <option key={name} value={name}>{name}</option>)}
           </Select>
         </div>
       </div>
+      {sortedVariants.length > 1 && (
+        <div>
+          <Label>{t("newDownload.quality")}</Label>
+          <Select
+            value={selectedVariantUri}
+            onChange={(e) => setSelectedVariantUri(e.target.value)}
+          >
+            <option value="">{t("newDownload.qualityAuto")}</option>
+            {sortedVariants.map((v) => (
+              <option key={v.uri} value={v.uri}>
+                {formatVariantLabel(v)}
+              </option>
+            ))}
+          </Select>
+        </div>
+      )}
       <div>
         <div className="flex items-center gap-2">
           <Label>{t("headers.title")}</Label>
@@ -286,11 +392,16 @@ export default function NewDownloadWindow() {
         {!url.startsWith("http") && !probeError && <div className="text-muted-foreground">{t("newDownload.probeIdle")}</div>}
         {probing && <div>{t("newDownload.probing")}</div>}
         {probe && !probing && (
-          <div className="grid grid-cols-2 gap-x-3 gap-y-1">
-            <span className="text-muted-foreground">{t("newDownload.size")}</span><span>{probe.file_size ? formatBytes(probe.file_size) : "—"}</span>
-            <span className="text-muted-foreground">{t("newDownload.type")}</span><span className="truncate">{probe.content_type || "—"}</span>
-            <span className="text-muted-foreground">{t("newDownload.range")}</span><span>{probe.supports_range ? t("properties.yes") : t("properties.no")}</span>
-            <span className="text-muted-foreground">{t("newDownload.finalUrl")}</span><span className="truncate">{probe.final_url || url}</span>
+          <div className="flex flex-col gap-1.5">
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+              <span className="text-muted-foreground">{t("newDownload.size")}</span><span>{probe.file_size ? formatBytes(probe.file_size) : "—"}</span>
+              <span className="text-muted-foreground">{t("newDownload.type")}</span><span className="truncate">{probe.content_type || "—"}</span>
+              <span className="text-muted-foreground">{t("newDownload.range")}</span><span>{probe.supports_range ? t("properties.yes") : t("properties.no")}</span>
+              <span className="text-muted-foreground">{t("newDownload.finalUrl")}</span><span className="truncate">{probe.final_url || url}</span>
+            </div>
+            {htmlTrap && (
+              <div className="text-destructive">{t("newDownload.htmlTrapWarning")}</div>
+            )}
           </div>
         )}
         {probeError && !probing && (

@@ -64,8 +64,63 @@ pub async fn create_output_file(
     Ok(file)
 }
 
+fn is_cross_device_error(err: &std::io::Error) -> bool {
+    #[cfg(unix)]
+    if err.raw_os_error() == Some(18) {
+        return true; // EXDEV
+    }
+    #[cfg(windows)]
+    if err.raw_os_error() == Some(17) {
+        return true; // ERROR_NOT_SAME_DEVICE
+    }
+    // Rust 1.83+ stabilized ErrorKind::CrossesDevices; match by string/kind safely across toolchains.
+    format!("{:?}", err.kind()).eq_ignore_ascii_case("CrossesDevices")
+}
+
+/// Copy `src` to `{dst}.pdm-part` on the destination volume, fsync it, atomically
+/// rename onto `dst`, and only then unlink `src`. A crash or disk-full error leaves
+/// `src` intact for retry.
+fn copy_and_swap_sync(src: &Path, dst: &Path) -> std::io::Result<()> {
+    use std::io::{Read, Write};
+    let staging_name = format!(
+        ".{}.pdm-part",
+        dst.file_name()
+            .map(|n| n.to_string_lossy())
+            .unwrap_or_else(|| "download".into())
+    );
+    let staging = dst.with_file_name(staging_name);
+    let copy_res = (|| -> std::io::Result<()> {
+        let mut reader = std::fs::File::open(src)?;
+        let mut writer = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&staging)?;
+        let mut buf = vec![0u8; 512 * 1024];
+        loop {
+            let n = reader.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            writer.write_all(&buf[..n])?;
+        }
+        writer.flush()?;
+        writer.sync_all()?;
+        drop(writer);
+        std::fs::rename(&staging, dst)?;
+        Ok(())
+    })();
+    if copy_res.is_err() {
+        let _ = std::fs::remove_file(&staging);
+        return copy_res;
+    }
+    let _ = std::fs::remove_file(src);
+    Ok(())
+}
+
 /// Rename the id temp file onto `save_path`. Caller must have dropped handles
-/// and synced. Failure leaves the temp file in place.
+/// and synced. Falls back to atomic staging copy when `temp` and `save_path`
+/// live on different filesystems/drives (`EXDEV` / `ERROR_NOT_SAME_DEVICE`).
 pub async fn finalize_file(download_id: u64, save_path: &str) -> Result<(), String> {
     migrate_legacy_temp(download_id, save_path);
     let pdm_path = temp_path(download_id);
@@ -84,6 +139,14 @@ pub async fn finalize_file(download_id: u64, save_path: &str) -> Result<(), Stri
     for i in 0..attempts {
         match tokio::fs::rename(&pdm_path, save_path).await {
             Ok(()) => return Ok(()),
+            Err(e) if is_cross_device_error(&e) => {
+                let src = PathBuf::from(&pdm_path);
+                let dst = PathBuf::from(save_path);
+                return tokio::task::spawn_blocking(move || copy_and_swap_sync(&src, &dst))
+                    .await
+                    .map_err(|e| format!("Failed cross-device finalize task: {e}"))?
+                    .map_err(|e| format!("Failed to move file across drives: {e}"));
+            }
             Err(e) => {
                 last_err = e.to_string();
                 if i + 1 < attempts {
@@ -143,5 +206,26 @@ mod tests {
         assert_eq!(length_shortfall(60, 100), Some(40));
         assert_eq!(length_shortfall(100, 100), None);
         assert_eq!(length_shortfall(60, 0), None);
+    }
+
+    #[test]
+    fn cross_device_copy_and_swap_moves_bytes_atomically() {
+        #[cfg(unix)]
+        assert!(is_cross_device_error(&std::io::Error::from_raw_os_error(18)));
+        #[cfg(windows)]
+        assert!(is_cross_device_error(&std::io::Error::from_raw_os_error(17)));
+
+        let dir = std::env::temp_dir().join(format!("pdm_xdev_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let src = dir.join("source.pdm");
+        let dst = dir.join("dest.bin");
+        let payload: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&src, &payload).unwrap();
+
+        copy_and_swap_sync(&src, &dst).unwrap();
+        assert!(!src.exists(), "source temp file must be cleaned up");
+        assert_eq!(std::fs::read(&dst).unwrap(), payload);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -20,8 +20,11 @@ use crate::types::{DownloadAck, Event, PendingDownloadRequest};
 pub fn parse_message(text: &str) -> PendingDownloadRequest {
     if let Ok(mut req) = serde_json::from_str::<PendingDownloadRequest>(text) {
         // A claim with an empty URL must stay a claim so the socket can reject
-        // it. Falling through would treat the JSON text as a raw download URL.
-        if !req.url.is_empty() || req.action.eq_ignore_ascii_case("claim") {
+        // it. A keepalive ping also has an empty URL and must not fall through.
+        if !req.url.is_empty()
+            || req.action.eq_ignore_ascii_case("claim")
+            || req.action.eq_ignore_ascii_case("ping")
+        {
             if !req.url.is_empty() {
                 req.headers = filter_headers(&req.headers);
             }
@@ -124,6 +127,7 @@ pub fn ack_json(ack: &DownloadAck) -> String {
 /// `Claim` only confirms the desktop is up. It must not open a download.
 #[derive(Debug, PartialEq, Eq)]
 enum WsRoute {
+    Ping,
     RejectEmpty,
     Claim,
     DuplicateAdd,
@@ -131,8 +135,63 @@ enum WsRoute {
 }
 
 const ADD_SEEN_TTL: Duration = Duration::from_secs(120);
+const PENDING_STORE_TTL: Duration = Duration::from_secs(120);
+const PENDING_STORE_MAX: usize = 32;
+
 static ADD_SEEN: LazyLock<Mutex<HashMap<String, Instant>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Bounded Claim-Check ticket store so a newly opened `NewDownloadWindow` can
+/// pull its exact `PendingDownloadRequest` (with full headers/cookies) by
+/// `?ticket=<request_id>`, avoiding the `tauri://created` vs `listen()` race
+/// without ever leaking a stale request onto a manual `+ New` click.
+pub struct PendingRequestStore {
+    inner: Mutex<Vec<(String, Instant, PendingDownloadRequest)>>,
+    seq: std::sync::atomic::AtomicU64,
+}
+
+impl Default for PendingRequestStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PendingRequestStore {
+    pub fn new() -> Self {
+        Self {
+            inner: Mutex::new(Vec::new()),
+            seq: std::sync::atomic::AtomicU64::new(1),
+        }
+    }
+
+    pub fn store(&self, mut req: PendingDownloadRequest) -> PendingDownloadRequest {
+        if req.request_id.trim().is_empty() {
+            let n = self.seq.fetch_add(1, Ordering::Relaxed);
+            req.request_id = format!("ticket-{}-{}", crate::types::now_str(), n);
+        }
+        let ticket = req.request_id.clone();
+        if let Ok(mut list) = self.inner.lock() {
+            let now = Instant::now();
+            list.retain(|(id, at, _)| id != &ticket && now.duration_since(*at) < PENDING_STORE_TTL);
+            if list.len() >= PENDING_STORE_MAX {
+                list.remove(0);
+            }
+            list.push((ticket, now, req.clone()));
+        }
+        req
+    }
+
+    pub fn take(&self, ticket: &str) -> Option<PendingDownloadRequest> {
+        if ticket.trim().is_empty() {
+            return None;
+        }
+        let mut list = self.inner.lock().ok()?;
+        let now = Instant::now();
+        list.retain(|(_, at, _)| now.duration_since(*at) < PENDING_STORE_TTL);
+        let pos = list.iter().position(|(id, _, _)| id == ticket)?;
+        Some(list.remove(pos).2)
+    }
+}
 
 /// First `add` for a request id is forwarded. A retry ACKs and does not open
 /// a second window. Empty ids (legacy clients) always forward.
@@ -151,6 +210,9 @@ fn add_should_forward(request_id: &str) -> bool {
 }
 
 fn route_request(req: &PendingDownloadRequest) -> WsRoute {
+    if req.action.eq_ignore_ascii_case("ping") {
+        return WsRoute::Ping;
+    }
     if req.action.eq_ignore_ascii_case("claim") {
         return if req.url.is_empty() {
             WsRoute::RejectEmpty
@@ -271,18 +333,23 @@ impl WsServer {
 
             match msg {
                 Message::Text(text) => {
-                    let preview = redact_log(&text);
-                    let max_preview = preview
-                        .char_indices()
-                        .nth(200)
-                        .map(|(i, _)| i)
-                        .unwrap_or(preview.len());
-                    log::info!("[ProxyDM WS] Received: {}", &preview[..max_preview]);
-
                     let request = parse_message(&text);
+                    if !request.action.eq_ignore_ascii_case("ping") {
+                        let preview = redact_log(&text);
+                        let max_preview = preview
+                            .char_indices()
+                            .nth(200)
+                            .map(|(i, _)| i)
+                            .unwrap_or(preview.len());
+                        log::info!("[ProxyDM WS] Received: {}", &preview[..max_preview]);
+                    }
                     let request_id = request.request_id.clone();
 
                     match route_request(&request) {
+                        WsRoute::Ping => {
+                            let _ = ws.send(Message::Text(r#"{"type":"pong"}"#.into()));
+                            continue;
+                        }
                         WsRoute::RejectEmpty => {
                             let ack = DownloadAck::fail(&request_id, "empty url");
                             let _ = ws.send(Message::Text(ack_json(&ack).into()));
@@ -476,5 +543,44 @@ mod tests {
         let s = ack_json(&fail);
         assert!(s.contains("\"accepted\":false"));
         assert!(s.contains("offline"));
+    }
+
+    #[test]
+    fn ping_frame_routes_as_ping_not_raw_url() {
+        let req = parse_message(r#"{"action":"ping"}"#);
+        assert_eq!(route_request(&req), WsRoute::Ping);
+    }
+
+    #[test]
+    fn pending_request_store_isolates_tickets_and_never_poisons_blank_reads() {
+        let store = PendingRequestStore::new();
+        let a = store.store(PendingDownloadRequest {
+            request_id: "t-a".into(),
+            url: "https://example.com/a.zip".into(),
+            cookies: "sid=a".into(),
+            ..Default::default()
+        });
+        let b = store.store(PendingDownloadRequest {
+            request_id: String::new(),
+            url: "https://example.com/b.zip".into(),
+            cookies: "sid=b".into(),
+            ..Default::default()
+        });
+        assert_eq!(a.request_id, "t-a");
+        assert!(!b.request_id.is_empty());
+
+        // Blank ticket (manual + New Download) must never read stored requests.
+        assert!(store.take("").is_none());
+        assert!(store.take("unknown").is_none());
+
+        // Both concurrent tickets are preserved without overwriting each other.
+        let got_a = store.take("t-a").unwrap();
+        assert_eq!(got_a.url, "https://example.com/a.zip");
+        assert_eq!(got_a.cookies, "sid=a");
+        assert!(store.take("t-a").is_none(), "ticket is single-claim");
+
+        let got_b = store.take(&b.request_id).unwrap();
+        assert_eq!(got_b.url, "https://example.com/b.zip");
+        assert_eq!(got_b.cookies, "sid=b");
     }
 }

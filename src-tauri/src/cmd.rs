@@ -15,9 +15,18 @@ pub struct AppState {
     pub bus: Arc<EventBus>,
     pub settings: Arc<SettingsService>,
     pub network: Arc<NetworkService>,
+    pub pending_requests: Arc<crate::ws::server::PendingRequestStore>,
 }
 
 // ── Tauri commands: thin adapters ──
+
+#[tauri::command]
+pub fn take_pending_download(
+    state: State<'_, Arc<AppState>>,
+    request_id: String,
+) -> Option<PendingDownloadRequest> {
+    state.pending_requests.take(&request_id)
+}
 
 #[tauri::command]
 pub fn list_downloads(state: State<'_, Arc<AppState>>) -> Result<Vec<DownloadItem>, PdmError> {
