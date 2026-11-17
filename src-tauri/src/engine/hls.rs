@@ -2,7 +2,9 @@ use crate::engine::transfer::{send_headers, Fetched, Transfer, Want};
 use crate::network::limiter::MultiLimiter;
 use crate::network::pool::NetworkPool;
 use crate::network::protocol::PerfStats;
-use crate::types::{EngineConfig, Event, EventKind, HlsVariantInfo, PdmError, PdmResult, Phase, Task};
+use crate::types::{
+    EngineConfig, Event, EventKind, HlsVariantInfo, PdmError, PdmResult, Phase, Task,
+};
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -577,7 +579,13 @@ seg1.m4s
         assert!(!p.drm);
         let map = p.init_map.expect("EXT-X-MAP parsed");
         assert_eq!(map.uri, "https://cdn.example/live/init.mp4");
-        assert_eq!(map.byte_range, Some(Task { offset: 0, length: 720 }));
+        assert_eq!(
+            map.byte_range,
+            Some(Task {
+                offset: 0,
+                length: 720
+            })
+        );
         assert_eq!(p.segments.len(), 2);
     }
 }

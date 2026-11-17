@@ -211,9 +211,13 @@ mod tests {
     #[test]
     fn cross_device_copy_and_swap_moves_bytes_atomically() {
         #[cfg(unix)]
-        assert!(is_cross_device_error(&std::io::Error::from_raw_os_error(18)));
+        assert!(is_cross_device_error(&std::io::Error::from_raw_os_error(
+            18
+        )));
         #[cfg(windows)]
-        assert!(is_cross_device_error(&std::io::Error::from_raw_os_error(17)));
+        assert!(is_cross_device_error(&std::io::Error::from_raw_os_error(
+            17
+        )));
 
         let dir = std::env::temp_dir().join(format!("pdm_xdev_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);

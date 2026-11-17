@@ -385,7 +385,7 @@ impl SpanLease {
 /// Registry of active worker leases for in-flight tail work stealing.
 #[derive(Default)]
 pub struct LeasePool {
-    leases: Mutex<Vec< std::sync::Arc<SpanLease> >>,
+    leases: Mutex<Vec<std::sync::Arc<SpanLease>>>,
 }
 
 impl LeasePool {
@@ -625,7 +625,9 @@ mod tests {
         assert_eq!(allow, 512 * 1024);
 
         // Idle Worker B steals half of the remaining unreserved tail.
-        let stolen = pool.steal_largest(MIN_INFLIGHT_SPLIT).expect("should steal");
+        let stolen = pool
+            .steal_largest(MIN_INFLIGHT_SPLIT)
+            .expect("should steal");
         assert!(stolen.offset > 512 * 1024, "must never cross inflight_end");
         assert_eq!(stolen.offset % ALIGN, 0);
         assert_eq!(stolen.offset + stolen.length, total);
