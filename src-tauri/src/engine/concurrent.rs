@@ -114,7 +114,15 @@ impl ConcurrentDownloader {
             )));
         }
 
-        let num_workers = num_conns.min(tasks.len() as u32).max(1);
+        let remaining_total: u64 = tasks.iter().map(|t| t.length).sum();
+        let splittable_cap = if remaining_total > 0 {
+            (remaining_total / chunk::MIN_INFLIGHT_SPLIT)
+                .max(tasks.len() as u64)
+                .max(1) as u32
+        } else {
+            tasks.len().max(1) as u32
+        };
+        let num_workers = num_conns.min(splittable_cap).max(1);
         log::info!(
             "[ProxyDM] concurrent id={} workers={} chunks={} total_size={} is_resume={}",
             cfg.id,
@@ -208,6 +216,8 @@ impl ConcurrentDownloader {
             stop.clone(),
             perf.clone(),
         ));
+        let leases = Arc::new(chunk::LeasePool::new());
+        let next_worker_idx = Arc::new(AtomicU32::new(0));
         let desired = cfg
             .desired_connections
             .clone()
@@ -216,7 +226,11 @@ impl ConcurrentDownloader {
         let phase = std::sync::Arc::new(PhaseCounts::default());
 
         let make_worker = || ChunkWorker {
+            pool: self.pool.clone(),
+            proxy_url: cfg.proxy_url.clone(),
             queue: queue.clone(),
+            leases: leases.clone(),
+            next_worker_idx: next_worker_idx.clone(),
             file: file.clone(),
             transfer: transfer.clone(),
             abort_reason: abort_reason.clone(),
@@ -360,7 +374,10 @@ impl ConcurrentDownloader {
             });
         }
 
-        let _ = file.sync_all();
+        {
+            let f = file.clone();
+            let _ = tokio::task::spawn_blocking(move || f.sync_all()).await;
+        }
 
         let save_snapshot = || {
             let saved = crate::types::DownloadState {
@@ -399,8 +416,6 @@ impl ConcurrentDownloader {
         // Release our handle before the rename — Windows refuses to rename a
         // file that still has an open handle with default share flags.
         drop(file);
-        let _ = std::fs::File::open(crate::engine::file_io::temp_path(cfg.id))
-            .and_then(|f| f.sync_all());
         finalize_file(cfg.id, &cfg.save_path).await?;
 
         let _ = self.event_tx.send(Event {
@@ -414,7 +429,11 @@ impl ConcurrentDownloader {
 
 #[derive(Clone)]
 struct ChunkWorker {
+    pool: Arc<NetworkPool>,
+    proxy_url: String,
     queue: Arc<ChunkQueue>,
+    leases: Arc<chunk::LeasePool>,
+    next_worker_idx: Arc<AtomicU32>,
     file: Arc<std::fs::File>,
     /// Its stop flag is this engine's: a user pause or an internal abort.
     transfer: Arc<Transfer>,
@@ -466,15 +485,28 @@ fn publish_phase(counts: &PhaseCounts, tx: &mpsc::UnboundedSender<Event>, id: u6
 fn spawn_chunk_worker(env: ChunkWorker) -> tokio::task::JoinHandle<()> {
     env.live_workers.fetch_add(1, Ordering::Relaxed);
     tokio::spawn(async move {
-        let stop = &env.transfer.stop;
-        let perf = &env.transfer.perf;
-        let mut budget = env.transfer.retry_budget();
+        let worker_idx = env.next_worker_idx.fetch_add(1, Ordering::Relaxed);
+        let proxy_opt = if env.proxy_url.is_empty() {
+            None
+        } else {
+            Some(env.proxy_url.as_str())
+        };
+        let transfer = match env.pool.get_lane_client(proxy_opt, worker_idx) {
+            Ok(c) => env.transfer.with_client(c),
+            Err(_) => env.transfer.with_client(env.transfer.client.clone()),
+        };
+        let lease = env.leases.register();
+        let stop = &transfer.stop;
+        let perf = &transfer.perf;
+        let mut budget = transfer.retry_budget();
         let mut budget_key: Option<(u64, u64)> = None;
         let stop_worker = |live: &AtomicU32| {
             live.fetch_sub(1, Ordering::Relaxed);
         };
-        let abort = |task: Task, reason: PdmError| {
-            env.queue.push(task);
+        let abort = |task: Option<Task>, reason: PdmError| {
+            if let Some(t) = task {
+                env.queue.push(t);
+            }
             if let Ok(mut guard) = env.abort_reason.lock() {
                 if guard.is_none() {
                     *guard = Some(reason);
@@ -500,22 +532,44 @@ fn spawn_chunk_worker(env: ChunkWorker) -> tokio::task::JoinHandle<()> {
             }
             let task = match env.queue.pop_or_steal() {
                 Some(t) => t,
-                None => match env.queue.split_largest(2 * 1024 * 1024) {
+                None => match env.queue.split_largest(chunk::MIN_INFLIGHT_SPLIT) {
                     Some(t) => t,
-                    None => {
-                        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
-                        if env.queue.is_empty() {
-                            stop_worker(&env.live_workers);
-                            return;
+                    None => match env.leases.steal_largest(chunk::MIN_INFLIGHT_SPLIT) {
+                        Some(t) => {
+                            log::debug!(
+                                "[ProxyDM] worker#{} stole in-flight tail offset={} len={}",
+                                worker_idx,
+                                t.offset,
+                                t.length
+                            );
+                            t
                         }
-                        continue;
-                    }
+                        None => {
+                            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+                            if let Some(stolen) = env.leases.steal_largest(chunk::MIN_INFLIGHT_SPLIT)
+                            {
+                                stolen
+                            } else if env.queue.is_empty() && !env.leases.any_active() {
+                                stop_worker(&env.live_workers);
+                                return;
+                            } else if env.queue.is_empty() {
+                                // Active workers are finishing unstealable (<2 MiB) tails;
+                                // keep one spare cycle only while work could bounce back, then exit.
+                                stop_worker(&env.live_workers);
+                                return;
+                            } else {
+                                continue;
+                            }
+                        }
+                    },
                 },
             };
             log::debug!(
-                "[ProxyDM] worker pop id={} offset={}",
+                "[ProxyDM] worker#{} pop id={} offset={} len={}",
+                worker_idx,
                 env.download_id,
-                task.offset
+                task.offset,
+                task.length
             );
             let key = (task.offset, task.length);
             if budget_key != Some(key) {
@@ -523,74 +577,113 @@ fn spawn_chunk_worker(env: ChunkWorker) -> tokio::task::JoinHandle<()> {
                 budget_key = Some(key);
             }
 
+            let active_lease = if task.length > 0 {
+                lease.activate(task.offset, task.offset + task.length);
+                Some(lease.as_ref())
+            } else {
+                None
+            };
+
             env.phase.working.fetch_add(1, Ordering::Relaxed);
             publish_phase(&env.phase, &env.event_tx, env.download_id);
-            let result = env
-                .transfer
-                .attempt(
+            let result = transfer
+                .attempt_leased(
                     &env.url,
                     &env.file,
                     &Want::Range(task.clone()),
                     env.expected_total,
+                    active_lease,
                     &on_write,
                 )
                 .await;
+            let lease_rem = if task.length > 0 {
+                lease.finish()
+            } else {
+                None
+            };
             env.phase.working.fetch_sub(1, Ordering::Relaxed);
 
             let failure = match result {
                 Attempt::Complete => {
+                    if let Some(rem) = lease_rem {
+                        env.queue.push(rem);
+                    }
                     budget.reset();
                     continue;
                 }
                 Attempt::Partial { remaining } => {
-                    log::debug!(
-                        "[ProxyDM] task offset={} partial, re-queueing {} bytes",
-                        task.offset,
-                        remaining.length
-                    );
-                    if !stop.load(Ordering::Relaxed) {
-                        // A transfer that stopped mid-range (body idle or a
-                        // dropped stream) is a stall, not a clean pause.
-                        perf.note_stall();
+                    let rem = if task.length > 0 {
+                        lease_rem
+                    } else {
+                        Some(remaining)
+                    };
+                    if let Some(rem) = rem {
+                        log::debug!(
+                            "[ProxyDM] task offset={} partial, re-queueing {} bytes",
+                            task.offset,
+                            rem.length
+                        );
+                        if !stop.load(Ordering::Relaxed) {
+                            perf.note_stall();
+                            budget.reset();
+                        }
+                        env.queue.push(rem);
+                    } else {
                         budget.reset();
                     }
-                    env.queue.push(remaining);
                     continue;
                 }
                 Attempt::RangeLost => {
-                    abort(task, PdmError::RangeLost);
+                    let rem = if task.length > 0 { lease_rem } else { Some(task) };
+                    abort(rem, PdmError::RangeLost);
                     stop_worker(&env.live_workers);
                     return;
                 }
                 Attempt::Refused(code) => {
-                    abort(task, PdmError::Http(code));
+                    let rem = if task.length > 0 { lease_rem } else { Some(task) };
+                    abort(rem, PdmError::Http(code));
                     stop_worker(&env.live_workers);
                     return;
                 }
                 Attempt::Failed(error) => error,
             };
 
+            let retry_task = if task.length > 0 {
+                match lease_rem {
+                    Some(rem) => rem,
+                    None => {
+                        budget.reset();
+                        continue;
+                    }
+                }
+            } else {
+                task
+            };
+
             let Some(delay) = budget.take() else {
                 log::error!(
                     "[ProxyDM] retries exhausted for offset={}, stopping: {}",
-                    task.offset,
+                    retry_task.offset,
                     failure
                 );
-                abort(task, PdmError::RetriesExhausted(Box::new(failure)));
+                abort(
+                    Some(retry_task),
+                    PdmError::RetriesExhausted(Box::new(failure)),
+                );
                 stop_worker(&env.live_workers);
                 return;
             };
             log::warn!(
                 "[ProxyDM] chunk offset={} failed, retrying in {:?}: {}",
-                task.offset,
+                retry_task.offset,
                 delay,
                 failure
             );
             perf.note_retry();
-            env.queue.push(task);
+            env.queue.push(retry_task);
             env.phase.retrying.fetch_add(1, Ordering::Relaxed);
             publish_phase(&env.phase, &env.event_tx, env.download_id);
-            let go_on = env.transfer.wait(delay).await;
+            let go_on = transfer.wait(delay).await;
             env.phase.retrying.fetch_sub(1, Ordering::Relaxed);
             if !go_on {
                 stop_worker(&env.live_workers);
@@ -625,5 +718,137 @@ mod tests {
             rx.try_recv().unwrap().kind,
             EventKind::PhaseChanged(Phase::Retrying)
         );
+    }
+
+    #[tokio::test]
+    async fn slow_straggler_chunk_is_stolen_inflight_with_exact_bytes() {
+        use std::sync::atomic::AtomicUsize;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        // 12 MiB object; 2 initial 6 MiB chunks, 4 workers.
+        // Request #0 crawls at ~32 KiB / 100ms (~320 KiB/s → ~19s without stealing).
+        // Subsequent requests run unthrottled, repeatedly stealing the slow tail
+        // down to <2 MiB so the whole 12 MiB finishes in ~3-6s with exact bytes.
+        let size = 12 * 1024 * 1024usize;
+        let data: Arc<Vec<u8>> = Arc::new((0..size).map(|i| ((i * 7 + 3) % 251) as u8).collect());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let req_idx = Arc::new(AtomicUsize::new(0));
+        let server_data = data.clone();
+
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let idx = req_idx.fetch_add(1, Ordering::Relaxed);
+                let data = server_data.clone();
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let mut raw = Vec::new();
+                    loop {
+                        let n = stream.read(&mut buf).await.unwrap_or(0);
+                        if n == 0 {
+                            return;
+                        }
+                        raw.extend_from_slice(&buf[..n]);
+                        if raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    let req = String::from_utf8_lossy(&raw);
+                    let (start, end) = req
+                        .lines()
+                        .find(|l| l.to_ascii_lowercase().starts_with("range:"))
+                        .and_then(|l| l.split("bytes=").nth(1))
+                        .and_then(|s| s.trim().split_once('-'))
+                        .and_then(|(a, b)| {
+                            Some((
+                                a.parse::<usize>().ok()?,
+                                b.parse::<usize>().ok().unwrap_or(data.len() - 1),
+                            ))
+                        })
+                        .unwrap_or((0, data.len() - 1));
+                    let end = end.min(data.len() - 1);
+                    let slice = &data[start..=end];
+                    let hdr = format!(
+                        "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {start}-{end}/{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        data.len(),
+                        slice.len()
+                    );
+                    if stream.write_all(hdr.as_bytes()).await.is_err() {
+                        return;
+                    }
+                    if idx == 0 {
+                        for chunk in slice.chunks(64 * 1024) {
+                            if stream.write_all(chunk).await.is_err() {
+                                return;
+                            }
+                            tokio::time::sleep(Duration::from_millis(80)).await;
+                        }
+                    } else {
+                        let _ = stream.write_all(slice).await;
+                    }
+                });
+            }
+        });
+
+        let id = (std::process::id() as u64) * 100_000 + 777;
+        let save_path = std::env::temp_dir()
+            .join(format!("pdm_steal_{id}.bin"))
+            .to_string_lossy()
+            .to_string();
+        let half = (size / 2) as u64;
+        let cfg = EngineConfig {
+            url: format!("http://127.0.0.1:{port}/straggler.bin"),
+            save_path: save_path.clone(),
+            id,
+            file_name: "straggler.bin".into(),
+            is_resume: false,
+            headers: std::collections::HashMap::new(),
+            proxy_url: String::new(),
+            proxy_name: String::new(),
+            total_size: size as u64,
+            supports_range: true,
+            rate_limit_bps: 0,
+            connections: 4,
+            max_retries: 2,
+            user_agent: "test".into(),
+            resume_tasks: vec![],
+            downloaded: 0,
+            part_ranges: vec![(0, half), (half, size as u64)],
+            part_downloaded: vec![0, 0],
+            desired_connections: Some(Arc::new(AtomicU32::new(4))),
+            auto_connections: false,
+            auto_flag: Some(Arc::new(AtomicBool::new(false))),
+            is_hls: false,
+        };
+
+        let pool = Arc::new(NetworkPool::new(false));
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let engine = ConcurrentDownloader::new(pool, tx);
+        let started = Instant::now();
+        let on_resume: crate::engine::OnResumeState = Box::new(|_, _| {});
+        engine
+            .download(
+                &cfg,
+                Arc::new(MultiLimiter::new(0, 0)),
+                Arc::new(AtomicBool::new(false)),
+                &on_resume,
+            )
+            .await
+            .expect("straggler download should complete");
+        let elapsed = started.elapsed();
+
+        // Without in-flight stealing: 6 MiB / (64 KiB / 80ms) = 7.68 seconds minimum.
+        // With in-flight stealing down to <2 MiB, it finishes in ~2.5s.
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "in-flight stealing did not rescue slow straggler fast enough: {elapsed:?}"
+        );
+        let written = std::fs::read(&save_path).unwrap();
+        assert_eq!(written.len(), data.len());
+        assert_eq!(written, *data, "stolen ranges must produce exact bytes");
+        let _ = std::fs::remove_file(&save_path);
     }
 }

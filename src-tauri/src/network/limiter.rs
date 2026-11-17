@@ -96,6 +96,11 @@ impl MultiLimiter {
         self.per_download.set_bps(bps);
     }
 
+    #[inline]
+    pub fn is_unlimited(&self) -> bool {
+        self.global.bps() == 0 && self.per_download.bps() == 0
+    }
+
     pub async fn wait_n(&self, n: u64) {
         self.global.wait_n(n).await;
         self.per_download.wait_n(n).await;

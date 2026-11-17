@@ -2,6 +2,7 @@
 //! (throttle, stall detection, buffered writes, stop) and the retry budget.
 //! Engines decide what to fetch and where it goes; no engine reads a body.
 
+use crate::engine::chunk::SpanLease;
 use crate::engine::file_io::write_at;
 use crate::headers::prepare_request;
 use crate::network::limiter::MultiLimiter;
@@ -16,7 +17,7 @@ use std::time::{Duration, Instant};
 /// How long a body may sit with no bytes before it is stalled.
 /// Limiter waits happen outside this timer.
 pub const BODY_IDLE: Duration = Duration::from_secs(30);
-const WRITE_BUFFER: usize = 256 * 1024;
+const WRITE_BUFFER: usize = 512 * 1024;
 const PROGRESS_FLUSH: Duration = Duration::from_millis(250);
 /// Longest a blocked read or backoff goes without looking at the stop flag.
 const STOP_POLL: Duration = Duration::from_millis(100);
@@ -125,6 +126,20 @@ impl Transfer {
         }
     }
 
+    pub fn with_client(&self, client: reqwest::Client) -> Self {
+        Self {
+            client,
+            headers: self.headers.clone(),
+            user_agent: self.user_agent.clone(),
+            limiter: self.limiter.clone(),
+            stop: self.stop.clone(),
+            max_retries: self.max_retries,
+            perf: self.perf.clone(),
+            idle: self.idle,
+            backoff: self.backoff,
+        }
+    }
+
     fn stopped(&self) -> bool {
         self.stop.load(Ordering::Relaxed)
     }
@@ -152,6 +167,21 @@ impl Transfer {
         file: &std::fs::File,
         want: &Want,
         expected_total: u64,
+        on_write: &(dyn Fn(u64, u64) + Sync),
+    ) -> Attempt {
+        self.attempt_leased(url, file, want, expected_total, None, on_write)
+            .await
+    }
+
+    /// One request with an optional `SpanLease` allowing idle sibling workers
+    /// to dynamically steal the uncommitted upper half of a slow tail chunk.
+    pub async fn attempt_leased(
+        &self,
+        url: &str,
+        file: &std::fs::File,
+        want: &Want,
+        expected_total: u64,
+        lease: Option<&SpanLease>,
         on_write: &(dyn Fn(u64, u64) + Sync),
     ) -> Attempt {
         let (task, range) = match want {
@@ -354,8 +384,13 @@ impl Transfer {
                 tokio::select! {
                     biased;
                     _ = tokio::time::sleep(PROGRESS_FLUSH.saturating_sub(last_flush.elapsed())) => {
-                        match flush(file, &mut buf, at + written, on_write) {
-                            Ok(n) => written += n,
+                        match flush_leased(file, &mut buf, at + written, lease, on_write) {
+                            Ok((n, reached_limit)) => {
+                                written += n;
+                                if reached_limit {
+                                    break BodyEnd::Ended;
+                                }
+                            }
                             Err(e) => break BodyEnd::WriteFailed(e),
                         }
                         last_flush = Instant::now();
@@ -374,30 +409,49 @@ impl Transfer {
                 continue;
             }
             self.perf.note_body();
-            // A stop ends the throttle wait: the bytes are already here, and
-            // a tight limit must not hold a pause. The chunk below is kept and
-            // written either way, so dropping the wait costs at most the burst
-            // one limiter accounts for — it never loses bytes.
-            tokio::select! {
-                biased;
-                _ = self.limiter.wait_n(chunk.len() as u64) => {}
-                _ = until_cancelled(Some(&self.stop)) => {}
+            // Fast-path when neither global nor per-download limit is active.
+            if !self.limiter.is_unlimited() {
+                // A stop ends the throttle wait: the bytes are already here, and
+                // a tight limit must not hold a pause. The chunk below is kept and
+                // written either way, so dropping the wait costs at most the burst
+                // one limiter accounts for — it never loses bytes.
+                tokio::select! {
+                    biased;
+                    _ = self.limiter.wait_n(chunk.len() as u64) => {}
+                    _ = until_cancelled(Some(&self.stop)) => {}
+                }
             }
             // Idle starts after throttling. A user limit must not look like a stall.
             last_byte = Instant::now();
 
             buf.extend_from_slice(&chunk);
 
-            // Bound the write to what was asked for: a server that ignores
-            // Range on the offset-0 task streams the WHOLE file, and
-            // everything past the cap belongs to other tasks.
-            if cap > 0 && written + buf.len() as u64 >= cap {
-                buf.truncate((cap - written) as usize);
+            // Bound the write to what was asked for (and any dynamically shrunk
+            // lease upper bound when an idle worker stole our tail).
+            let effective_cap = match lease {
+                Some(l) if task.length > 0 => {
+                    let lease_cap = l.limit_end().saturating_sub(at);
+                    if cap > 0 {
+                        cap.min(lease_cap)
+                    } else {
+                        lease_cap
+                    }
+                }
+                _ => cap,
+            };
+            let bounded = cap > 0 || (lease.is_some() && task.length > 0);
+            if bounded && written + buf.len() as u64 >= effective_cap {
+                buf.truncate(effective_cap.saturating_sub(written) as usize);
                 break BodyEnd::Ended;
             }
             if buf.len() >= WRITE_BUFFER {
-                match flush(file, &mut buf, at + written, on_write) {
-                    Ok(n) => written += n,
+                match flush_leased(file, &mut buf, at + written, lease, on_write) {
+                    Ok((n, reached_limit)) => {
+                        written += n;
+                        if reached_limit {
+                            break BodyEnd::Ended;
+                        }
+                    }
                     Err(e) => break BodyEnd::WriteFailed(e),
                 }
                 last_flush = Instant::now();
@@ -405,12 +459,17 @@ impl Transfer {
         };
 
         // Whatever is buffered goes to disk before the rest is handed back.
-        let end = match flush(file, &mut buf, at + written, on_write) {
-            Ok(n) => {
+        let end = match flush_leased(file, &mut buf, at + written, lease, on_write) {
+            Ok((n, _)) => {
                 written += n;
                 end
             }
             Err(e) => BodyEnd::WriteFailed(e),
+        };
+
+        let target_length = match lease {
+            Some(l) if task.length > 0 => l.limit_end().saturating_sub(at).min(task.length),
+            _ => task.length,
         };
 
         let remaining = if task.length == 0 {
@@ -424,10 +483,10 @@ impl Transfer {
                 offset: at + written,
                 length: 0,
             }
-        } else if written < task.length {
+        } else if written < target_length {
             Task {
                 offset: at + written,
-                length: task.length - written,
+                length: target_length - written,
             }
         } else {
             return Attempt::Complete;
@@ -524,20 +583,40 @@ enum BodyEnd {
     WriteFailed(std::io::Error),
 }
 
-fn flush(
+fn flush_leased(
     file: &std::fs::File,
     buf: &mut Vec<u8>,
     at: u64,
+    lease: Option<&SpanLease>,
     on_write: &(dyn Fn(u64, u64) + Sync),
-) -> std::io::Result<u64> {
+) -> std::io::Result<(u64, bool)> {
+    let Some(lease) = lease else {
+        if buf.is_empty() {
+            return Ok((0, false));
+        }
+        write_at(file, buf, at)?;
+        let n = buf.len() as u64;
+        on_write(at, n);
+        buf.clear();
+        return Ok((n, false));
+    };
+
     if buf.is_empty() {
-        return Ok(0);
+        return Ok((0, lease.limit_end() <= at));
     }
-    write_at(file, buf, at)?;
-    let n = buf.len() as u64;
-    on_write(at, n);
+    let (write_off, allow) = lease.begin_write(buf.len());
+    if allow == 0 {
+        buf.clear();
+        return Ok((0, true));
+    }
+    if let Err(e) = write_at(file, &buf[..allow], write_off) {
+        lease.rollback_write();
+        return Err(e);
+    }
+    let (committed, done) = lease.commit_write();
+    on_write(write_off, committed);
     buf.clear();
-    Ok(n)
+    Ok((committed, done))
 }
 
 /// `Content-Range: bytes start-end/total` (`total` may be `*`).

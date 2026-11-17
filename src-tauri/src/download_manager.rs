@@ -373,16 +373,30 @@ impl DownloadManager {
             hls_variants: vec![],
         };
         if result.is_hls {
+            let raw_probe_name = info.file_name.clone();
+            info.file_name = normalize_hls_filename(&raw_probe_name, false);
+            let ua = headers
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("user-agent"))
+                .map(|(_, v)| v.as_str())
+                .unwrap_or(&settings.user_agent);
             if let Ok(text) = crate::engine::hls::fetch_text(
-                &url,
+                info.final_url.as_str(),
                 &headers,
                 proxy_url.as_deref(),
                 pool.as_ref(),
-                &settings.user_agent,
+                ua,
             )
             .await
             {
-                if let Ok(p) = crate::engine::hls::parse_playlist(&text, &url) {
+                if let Ok(p) = crate::engine::hls::parse_playlist(&text, &info.final_url) {
+                    let is_fmp4 = p.init_map.as_ref().is_some_and(|m| {
+                        let u = m.uri.to_ascii_lowercase();
+                        u.contains(".mp4") || u.contains(".m4s")
+                    });
+                    if is_fmp4 {
+                        info.file_name = normalize_hls_filename(&raw_probe_name, true);
+                    }
                     info.hls_variants = p.variants;
                     if p.drm {
                         return Err(PdmError::Unsupported(
@@ -638,19 +652,30 @@ impl DownloadManager {
                 }
             }
             Err(_) => {
-                crate::probe::probe_with_fallback(
-                    &spec.url,
-                    &headers,
-                    proxy_url_str.as_deref(),
-                    &pool,
-                    &user_agents,
-                    &spec.file_name,
-                )
-                .await
+                // `cached_probe` already exhausted primary + fallback proxy attempts.
+                // Derive blind-download outcome directly without a second network round.
+                let raw_name = if spec.file_name.is_empty() {
+                    crate::filename::from_url(&spec.url).unwrap_or_else(|| "download".to_string())
+                } else {
+                    spec.file_name.clone()
+                };
+                let is_hls = spec.url.to_ascii_lowercase().contains(".m3u8")
+                    || raw_name.to_ascii_lowercase().ends_with(".m3u8");
+                crate::probe::ProbeOutcome {
+                    file_name: crate::filename::sanitize(&raw_name),
+                    file_size: 0,
+                    supports_range: false,
+                    is_hls,
+                    ..Default::default()
+                }
             }
         };
 
-        let file_name = outcome.file_name;
+        let file_name = if outcome.is_hls {
+            crate::filename::sanitize(&normalize_hls_filename(&outcome.file_name, false))
+        } else {
+            outcome.file_name
+        };
         let file_size = outcome.file_size;
         let supports_range = outcome.supports_range;
 
@@ -770,6 +795,28 @@ impl DownloadManager {
         log::debug!("[startup] workers={}ms", startup.elapsed().as_millis());
 
         Ok(id)
+    }
+}
+
+/// Rewrite `.m3u8` / `.m3u` playlist extensions onto the actual merged container
+/// extension (`.mp4` for fMP4 playlists with `#EXT-X-MAP`, `.ts` otherwise) so
+/// double-clicking the finished file plays it instead of opening as a playlist.
+pub(crate) fn normalize_hls_filename(name: &str, fmp4: bool) -> String {
+    let trimmed = name.trim();
+    let target_ext = if fmp4 { ".mp4" } else { ".ts" };
+    let lower = trimmed.to_ascii_lowercase();
+    let stem = if lower.ends_with(".m3u8") {
+        &trimmed[..trimmed.len() - 5]
+    } else if lower.ends_with(".m3u") {
+        &trimmed[..trimmed.len() - 4]
+    } else {
+        return trimmed.to_string();
+    };
+    let clean_stem = stem.trim_end_matches(['.', ' ', '_']);
+    if clean_stem.is_empty() {
+        format!("stream{target_ext}")
+    } else {
+        format!("{clean_stem}{target_ext}")
     }
 }
 
