@@ -13,6 +13,12 @@ import {
   interceptDecision,
   ignoreReason,
   isMediaResponse,
+  parseResponseSizing,
+  parseContentDispositionFilename,
+  normalizeMediaUrl,
+  cleanPageTitle,
+  navigationClearsMedia,
+  describeMediaItem,
 } from "../../browsers-extension/shared/protocol.js";
 import "../../browsers-extension/shared/panel.js";
 
@@ -281,6 +287,17 @@ describe("media panel: which element to sit above", () => {
     mount('<div>no media here</div>');
     expect(mediaPanel.pickElement("https://cdn.example/a.mp4", document)).toBe(null);
   });
+
+  it("falls back to a player-sized iframe embed when no <video>/<audio> exists in top DOM", () => {
+    mount(
+      '<iframe src="https://ads.example/banner.html"></iframe>' +
+        '<iframe id="player" src="https://player.bilibili.com/player.html?bvid=BV1" allowfullscreen></iframe>',
+    );
+    const [ad, player] = Array.from(document.querySelectorAll("iframe"));
+    size(ad, 728, 90);
+    size(player, 800, 450);
+    expect(mediaPanel.pickElement("https://upos.bilivideo.com/1-30080.m4s", document)).toBe(player);
+  });
 });
 
 describe("which responses count as media", () => {
@@ -316,5 +333,147 @@ describe("which responses count as media", () => {
     expect(isMediaResponse({ url: "https://site/page", contentType: "text/html" })).toBe(false);
     expect(isMediaResponse({ url: "https://api/data.json", contentType: "application/json" })).toBe(false);
     expect(isMediaResponse({ url: "https://api/playurl?bvid=1", contentType: "application/octet-stream" })).toBe(false);
+  });
+});
+
+describe("media sniffing & interception edge cases", () => {
+  it("extracts full stream size from Content-Range on 206 Range responses", () => {
+    const sizing = parseResponseSizing([
+      { name: "Content-Length", value: "986" },
+      { name: "Content-Range", value: "bytes 0-985/64829104" },
+      { name: "Accept-Ranges", value: "bytes" },
+    ]);
+    expect(sizing.totalSize).toBe(64829104);
+    expect(sizing.contentLength).toBe(986);
+    expect(sizing.hasContentRange).toBe(true);
+    expect(sizing.acceptRanges).toBe("bytes");
+  });
+
+  it("parses RFC 5987 filename* before legacy filename in Content-Disposition", () => {
+    const header =
+      "attachment; filename=\"fallback.mp4\"; filename*=UTF-8''%E6%B5%8B%E8%AF%95%201080p.mp4";
+    expect(parseContentDispositionFilename(header)).toBe("测试 1080p.mp4");
+  });
+
+  it("strips unsigned numeric range query params without touching signed range or part", () => {
+    expect(
+      normalizeMediaUrl("https://cdn.example/video.mp4?token=abc&range=0-985"),
+    ).toBe("https://cdn.example/video.mp4?token=abc");
+    expect(
+      normalizeMediaUrl("https://cdn.example/video.mp4?bytestart=0&byteend=999&id=7"),
+    ).toBe("https://cdn.example/video.mp4?id=7");
+    // Signed range listed in sparams must remain untouched so CDN HMAC stays valid.
+    const signedUrl =
+      "https://rr1---sn.googlevideo.com/videoplayback?itag=137&range=0-999&sparams=expire,id,itag,range&sig=xyz";
+    expect(normalizeMediaUrl(signedUrl)).toBe(signedUrl);
+    // Multi-part file downloads (?part=2) must never be stripped.
+    const partUrl = "https://files.example/archive.zip?id=42&part=2";
+    expect(normalizeMediaUrl(partUrl)).toBe(partUrl);
+  });
+
+  it("filters ISO-BMFF / TS streaming segments while keeping 206 DASH tracks and small 200 audio clips", () => {
+    expect(
+      shouldSkipMediaUrl("https://cdn.example/chunk-001", {
+        contentType: "video/mp2t",
+        statusCode: 200,
+        size: 512000,
+      }),
+    ).toBe(true);
+    // Live/chunked 200 OK small .m4s fragment without Content-Range (missing ftyp/moov) -> skip
+    expect(
+      shouldSkipMediaUrl("https://cdn.example/seg-14.m4s", {
+        contentType: "video/iso.segment",
+        statusCode: 200,
+        size: 320 * 1024,
+        hasContentRange: false,
+      }),
+    ).toBe(true);
+    // Bilibili 206 Partial Content .m4s full track -> keep!
+    expect(
+      shouldSkipMediaUrl("https://upos.bilivideo.com/137649199-1-30080.m4s?e=1", {
+        contentType: "application/octet-stream",
+        statusCode: 206,
+        size: 64829104,
+        hasContentRange: true,
+      }),
+    ).toBe(false);
+    // Short 14 KB dictionary pronunciation MP3 (200 OK) -> keep!
+    expect(
+      shouldSkipMediaUrl("https://dict.example/audio/hello.mp3", {
+        contentType: "audio/mpeg",
+        statusCode: 200,
+        size: 14 * 1024,
+        hasContentRange: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("disambiguates Bilibili silent video .m4s from audio .m4s with page title and quality", () => {
+    const pageTitle = "(2) Rust 异步下载引擎解析_哔哩哔哩_bilibili";
+    expect(cleanPageTitle(pageTitle)).toBe("Rust 异步下载引擎解析");
+
+    const video = describeMediaItem({
+      url: "https://upos.bilivideo.com/upgcxcode/137649199-1-30080.m4s?deadline=1",
+      contentType: "application/octet-stream",
+      pageTitle,
+    });
+    expect(video.kind).toBe("VIDEO");
+    expect(video.badge).toBe("VIDEO 1080p");
+    expect(video.suggestedFilename).toBe("Rust 异步下载引擎解析 [Video 1080p].mp4");
+
+    const audio = describeMediaItem({
+      url: "https://upos.bilivideo.com/upgcxcode/137649199-1-30280.m4s?deadline=1",
+      contentType: "application/octet-stream",
+      pageTitle,
+    });
+    expect(audio.kind).toBe("AUDIO");
+    expect(audio.badge).toBe("AUDIO");
+    expect(audio.suggestedFilename).toBe("Rust 异步下载引擎解析 [Audio].m4a");
+  });
+
+  it("preserves sniffed media across SPA tracking-param replaceState but clears on real video change", () => {
+    expect(
+      navigationClearsMedia(
+        "https://www.bilibili.com/video/BV1xx411c7mD/?spm_id_from=333.1007",
+        "https://www.bilibili.com/video/BV1xx411c7mD/?vd_source=abcdef",
+      ),
+    ).toBe(false);
+    expect(
+      navigationClearsMedia(
+        "https://www.bilibili.com/video/BV1xx411c7mD/?p=1",
+        "https://www.bilibili.com/video/BV1xx411c7mD/?p=2",
+      ),
+    ).toBe(true);
+    expect(
+      navigationClearsMedia(
+        "https://www.youtube.com/watch?v=aaa111&feature=share",
+        "https://www.youtube.com/watch?v=bbb222",
+      ),
+    ).toBe(true);
+  });
+
+  it("leaves POST exports and non-resumable dynamic streams to the browser", () => {
+    const base = {
+      enabled: true,
+      connected: true,
+      url: "https://app.example/export/report.csv",
+      filename: "report.csv",
+      fileSize: 0,
+      settings: { minSize: 0, ignoredDomains: "", ignoredExtensions: "" },
+      bypass: false,
+      restored: false,
+    };
+    expect(interceptDecision({ ...base, method: "POST" })).toEqual({
+      take: false,
+      reason: "non-get",
+    });
+    expect(interceptDecision({ ...base, method: "GET", knownDynamicStream: true })).toEqual({
+      take: false,
+      reason: "dynamic-stream",
+    });
+    expect(interceptDecision({ ...base, url: "ftp://files.example/pub.zip" })).toEqual({
+      take: false,
+      reason: "unsupported-scheme",
+    });
   });
 });
