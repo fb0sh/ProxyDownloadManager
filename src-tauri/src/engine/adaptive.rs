@@ -55,8 +55,8 @@ pub struct AdaptiveConfig {
 impl Default for AdaptiveConfig {
     fn default() -> Self {
         Self {
-            min_window: Duration::from_millis(2500),
-            min_bytes: 4 * 1024 * 1024,
+            min_window: Duration::from_millis(1200),
+            min_bytes: 512 * 1024,
             upshift_gain: 0.15,
             cooldown: Duration::from_secs(15),
             max_failed_upshifts: 2,

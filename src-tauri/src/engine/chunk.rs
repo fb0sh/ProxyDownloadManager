@@ -5,6 +5,8 @@ use std::sync::Mutex;
 const ALIGN: u64 = 4096;
 pub const MAX_CONNECTIONS: u32 = 64;
 const MIN_SPLIT: u64 = 2 * 1024 * 1024;
+/// Minimum tail size an idle worker may steal from an active in-flight lease.
+pub const MIN_INFLIGHT_SPLIT: u64 = 1024 * 1024;
 /// Smallest planned range. Small enough that Auto can add workers all the way
 /// to its ceiling without splitting an in-flight transfer.
 const MIN_CHUNK: u64 = 2 * 1024 * 1024;
@@ -262,6 +264,175 @@ impl ChunkQueue {
     }
 }
 
+/// Extent-style byte range lease held by one active worker.
+///
+/// Invariant: `committed_end <= inflight_end <= limit_end`.
+/// - The owning worker reserves `[committed_end .. inflight_end)` before calling
+///   `write_at` (which runs outside the lock) and advances `committed_end` once
+///   the write completes.
+/// - Idle workers may only split `[inflight_end .. limit_end)`, shrinking
+///   `limit_end` atomically under the mutex. Two workers can never overlap a
+///   single byte or leave an unwritten gap on pause/abort.
+#[derive(Debug, Default)]
+struct LeaseInner {
+    committed_end: u64,
+    inflight_end: u64,
+    limit_end: u64,
+    active: bool,
+}
+
+#[derive(Default)]
+pub struct SpanLease {
+    inner: Mutex<LeaseInner>,
+}
+
+impl SpanLease {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn activate(&self, start: u64, end: u64) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.committed_end = start;
+            g.inflight_end = start;
+            g.limit_end = end.max(start);
+            g.active = end > start;
+        }
+    }
+
+    pub fn limit_end(&self) -> u64 {
+        self.inner.lock().map(|g| g.limit_end).unwrap_or(0)
+    }
+
+    /// Reserve up to `want_len` bytes starting at `committed_end` for an
+    /// upcoming disk write. Returns `(write_offset, allowed_bytes)`.
+    pub fn begin_write(&self, want_len: usize) -> (u64, usize) {
+        let Ok(mut g) = self.inner.lock() else {
+            return (0, 0);
+        };
+        let avail = g.limit_end.saturating_sub(g.committed_end);
+        let allow = (want_len as u64).min(avail) as usize;
+        let at = g.committed_end;
+        g.inflight_end = g.committed_end + allow as u64;
+        (at, allow)
+    }
+
+    /// Commit the previously reserved write and return `(written, reached_limit)`.
+    pub fn commit_write(&self) -> (u64, bool) {
+        let Ok(mut g) = self.inner.lock() else {
+            return (0, true);
+        };
+        let n = g.inflight_end.saturating_sub(g.committed_end);
+        g.committed_end = g.inflight_end;
+        let done = g.committed_end >= g.limit_end;
+        (n, done)
+    }
+
+    pub fn rollback_write(&self) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.inflight_end = g.committed_end;
+        }
+    }
+
+    /// Deactivate the lease and return any uncommitted `[committed_end .. limit_end)`.
+    pub fn finish(&self) -> Option<Task> {
+        let mut g = self.inner.lock().ok()?;
+        g.active = false;
+        g.inflight_end = g.committed_end;
+        let rem = g.limit_end.saturating_sub(g.committed_end);
+        if rem > 0 {
+            Some(Task {
+                offset: g.committed_end,
+                length: rem,
+            })
+        } else {
+            None
+        }
+    }
+
+    fn stealable(&self) -> u64 {
+        self.inner
+            .lock()
+            .ok()
+            .filter(|g| g.active)
+            .map(|g| g.limit_end.saturating_sub(g.inflight_end))
+            .unwrap_or(0)
+    }
+
+    fn try_steal_half(&self, min_split: u64) -> Option<Task> {
+        let mut g = self.inner.lock().ok()?;
+        if !g.active {
+            return None;
+        }
+        let stealable = g.limit_end.saturating_sub(g.inflight_end);
+        if stealable < min_split * 2 {
+            return None;
+        }
+        let keep = align_up(stealable / 2);
+        let split_at = g.inflight_end.saturating_add(keep);
+        if split_at >= g.limit_end || g.limit_end - split_at < min_split {
+            return None;
+        }
+        let stolen = Task {
+            offset: split_at,
+            length: g.limit_end - split_at,
+        };
+        g.limit_end = split_at;
+        Some(stolen)
+    }
+}
+
+/// Registry of active worker leases for in-flight tail work stealing.
+#[derive(Default)]
+pub struct LeasePool {
+    leases: Mutex<Vec< std::sync::Arc<SpanLease> >>,
+}
+
+impl LeasePool {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn register(&self) -> std::sync::Arc<SpanLease> {
+        let lease = std::sync::Arc::new(SpanLease::new());
+        if let Ok(mut list) = self.leases.lock() {
+            list.push(lease.clone());
+        }
+        lease
+    }
+
+    /// Split the largest active in-flight range in half so an idle worker can
+    /// help finish a slow tail chunk on a fresh connection.
+    pub fn steal_largest(&self, min_split: u64) -> Option<Task> {
+        let snapshot: Vec<std::sync::Arc<SpanLease>> =
+            self.leases.lock().ok()?.iter().cloned().collect();
+        let mut candidates: Vec<(u64, std::sync::Arc<SpanLease>)> = snapshot
+            .into_iter()
+            .map(|l| (l.stealable(), l))
+            .filter(|(rem, _)| *rem >= min_split * 2)
+            .collect();
+        candidates.sort_by(|a, b| b.0.cmp(&a.0));
+        for (_, lease) in candidates {
+            if let Some(task) = lease.try_steal_half(min_split) {
+                return Some(task);
+            }
+        }
+        None
+    }
+
+    pub fn any_active(&self) -> bool {
+        let Ok(list) = self.leases.lock() else {
+            return false;
+        };
+        list.iter().any(|l| {
+            l.inner
+                .lock()
+                .map(|g| g.active && g.limit_end > g.committed_end)
+                .unwrap_or(false)
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -439,5 +610,35 @@ mod tests {
         assert!(!q.is_empty());
         let total = first.length + q.remaining_bytes();
         assert_eq!(total, 32 * 1024 * 1024);
+    }
+
+    #[test]
+    fn span_lease_steals_without_overlapping_inflight_write() {
+        let pool = LeasePool::new();
+        let lease_a = pool.register();
+        let total = 10 * 1024 * 1024u64;
+        lease_a.activate(0, total);
+
+        // Worker A reserves 512 KiB for an ongoing disk write (`pwrite` outside lock).
+        let (off, allow) = lease_a.begin_write(512 * 1024);
+        assert_eq!(off, 0);
+        assert_eq!(allow, 512 * 1024);
+
+        // Idle Worker B steals half of the remaining unreserved tail.
+        let stolen = pool.steal_largest(MIN_INFLIGHT_SPLIT).expect("should steal");
+        assert!(stolen.offset > 512 * 1024, "must never cross inflight_end");
+        assert_eq!(stolen.offset % ALIGN, 0);
+        assert_eq!(stolen.offset + stolen.length, total);
+
+        // Worker A commits its 512 KiB write and then pauses (`finish()`).
+        let (committed, done) = lease_a.commit_write();
+        assert_eq!(committed, 512 * 1024);
+        assert!(!done);
+        let rem_a = lease_a.finish().expect("remaining tail of A");
+
+        // Exact disjoint partition: [0..committed) U rem_a U stolen == [0..total)
+        assert_eq!(rem_a.offset, committed);
+        assert_eq!(rem_a.offset + rem_a.length, stolen.offset);
+        assert_eq!(committed + rem_a.length + stolen.length, total);
     }
 }
