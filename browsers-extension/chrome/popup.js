@@ -19,15 +19,31 @@ $("save").textContent = t("save");
 $("ignoredDomains").placeholder = "cdn.example, static.foo";
 $("ignoredExtensions").placeholder = "ico, svg, json";
 
+const SIZE_UNITS = ["B", "KB", "MB", "GB", "TB"];
+
+function formatBytes(bytes) {
+  const n = Number(bytes || 0);
+  if (!n || n < 0) return "";
+  let value = n;
+  let unit = 0;
+  while (value >= 1024 && unit < SIZE_UNITS.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${unit === 0 ? value : value.toFixed(1)} ${SIZE_UNITS[unit]}`;
+}
+
 async function downloadMedia(item) {
   $("error").hidden = true;
   try {
     const resp = await chrome.runtime.sendMessage({
       action: "download-media",
+      key: item.key,
       url: item.url,
       contentType: item.contentType,
       tabId: item.tabId,
       referrer: item.referrer,
+      pageUrl: item.pageUrl,
       size: item.size,
     });
     if (!resp?.ok) {
@@ -64,8 +80,10 @@ async function refresh() {
   (status.media || []).forEach((m) => {
     const li = document.createElement("li");
     const span = document.createElement("span");
-    span.textContent = m.url;
-    span.title = m.contentType || m.url;
+    const meta = [m.badge || m.kind, formatBytes(m.size)].filter(Boolean).join(" · ");
+    const label = m.displayName || m.suggestedFilename || m.url;
+    span.textContent = meta ? `[${meta}] ${label}` : label;
+    span.title = [m.displayName, m.contentType, m.url].filter(Boolean).join("\n");
     const btn = document.createElement("button");
     btn.textContent = t("download");
     const go = (e) => {

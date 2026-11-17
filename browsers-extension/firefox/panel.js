@@ -46,15 +46,20 @@
   }
 
   function kindOf(item) {
+    if (item?.badge) return String(item.badge);
+    if (item?.kind) return String(item.kind);
     const type = String(item?.contentType || "").toLowerCase();
     const url = String(item?.url || "").toLowerCase();
     if (type.includes("mpegurl") || /\.m3u8(\?|$)/.test(url)) return "HLS";
+    if (type === "application/dash+xml" || /\.mpd(\?|$)/.test(url)) return "DASH";
     if (type.startsWith("audio/")) return "AUDIO";
     if (type.startsWith("video/")) return "VIDEO";
     return "MEDIA";
   }
 
   function nameOf(item) {
+    if (item?.displayName) return String(item.displayName);
+    if (item?.suggestedFilename) return String(item.suggestedFilename);
     try {
       const last = new URL(item.url).pathname.split("/").filter(Boolean).pop() || "";
       return decodeURIComponent(last) || item.url;
@@ -89,38 +94,68 @@
     return urls.filter(Boolean);
   }
 
+  function isVisibleBox(el, minW = 1, minH = 1) {
+    const rect = el.getBoundingClientRect?.();
+    if (!rect || rect.width < minW || rect.height < minH) return null;
+    const style = el.ownerDocument?.defaultView?.getComputedStyle?.(el);
+    if (style && (style.visibility === "hidden" || style.display === "none")) return null;
+    return rect;
+  }
+
   /**
    * The element playing `url`, NeatDownloadManager-style: an exact URL match
    * first, then the largest visible player on the page — which is what a
    * blob:/MSE player needs, since its src never carries the sniffed URL.
+   * Falls back to a visible player-sized `<iframe>` embed when the top frame
+   * hosts no `<video>`/`<audio>` directly.
    * @param {string} url
    * @param {Document | Element} [root]
-   * @returns {HTMLMediaElement | null}
+   * @returns {Element | null}
    */
   function pickElement(url, root) {
     const scope = root || document;
     const candidates = [];
     for (const tag of MEDIA_TAGS) candidates.push(...scope.querySelectorAll(tag));
-    if (!candidates.length) return null;
+    if (candidates.length) {
+      for (const el of candidates) {
+        if (elementUrls(el).some((candidate) => sameUrl(candidate, url))) return el;
+      }
 
-    for (const el of candidates) {
-      if (elementUrls(el).some((candidate) => sameUrl(candidate, url))) return el;
+      let best = null;
+      let bestArea = 0;
+      for (const el of candidates) {
+        const rect = isVisibleBox(el, 1, 1);
+        if (!rect) continue;
+        const area = rect.width * rect.height;
+        if (area > bestArea) {
+          bestArea = area;
+          best = el;
+        }
+      }
+      return best || candidates[0];
     }
 
-    let best = null;
-    let bestArea = 0;
-    for (const el of candidates) {
-      const rect = el.getBoundingClientRect?.();
-      if (!rect || rect.width <= 0 || rect.height <= 0) continue;
-      const style = el.ownerDocument?.defaultView?.getComputedStyle?.(el);
-      if (style && (style.visibility === "hidden" || style.display === "none")) continue;
+    let bestIframe = null;
+    let bestIframeArea = 0;
+    for (const frame of scope.querySelectorAll?.("iframe") || []) {
+      const rect = isVisibleBox(frame, 240, 135);
+      if (!rect) continue;
+      const src = frame.getAttribute?.("src") || frame.src || "";
+      const allow = frame.getAttribute?.("allow") || "";
+      const looksLikePlayer =
+        sameUrl(src, url) ||
+        frame.allowFullscreen === true ||
+        frame.hasAttribute?.("allowfullscreen") ||
+        /\b(autoplay|fullscreen|encrypted-media|picture-in-picture)\b/i.test(allow) ||
+        /player|embed|video/i.test(src);
+      if (!looksLikePlayer) continue;
       const area = rect.width * rect.height;
-      if (area > bestArea) {
-        bestArea = area;
-        best = el;
+      if (area > bestIframeArea) {
+        bestIframeArea = area;
+        bestIframe = frame;
       }
     }
-    return best || candidates[0];
+    return bestIframe;
   }
 
   const STYLE = `
@@ -130,7 +165,7 @@
       --bg:#ffffff; --fg:#0a0a0a; --muted:#f5f5f5; --muted-fg:#737373;
       --border:#e5e5e5; --primary:#171717; --primary-fg:#fafafa;
       --ok:#009689; --bad:#e7000b;
-      position: fixed; right: 16px; bottom: 16px; width: 292px; z-index: 2147483000;
+      position: fixed; right: 16px; bottom: 16px; width: 316px; z-index: 2147483000;
       background: var(--bg); color: var(--fg);
       border: 1px solid var(--border); border-radius: 10px;
       box-shadow: 0 10px 28px rgba(0,0,0,.22), 0 2px 6px rgba(0,0,0,.10);
@@ -176,12 +211,18 @@
     .icon:hover { background: var(--muted); }
     .list { list-style: none; margin: 0; padding: 0; max-height: 154px; overflow-y: auto; }
     .row {
-      display: flex; align-items: center; gap: 6px; padding: 0 6px; height: 22px;
+      display: flex; align-items: center; gap: 6px; padding: 0 6px; height: 24px;
       border-top: 1px solid var(--border); cursor: pointer;
     }
     .list li:first-child .row { border-top: 0; }
     .row:hover { background: var(--muted); }
-    .kind { flex: 0 0 34px; font-size: 9px; font-weight: 700; letter-spacing: .4px; color: var(--muted-fg); }
+    .kind {
+      flex: 0 0 auto; min-width: 34px; max-width: 78px; padding: 1px 4px;
+      border-radius: 4px; background: var(--muted); text-align: center;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      font-size: 9px; font-weight: 700; letter-spacing: .3px; color: var(--muted-fg);
+    }
+    .row:hover .kind { background: var(--bg); }
     .name { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 6px; }
     .name b { font-size: 11px; font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .name span { font-size: 10px; color: var(--muted-fg); flex: 0 0 auto; }
@@ -352,7 +393,7 @@
       return;
     }
     const rect = anchorEl.getBoundingClientRect();
-    const width = panel.offsetWidth || 292;
+    const width = panel.offsetWidth || 316;
     const height = panel.offsetHeight || 80;
     // Above the element when it fits, otherwise pinned to the top of the
     // viewport — what NeatDownloadManager does for a player that starts high.

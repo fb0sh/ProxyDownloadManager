@@ -3,6 +3,26 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/spec/v2.0.0.html)。
 
+## [Unreleased]
+
+### Added
+
+- 新建下载窗口新增 HLS 多清晰度变体选择下拉框（自动选最高码率或手动指定指定分辨率）以及二进制扩展名返回 `text/html` 登录页/防盗链页时的显式告警提示
+- 浏览器扩展新增 IDM 风格的媒体归类与命名能力：结合页面标题自动生成带画质与音轨标记的文件名（如 `[Video 1080p].mp4` / `[Audio].m4a`，消除 B 站等 DASH 音视频分轨同名冲突）、支持 `Content-Range` 真实总大小提取、DOM `<video>`/`<audio>` 直链与分辨率采集、`<iframe>` 嵌入式播放器浮窗吸附，以及右键选区批量链接提取
+
+### Changed
+
+- 多连接下载引擎引入基于 `SpanLease` 区间租约的运行中动态尾块窃取（in-flight work stealing）：空闲 worker 会自动对半切分剩余最长的慢速 worker 未下区间（最小切分粒度 1 MiB），消除尾块拖尾并严格保持 `ProgressLedger` 字节不重叠不变量
+- 网络层升级 `TCP_NODELAY`、HTTP/2 自适应流控与 32 MiB 连接窗口 / 4 MiB 流窗口，并按最多 4 条连接通道渐进分流多连接 worker（前 4 路复用探测热连接，高并发避开单连接窗口瓶颈且不触发 CDN 429）；512 KiB 写缓冲、无速率限制快路径与 `spawn_blocking` 落盘刷新进一步降低热路径开销
+- HLS 下载引擎升级为支持 `#EXT-X-MAP`（fMP4 初始化头含 `BYTERANGE`）与 `#EXT-X-KEY:METHOD=NONE`，改用 8 路滑动窗口并发流水线与 `.part` 原子断点跳过，并将 `.m3u8` 保存文件名自动转为可播放的 `.mp4` / `.ts`
+
+### Fixed
+
+- 修复新建下载窗口冷启动丢失扩展请求头与 Cookie 的竞态：后端新增带容量上限与 TTL 的 `PendingRequestStore` 票据池，窗口挂载后按 `?ticket=<request_id>` 拉取完整上下文，既不丢凭据也不会污染手动点开的空白新建窗口
+- 修复扩展拦截与兼容性边界：放行 `POST` 下载、非 HTTP(S) 协议及无总大小且不支持 Range 的动态流式导出；跨域重定向时自动剥离首跳 `Authorization` / `Cookie` 防止 S3 等预签名链接返回 400；MV3 Service Worker 休眠唤醒期间先暂停浏览器下载并重连本地 WebSocket（配合 20 秒 `ping` 保活与 `chrome.storage.session` 媒体列表恢复）；预签名 `final_url` 过期返回 401/403/410 时自动回退探测原始入口 `url`
+- 修复探测、文件名解析与跨盘落盘问题：Range 探测被拒回退普通 GET 时提升成功响应 `r2` 以保留其 `Content-Disposition` / `final_url`、支持 RFC 5987 `filename*=` 编码文件名与 S3 `response-content-disposition` 参数、已携带浏览器 UA 时去重探测、正确识别 0 字节文件 `416 bytes */0`，并在 `finalize_file` 遇到跨分区移动（`EXDEV` / `ERROR_NOT_SAME_DEVICE`）时自动安全拷贝并原子重命名
+- 修复 B 站等 SPA 播放后调用 `history.replaceState` 清理追踪参数或懒加载 `<iframe>` 导致已嗅探媒体列表被误清空的问题，以及按容器语义过滤直播小分片（`.ts`、无 Range 的小 `.m4s`）同时保留短音频文件与无签名 `range` 参数归一化
+
 ## [0.21.0] - 2026-10-07
 
 ### Added

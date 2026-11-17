@@ -18,6 +18,12 @@ import {
   removeHiddenHost,
   shouldSkipMediaUrl,
   interceptDecision,
+  parseResponseSizing,
+  parseContentDispositionFilename,
+  normalizeMediaUrl,
+  navigationClearsMedia,
+  describeMediaItem,
+  originOf,
   PROTOCOL_VERSION,
 } from "./protocol.js";
 import { t } from "./i18n.js";
@@ -26,13 +32,18 @@ const DEBUG = false;
 const WS_URL = "ws://127.0.0.1:18999";
 const CLAIM_TIMEOUT_MS = 800;
 const ADD_TIMEOUT_MS = 3000;
+const WS_PING_MS = 20000;
+const WAKE_CONNECT_MS = 450;
 
 let ws = null;
 let reconnectTimer = null;
+let pingTimer = null;
+let sessionSaveTimer = null;
 let lastNotRunningNotificationAt = 0;
 let connected = false;
 let downloaderVersion = "";
 const pendingRequests = new Map();
+const openWaiters = new Set();
 
 const startedAt = Date.now();
 const STARTUP_GRACE_MS = 10000;
@@ -41,6 +52,8 @@ const NOT_RUNNING_NOTIFICATION_COOLDOWN_MS = 15000;
 const STORAGE_KEY = "proxydm_enabled";
 const SETTINGS_KEY = "proxydm_settings";
 const BYPASS_NEXT_KEY = "proxydm_bypass_next";
+const SESSION_MEDIA_KEY = "proxydm_session_media";
+const SESSION_TITLES_KEY = "proxydm_session_titles";
 // Media sniffing and the on-page panel are their own switches, deliberately
 // separate from proxydm_enabled (which gates interception): a user may want
 // downloads intercepted without a panel on every page, or the reverse.
@@ -56,6 +69,9 @@ const defaultSettings = {
 };
 
 const mediaByTab = new Map();
+const tabTitles = new Map();
+const lastTabUrl = new Map();
+const determinedFilenames = new Map();
 const requestCtx = new Map();
 // Request headers the browser actually sent, by requestId, waiting for the
 // response that follows. This is the ground truth a sniffed download must
@@ -127,6 +143,78 @@ function updateIcon(enabled) {
   }
 }
 
+function settleOpenWaiters(ok) {
+  for (const resolve of openWaiters) resolve(ok);
+  openWaiters.clear();
+}
+
+function startPing() {
+  stopPing();
+  pingTimer = setInterval(() => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      try {
+        ws.send(JSON.stringify({ action: "ping" }));
+      } catch {
+        /* closed between check and send */
+      }
+    }
+  }, WS_PING_MS);
+}
+
+function stopPing() {
+  if (pingTimer) {
+    clearInterval(pingTimer);
+    pingTimer = null;
+  }
+}
+
+function ensureConnected(timeoutMs = WAKE_CONNECT_MS) {
+  if (connected && ws && ws.readyState === WebSocket.OPEN) {
+    return Promise.resolve(true);
+  }
+  if (!runtimeEnabled) return Promise.resolve(false);
+  connect();
+  if (connected && ws && ws.readyState === WebSocket.OPEN) {
+    return Promise.resolve(true);
+  }
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (ok) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      openWaiters.delete(finish);
+      resolve(ok);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    openWaiters.add(finish);
+  });
+}
+
+function scheduleSessionPersist() {
+  if (!chrome.storage?.session?.set || sessionSaveTimer) return;
+  sessionSaveTimer = setTimeout(() => {
+    sessionSaveTimer = null;
+    const mediaObj = {};
+    let count = 0;
+    for (const [tabId, list] of mediaByTab.entries()) {
+      if (count >= 16) break;
+      mediaObj[tabId] = list.slice(0, 30);
+      count += 1;
+    }
+    const titleObj = {};
+    for (const [tabId, title] of tabTitles.entries()) {
+      titleObj[tabId] = title;
+    }
+    chrome.storage.session
+      .set({
+        [SESSION_MEDIA_KEY]: mediaObj,
+        [SESSION_TITLES_KEY]: titleObj,
+      })
+      .catch?.(() => {});
+  }, 250);
+}
+
 function connect() {
   if (!runtimeEnabled) return;
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
@@ -134,6 +222,7 @@ function connect() {
   try {
     socket = new WebSocket(WS_URL);
   } catch {
+    settleOpenWaiters(false);
     scheduleReconnect();
     return;
   }
@@ -145,6 +234,8 @@ function connect() {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
     }
+    startPing();
+    settleOpenWaiters(true);
     updateIcon(runtimeEnabled);
     broadcastStatus();
   };
@@ -156,6 +247,7 @@ function connect() {
     } catch {
       parsed = null;
     }
+    if (parsed && parsed.type === "pong") return;
     if (parsed && parsed.type === "hello") {
       downloaderVersion = String(parsed.version || "");
       broadcastStatus();
@@ -165,9 +257,11 @@ function connect() {
   };
   socket.onclose = () => {
     if (ws !== socket) return;
+    stopPing();
     connected = false;
     downloaderVersion = "";
     ws = null;
+    settleOpenWaiters(false);
     failPending();
     updateIcon(runtimeEnabled);
     broadcastStatus();
@@ -175,8 +269,10 @@ function connect() {
   };
   socket.onerror = () => {
     if (ws !== socket) return;
+    stopPing();
     connected = false;
     downloaderVersion = "";
+    settleOpenWaiters(false);
     failPending();
     ws = null;
     scheduleReconnect();
@@ -193,6 +289,8 @@ function scheduleReconnect() {
 }
 
 function disconnect() {
+  stopPing();
+  settleOpenWaiters(false);
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
@@ -276,7 +374,40 @@ function destroyContextMenus() {
   chrome.contextMenus.removeAll();
 }
 
+async function extractSelectedUrlsFromTab(tab, fallbackText) {
+  if (tab?.id != null) {
+    const reply = await new Promise((resolve) => {
+      try {
+        chrome.tabs.sendMessage(tab.id, { action: "proxydm-extract-selection" }, (res) => {
+          void chrome.runtime.lastError;
+          resolve(res || null);
+        });
+      } catch {
+        resolve(null);
+      }
+    });
+    if (Array.isArray(reply?.urls) && reply.urls.length > 0) {
+      return [...new Set(reply.urls.filter((u) => /^https?:/i.test(u)))].slice(0, 20);
+    }
+  }
+  const single = extractUrl(fallbackText);
+  return single ? [single] : [];
+}
+
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  await runtimeReady;
+  if (info.menuItemId === "dl-sel") {
+    const urls = await extractSelectedUrlsFromTab(tab, info.selectionText);
+    if (!urls.length) return;
+    await ensureConnected();
+    let anyFailed = false;
+    for (const url of urls) {
+      const req = await buildFromTab(url, tab);
+      if (!(await sendReliable(req))) anyFailed = true;
+    }
+    if (anyFailed) notifyNotRunning();
+    return;
+  }
   let url = null;
   switch (info.menuItemId) {
     case "dl-link":
@@ -285,14 +416,46 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     case "dl-page":
       url = tab?.url;
       break;
-    case "dl-sel":
-      url = extractUrl(info.selectionText);
-      break;
   }
   if (!url) return;
+  await ensureConnected();
   const req = await buildFromTab(url, tab);
   if (!(await sendReliable(req))) notifyNotRunning();
 });
+
+chrome.downloads?.onDeterminingFilename?.addListener?.((item, suggest) => {
+  if (item?.id != null && item.filename) {
+    determinedFilenames.set(item.id, basename(item.filename));
+    if (determinedFilenames.size > 200) {
+      const oldest = determinedFilenames.keys().next().value;
+      if (oldest !== undefined) determinedFilenames.delete(oldest);
+    }
+  }
+  if (typeof suggest === "function") suggest();
+});
+
+function pauseBrowserDownload(id) {
+  return new Promise((resolve) => {
+    try {
+      chrome.downloads.pause(id, () => {
+        void chrome.runtime.lastError;
+        resolve();
+      });
+    } catch {
+      resolve();
+    }
+  });
+}
+
+function resumeBrowserDownload(id) {
+  try {
+    chrome.downloads.resume(id, () => {
+      void chrome.runtime.lastError;
+    });
+  } catch {
+    /* already completed or cancelled */
+  }
+}
 
 chrome.downloads.onCreated.addListener((item) => {
   const downloadUrl = getDownloadUrl(item);
@@ -302,22 +465,75 @@ chrome.downloads.onCreated.addListener((item) => {
   }
   const once = bypassNext;
   const held = activeTabId != null && bypassTabs.has(activeTabId);
-  const decision = interceptDecision({
+  const ctx = requestCtx.get(downloadUrl) || requestCtx.get(item.url) || null;
+  const resolvedFilename =
+    basename(item.filename) ||
+    determinedFilenames.get(item.id) ||
+    ctx?.filename ||
+    filenameFromUrl(downloadUrl);
+  const resolvedSize = item.fileSize > 0 ? item.fileSize : ctx?.totalSize || 0;
+  const isHls =
+    /\.m3u8(\?|$)/i.test(downloadUrl) ||
+    String(ctx?.contentType || "").toLowerCase().includes("mpegurl");
+  // Non-Range chunked dynamic streams (`Content-Length` absent/0 AND `Accept-Ranges != bytes`)
+  // gain 0% from multi-threading and risk burning one-time export tokens on re-fetch.
+  const knownDynamicStream = !!(
+    ctx &&
+    !isHls &&
+    resolvedSize <= 0 &&
+    ctx.statusCode === 200 &&
+    ctx.acceptRanges !== "bytes"
+  );
+
+  const isSocketOpen = !!(connected && ws && ws.readyState === WebSocket.OPEN);
+  const baseInput = {
     enabled: runtimeEnabled,
-    connected: !!(connected && ws && ws.readyState === WebSocket.OPEN),
+    connected: isSocketOpen,
     url: downloadUrl,
-    filename: item.filename || "",
-    fileSize: item.fileSize,
+    method: item.method || "GET",
+    filename: resolvedFilename,
+    fileSize: resolvedSize,
+    knownDynamicStream,
     settings: runtimeSettings,
     bypass: once || held,
     restored: isRestoredDownloadEvent(item),
-  });
-  if (!decision.take) {
-    if (decision.reason === "bypass" && once) clearBypassNext();
-    debug("skip", item.id, decision.reason);
+  };
+
+  const decision = interceptDecision(baseInput);
+  if (decision.take) {
+    void takeover(item, downloadUrl);
     return;
   }
-  void takeover(item, downloadUrl);
+
+  // MV3 Service Worker wake-up path: if the only reason we declined was `offline`
+  // while `ws` has not yet finished reconnecting after SW suspension, pause the
+  // browser download briefly, attempt a fast localhost handshake, and either
+  // take over or seamlessly resume the browser download.
+  if (
+    decision.reason === "offline" &&
+    runtimeEnabled &&
+    interceptDecision({ ...baseInput, connected: true }).take
+  ) {
+    void (async () => {
+      await pauseBrowserDownload(item.id);
+      await runtimeReady;
+      if (!runtimeEnabled) {
+        resumeBrowserDownload(item.id);
+        return;
+      }
+      const woke = await ensureConnected(WAKE_CONNECT_MS);
+      if (woke) {
+        await takeover(item, downloadUrl);
+      } else {
+        resumeBrowserDownload(item.id);
+        notifyNotRunning({ allowStartupGrace: true });
+      }
+    })();
+    return;
+  }
+
+  if (decision.reason === "bypass" && once) clearBypassNext();
+  debug("skip", item.id, decision.reason);
 });
 
 function clearBypassNext() {
@@ -340,7 +556,12 @@ function isPassthrough(url) {
 async function takeover(item, downloadUrl) {
   const started = Date.now();
   const requestId = crypto.randomUUID();
-  const filename = basename(item.filename) || filenameFromUrl(downloadUrl);
+  const ctx = requestCtx.get(downloadUrl) || requestCtx.get(item.url) || {};
+  const filename =
+    basename(item.filename) ||
+    determinedFilenames.get(item.id) ||
+    ctx.filename ||
+    filenameFromUrl(downloadUrl);
   debug(`intercept #${item.id}`);
   const claimed = await sendReliable(
     {
@@ -474,23 +695,45 @@ async function buildFromTab(url, tab) {
 async function buildFromDownload(item, tab, requestId) {
   const url = getDownloadUrl(item);
   const cookies = await cookiesFor(url);
-  const ctx = requestCtx.get(url) || requestCtx.get(item.url) || {};
-  // A browser download carries the page it started from; the captured request
-  // headers carry what the site's own fetch looked like.
+  const finalCtx = requestCtx.get(url);
+  const originCtx = requestCtx.get(item.url);
+  const crossOriginRedirect =
+    item.finalUrl && item.url && originOf(item.finalUrl) !== originOf(item.url);
+  const ctx = finalCtx || originCtx || {};
+  // Cross-origin redirects (e.g. app.site.com -> s3.amazonaws.com presigned URL):
+  // never replay the first hop's `Authorization` header onto a third-party CDN
+  // unless Chrome itself sent it on the final hop (S3 rejects dual auth with 400).
+  let capturedHeaders = finalCtx?.requestHeaders;
+  if (!capturedHeaders && originCtx?.requestHeaders) {
+    if (crossOriginRedirect) {
+      const safe = { ...originCtx.requestHeaders };
+      delete safe.Authorization;
+      delete safe.Cookie;
+      capturedHeaders = safe;
+    } else {
+      capturedHeaders = originCtx.requestHeaders;
+    }
+  }
   const pageUrl = item.referrer || ctx.pageUrl || tab?.url || "";
   const headers = mediaHeaders({
-    captured: ctx.requestHeaders,
+    captured: capturedHeaders,
     url,
     pageUrl,
     cookies,
     userAgent: navigator.userAgent,
   });
+  const resolvedName =
+    basename(item.filename) ||
+    determinedFilenames.get(item.id) ||
+    ctx.filename ||
+    filenameFromUrl(url);
+  determinedFilenames.delete(item.id);
   return buildDownloadRequest({
     requestId,
     action: "add",
     url: item.url,
     finalUrl: item.finalUrl || item.url,
-    filename: (item.filename || "").split(/[/\\]/).pop() || filenameFromUrl(url),
+    filename: resolvedName,
     method: item.method || "GET",
     referrer: headers.Referer || pageUrl,
     tabUrl: tab?.url || "",
@@ -498,7 +741,7 @@ async function buildFromDownload(item, tab, requestId) {
     userAgent: navigator.userAgent,
     headers,
     contentType: item.mime || ctx.contentType || "",
-    contentLength: item.fileSize > 0 ? item.fileSize : ctx.contentLength || 0,
+    contentLength: item.fileSize > 0 ? item.fileSize : ctx.totalSize || ctx.contentLength || 0,
   });
 }
 
@@ -524,6 +767,13 @@ function filenameFromUrl(url) {
 
 /** Headers the browser sent for one request, filtered to what we may replay. */
 function onBeforeSendHeaders(details) {
+  if (details.type === "main_frame" && details.frameId === 0 && details.tabId >= 0) {
+    lastTabUrl.set(details.tabId, details.url);
+    if (mediaByTab.delete(details.tabId)) {
+      scheduleSessionPersist();
+      broadcastStatus();
+    }
+  }
   sentHeaders.set(details.requestId, filterHeaders(details.requestHeaders || []));
 }
 
@@ -532,13 +782,95 @@ function forgetSentHeaders(details) {
   sentHeaders.delete(details.requestId);
 }
 
+function refreshMediaLabels(entry, fallbackTitle = "") {
+  const pageTitle = entry.pageTitle || fallbackTitle || "";
+  if (pageTitle) entry.pageTitle = pageTitle;
+  const desc = describeMediaItem({
+    url: entry.url,
+    contentType: entry.contentType,
+    pageTitle: entry.pageTitle,
+    filename: entry.filename,
+    resolution: entry.resolution,
+  });
+  entry.kind = desc.kind;
+  entry.badge = desc.badge;
+  entry.displayName = desc.displayName;
+  entry.suggestedFilename = desc.suggestedFilename;
+  return entry;
+}
+
+function upsertMediaForTab(tabId, candidate) {
+  if (tabId == null || tabId < 0) return false;
+  const cleanUrl = normalizeMediaUrl(candidate.url);
+  if (!cleanUrl) return false;
+  const type = String(candidate.contentType || "").split(";")[0].trim();
+  const key = mediaDedupKey(cleanUrl, type);
+  const baseKey = mediaDedupKey(cleanUrl, "");
+  const list = mediaByTab.get(tabId) || [];
+  const pageTitle = candidate.pageTitle || tabTitles.get(tabId) || "";
+  const existing = list.find(
+    (m) =>
+      m.key === key ||
+      ((candidate.fromDom || m.fromDom || !type || !m.contentType) &&
+        mediaDedupKey(m.url, "") === baseKey),
+  );
+  if (existing) {
+    if (type && (!candidate.fromDom || !existing.contentType)) {
+      existing.contentType = type;
+      existing.key = mediaDedupKey(cleanUrl, type);
+    }
+    if (!candidate.fromDom) existing.fromDom = false;
+    existing.url = cleanUrl;
+    if (candidate.rawUrl) existing.rawUrl = candidate.rawUrl;
+    if (candidate.size > 0) existing.size = Math.max(existing.size || 0, candidate.size);
+    if (candidate.captured && Object.keys(candidate.captured).length > 0) {
+      existing.captured = candidate.captured;
+    }
+    if (candidate.filename) existing.filename = candidate.filename;
+    if (candidate.resolution) existing.resolution = candidate.resolution;
+    if (candidate.pageUrl && !existing.pageUrl) {
+      existing.pageUrl = candidate.pageUrl;
+      existing.referrer = candidate.pageUrl;
+    }
+    refreshMediaLabels(existing, pageTitle);
+    return true;
+  }
+
+  const entry = refreshMediaLabels(
+    {
+      key,
+      url: cleanUrl,
+      rawUrl: candidate.rawUrl || candidate.url,
+      contentType: type,
+      size: candidate.size || 0,
+      tabId,
+      referrer: candidate.pageUrl || "",
+      pageUrl: candidate.pageUrl || "",
+      filename: candidate.filename || "",
+      resolution: candidate.resolution || "",
+      pageTitle,
+      fromDom: !!candidate.fromDom,
+      // Kept with the hit: the user may click Download long after the
+      // request finished and sentHeaders was cleared.
+      captured: candidate.captured || {},
+      capturedAt: Date.now(),
+    },
+    pageTitle,
+  );
+  list.unshift(entry);
+  mediaByTab.set(tabId, list.slice(0, 50));
+  return true;
+}
+
 function onHeadersReceived(details) {
   const headers = {};
   for (const h of details.responseHeaders || []) {
-    if (h.name && h.value) headers[h.name] = h.value;
+    if (h.name && h.value != null) headers[h.name.toLowerCase()] = h.value;
   }
-  const type = (headers["content-type"] || headers["Content-Type"] || "").split(";")[0].trim();
-  const length = Number(headers["content-length"] || headers["Content-Length"] || 0);
+  const type = (headers["content-type"] || "").split(";")[0].trim();
+  const sizing = parseResponseSizing(details.responseHeaders || []);
+  const cdFilename = parseContentDispositionFilename(headers["content-disposition"] || "");
+  const statusCode = details.statusCode || 0;
   // `documentUrl` is the frame the request came from — the page a hotlink
   // check compares against. `initiator` only ever carries its origin.
   const pageUrl = details.documentUrl || details.initiator || "";
@@ -546,7 +878,12 @@ function onHeadersReceived(details) {
   requestCtx.set(details.url, {
     requestHeaders: sent,
     contentType: type,
-    contentLength: length,
+    contentLength: sizing.contentLength,
+    totalSize: sizing.totalSize,
+    acceptRanges: sizing.acceptRanges,
+    hasContentRange: sizing.hasContentRange,
+    statusCode,
+    filename: cdFilename,
     pageUrl,
   });
   if (requestCtx.size > REQUEST_CTX_MAX) {
@@ -556,29 +893,33 @@ function onHeadersReceived(details) {
   // requestCtx above is still filled while sniffing is off: interception
   // needs it. Only media detection is what the switch turns off.
   if (!runtimeSniff) return;
-  if (shouldSkipMediaUrl(details.url)) return;
+  if (statusCode >= 400) return;
+  if (
+    shouldSkipMediaUrl(details.url, {
+      contentType: type,
+      statusCode,
+      size: sizing.totalSize,
+      hasContentRange: sizing.hasContentRange,
+    })
+  ) {
+    return;
+  }
   // Content type alone loses every file served as application/octet-stream,
   // which is how Bilibili hands over its whole DASH tracks (`….m4s`).
   if (!isMediaResponse({ url: details.url, contentType: type })) return;
   const tabId = details.tabId;
   if (tabId < 0) return;
-  const list = mediaByTab.get(tabId) || [];
-  const key = mediaDedupKey(details.url, type);
-  if (list.some((m) => m.key === key)) return;
-  list.unshift({
-    key,
+  upsertMediaForTab(tabId, {
     url: details.url,
+    rawUrl: details.url,
     contentType: type,
-    size: length,
-    tabId,
-    referrer: pageUrl,
+    size: sizing.totalSize,
     pageUrl,
-    // Kept with the hit: the user may click Download long after the
-    // request finished and sentHeaders was cleared.
+    filename: cdFilename,
+    pageTitle: tabTitles.get(tabId) || "",
     captured: sent,
-    capturedAt: Date.now(),
   });
-  mediaByTab.set(tabId, list.slice(0, 50));
+  scheduleSessionPersist();
   broadcastStatus();
   pushMediaForTab(tabId);
 }
@@ -610,16 +951,45 @@ if (chrome.webRequest?.onCompleted) {
   chrome.webRequest.onErrorOccurred.addListener(forgetSentHeaders, filter);
 }
 
-chrome.tabs?.onUpdated?.addListener((tabId, changeInfo) => {
-  // A new document: the old list described a page that is gone. Keeping it also
-  // meant the new page's first media request was deduped away, so nothing was
-  // ever pushed and the panel only appeared after touching a switch.
-  if (changeInfo.status === "loading" || changeInfo.url) mediaByTab.delete(tabId);
+chrome.tabs?.onUpdated?.addListener((tabId, changeInfo, tab) => {
+  // Clear sniffed media only on genuine document/video navigations, NOT on
+  // cosmetic SPA `history.replaceState` tracking-param cleanups (e.g. Bilibili
+  // stripping `spm_id_from` 1s into playback) or lazy subframe loads.
+  if (changeInfo.url) {
+    const prev = lastTabUrl.get(tabId);
+    lastTabUrl.set(tabId, changeInfo.url);
+    if (prev && navigationClearsMedia(prev, changeInfo.url)) {
+      mediaByTab.delete(tabId);
+      tabTitles.delete(tabId);
+      scheduleSessionPersist();
+      broadcastStatus();
+      pushMediaForTab(tabId);
+    }
+  } else if (tab?.url && !lastTabUrl.has(tabId)) {
+    lastTabUrl.set(tabId, tab.url);
+  }
+
+  if (changeInfo.title) {
+    tabTitles.set(tabId, changeInfo.title);
+    const list = mediaByTab.get(tabId);
+    if (list && list.length > 0) {
+      for (const item of list) {
+        item.pageTitle = changeInfo.title;
+        refreshMediaLabels(item, changeInfo.title);
+      }
+      scheduleSessionPersist();
+      broadcastStatus();
+      pushMediaForTab(tabId);
+    }
+  }
 });
 
 chrome.tabs?.onRemoved?.addListener((tabId) => {
   mediaByTab.delete(tabId);
+  tabTitles.delete(tabId);
+  lastTabUrl.delete(tabId);
   bypassTabs.delete(tabId);
+  scheduleSessionPersist();
   if (activeTabId === tabId) activeTabId = null;
 });
 
@@ -654,9 +1024,62 @@ chrome.storage?.onChanged?.addListener((changes, area) => {
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "sendUrl") {
     (async () => {
+      await runtimeReady;
+      await ensureConnected();
       const req = await buildFromTab(request.url, sender.tab);
       const ok = await sendReliable(req);
       sendResponse({ ok });
+    })();
+    return true;
+  }
+  if (request.action === "page-meta") {
+    (async () => {
+      await runtimeReady;
+      const tabId = sender.tab?.id;
+      if (tabId == null || tabId < 0) {
+        sendResponse({ ok: false });
+        return;
+      }
+      let changed = false;
+      if (request.title) {
+        tabTitles.set(tabId, String(request.title));
+        const existing = mediaByTab.get(tabId);
+        if (existing && existing.length > 0) {
+          for (const item of existing) {
+            item.pageTitle = String(request.title);
+            refreshMediaLabels(item, String(request.title));
+          }
+          changed = true;
+        }
+      }
+      if (runtimeSniff && Array.isArray(request.mediaElements)) {
+        const pageUrl = request.pageUrl || sender.tab?.url || "";
+        for (const el of request.mediaElements) {
+          const url = String(el?.url || "");
+          if (!/^https?:/i.test(url) || shouldSkipMediaUrl(url)) continue;
+          const fallbackType = el.type || (el.kind === "audio" ? "audio/mp4" : "video/mp4");
+          if (
+            upsertMediaForTab(tabId, {
+              url,
+              rawUrl: url,
+              contentType: fallbackType,
+              size: 0,
+              pageUrl,
+              resolution: el.resolution || "",
+              pageTitle: tabTitles.get(tabId) || "",
+              fromDom: true,
+            })
+          ) {
+            changed = true;
+          }
+        }
+      }
+      if (changed) {
+        scheduleSessionPersist();
+        broadcastStatus();
+        pushMediaForTab(tabId);
+      }
+      sendResponse({ ok: true });
     })();
     return true;
   }
@@ -755,27 +1178,46 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
   if (request.action === "download-media") {
     (async () => {
+      await runtimeReady;
+      await ensureConnected();
       const tab = request.tabId != null
         ? await chrome.tabs.get(request.tabId).catch(() => null)
-        : await activeTab();
+        : sender.tab || (await activeTab());
       const list = mediaByTab.get(tab?.id ?? request.tabId ?? -1) || [];
-      const hit = list.find((m) => m.url === request.url) || {};
-      const cookies = await cookiesFor(request.url);
+      const hit =
+        list.find(
+          (m) =>
+            (request.key && m.key === request.key) ||
+            m.url === request.url ||
+            m.rawUrl === request.url,
+        ) || {};
+      const targetUrl = hit.url || normalizeMediaUrl(request.url) || request.url;
+      const cookies = await cookiesFor(targetUrl);
       // The page the media played on, in this order: the frame the request
       // came from, the tab it belongs to, then whatever the caller knew.
       // `details.initiator` is an origin, never a page path, so it is last.
       const pageUrl = hit.pageUrl || tab?.url || request.tabUrl || request.referrer || "";
       const headers = mediaHeaders({
         captured: hit.captured,
-        url: request.url,
+        url: targetUrl,
         pageUrl,
         cookies,
         userAgent: navigator.userAgent,
       });
+      const filename =
+        hit.suggestedFilename ||
+        describeMediaItem({
+          url: targetUrl,
+          contentType: request.contentType || hit.contentType || "",
+          pageTitle: tabTitles.get(tab?.id ?? -1) || hit.pageTitle || tab?.title || "",
+          filename: hit.filename || "",
+          resolution: hit.resolution || "",
+        }).suggestedFilename ||
+        filenameFromUrl(targetUrl);
       const req = buildDownloadRequest({
-        url: request.url,
-        finalUrl: request.url,
-        filename: filenameFromUrl(request.url),
+        url: targetUrl,
+        finalUrl: targetUrl,
+        filename,
         referrer: headers.Referer || pageUrl,
         tabUrl: tab?.url || "",
         cookies,
@@ -872,8 +1314,30 @@ async function loadRuntime() {
     /* keep defaults until storage is readable */
   }
   try {
-    const stored = await chrome.storage.session?.get?.(BYPASS_NEXT_KEY);
+    const stored = await chrome.storage.session?.get?.([
+      BYPASS_NEXT_KEY,
+      SESSION_MEDIA_KEY,
+      SESSION_TITLES_KEY,
+    ]);
     bypassNext = !!(stored && stored[BYPASS_NEXT_KEY]);
+    const savedTitles = stored?.[SESSION_TITLES_KEY];
+    if (savedTitles && typeof savedTitles === "object") {
+      for (const [k, v] of Object.entries(savedTitles)) {
+        const id = Number(k);
+        if (Number.isFinite(id) && v && !tabTitles.has(id)) {
+          tabTitles.set(id, String(v));
+        }
+      }
+    }
+    const savedMedia = stored?.[SESSION_MEDIA_KEY];
+    if (savedMedia && typeof savedMedia === "object") {
+      for (const [k, v] of Object.entries(savedMedia)) {
+        const id = Number(k);
+        if (Number.isFinite(id) && Array.isArray(v) && v.length > 0 && !mediaByTab.has(id)) {
+          mediaByTab.set(id, v);
+        }
+      }
+    }
   } catch {
     /* session storage is optional */
   }
