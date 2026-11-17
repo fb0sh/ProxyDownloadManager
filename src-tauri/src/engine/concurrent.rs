@@ -546,7 +546,8 @@ fn spawn_chunk_worker(env: ChunkWorker) -> tokio::task::JoinHandle<()> {
                         }
                         None => {
                             tokio::time::sleep(std::time::Duration::from_millis(80)).await;
-                            if let Some(stolen) = env.leases.steal_largest(chunk::MIN_INFLIGHT_SPLIT)
+                            if let Some(stolen) =
+                                env.leases.steal_largest(chunk::MIN_INFLIGHT_SPLIT)
                             {
                                 stolen
                             } else if env.queue.is_empty() && !env.leases.any_active() {
@@ -634,13 +635,21 @@ fn spawn_chunk_worker(env: ChunkWorker) -> tokio::task::JoinHandle<()> {
                     continue;
                 }
                 Attempt::RangeLost => {
-                    let rem = if task.length > 0 { lease_rem } else { Some(task) };
+                    let rem = if task.length > 0 {
+                        lease_rem
+                    } else {
+                        Some(task)
+                    };
                     abort(rem, PdmError::RangeLost);
                     stop_worker(&env.live_workers);
                     return;
                 }
                 Attempt::Refused(code) => {
-                    let rem = if task.length > 0 { lease_rem } else { Some(task) };
+                    let rem = if task.length > 0 {
+                        lease_rem
+                    } else {
+                        Some(task)
+                    };
                     abort(rem, PdmError::Http(code));
                     stop_worker(&env.live_workers);
                     return;

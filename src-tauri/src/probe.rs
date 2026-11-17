@@ -102,7 +102,9 @@ pub async fn probe(
         };
 
         let initial_status = resp.status();
-        let (resp, supports_range, file_size) = if initial_status == reqwest::StatusCode::PARTIAL_CONTENT {
+        let (resp, supports_range, file_size) = if initial_status
+            == reqwest::StatusCode::PARTIAL_CONTENT
+        {
             let size = resp
                 .headers()
                 .get("content-range")
