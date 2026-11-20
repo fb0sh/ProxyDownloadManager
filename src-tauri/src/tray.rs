@@ -7,6 +7,11 @@ use tauri::{
     AppHandle, Manager, Runtime,
 };
 
+#[cfg(any(target_os = "macos", test))]
+const MACOS_TRAY_ICON_SIZE: u32 = 36;
+#[cfg(any(target_os = "macos", test))]
+const MACOS_TRAY_ICON_RGBA: &[u8] = include_bytes!("../icons/tray-icon.rgba");
+
 pub fn build_tray<R: Runtime>(
     app: &AppHandle<R>,
     _shortcut: &str,
@@ -16,14 +21,15 @@ pub fn build_tray<R: Runtime>(
     let menu = Menu::with_items(app, &[&show, &quit])?;
 
     // macOS: monochrome template icon (menu bar adapts it to light/dark).
+    // 36x36 matches tray-icon's 18pt height 1:1 on @2x Retina displays.
     // Elsewhere the template icon renders as a black-on-dark-taskbar arrow —
     // effectively invisible on Windows — so use the colored app icon instead.
     #[cfg(target_os = "macos")]
     let builder = TrayIconBuilder::new()
         .icon(tauri::image::Image::new(
-            include_bytes!("../icons/tray-icon.rgba"),
-            32,
-            32,
+            MACOS_TRAY_ICON_RGBA,
+            MACOS_TRAY_ICON_SIZE,
+            MACOS_TRAY_ICON_SIZE,
         ))
         .icon_as_template(true);
     #[cfg(not(target_os = "macos"))]
@@ -65,4 +71,23 @@ pub fn build_tray<R: Runtime>(
         .build(app)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MACOS_TRAY_ICON_RGBA, MACOS_TRAY_ICON_SIZE};
+
+    #[test]
+    fn macos_tray_icon_rgba_matches_dimensions_and_has_opaque_strokes() {
+        let expected_bytes = (MACOS_TRAY_ICON_SIZE * MACOS_TRAY_ICON_SIZE * 4) as usize;
+        assert_eq!(MACOS_TRAY_ICON_RGBA.len(), expected_bytes);
+        let solid_pixels = MACOS_TRAY_ICON_RGBA
+            .chunks_exact(4)
+            .filter(|px| px[3] == 255)
+            .count();
+        assert!(
+            solid_pixels > 200,
+            "expected crisp opaque strokes, got {solid_pixels}"
+        );
+    }
 }
